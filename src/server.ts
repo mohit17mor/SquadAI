@@ -543,22 +543,27 @@ function renderHtml(title: string): string {
           <span id="agent-panel-count">0</span>
         </div>
         <div id="agents" class="agents"></div>
-        <form id="edit-agent-form" class="agent-editor">
-          <div class="section-head">
-            <h2>Agent Settings</h2>
-            <span id="edit-agent-status">select one</span>
-          </div>
-          <label>Name<input name="name" autocomplete="off"></label>
-          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
-          <label>Working directory<input name="cwd" autocomplete="off"></label>
-          <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
-          <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
-          <div class="field-hint">Saving developer instructions or session settings starts a fresh Codex session on the next turn.</div>
-          <div class="agent-actions">
-            <button type="submit">Save Changes</button>
-            <button id="delete-agent-button" type="button" class="danger">Delete</button>
-          </div>
-        </form>
+        <details id="agent-settings" class="agent-editor">
+          <summary class="settings-summary">
+            <span>
+              <strong>Agent Settings</strong>
+              <small id="edit-agent-status">select one</small>
+            </span>
+            <span class="settings-caret" aria-hidden="true">&gt;</span>
+          </summary>
+          <form id="edit-agent-form" class="agent-editor-form">
+            <label>Name<input name="name" autocomplete="off"></label>
+            <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
+            <label>Working directory<input name="cwd" autocomplete="off"></label>
+            <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
+            <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
+            <div class="field-hint">Saving developer instructions or session settings starts a fresh Codex session on the next turn.</div>
+            <div class="agent-actions">
+              <button type="submit">Save Changes</button>
+              <button id="delete-agent-button" type="button" class="danger">Delete</button>
+            </div>
+          </form>
+        </details>
       </section>
       <section id="panel-events" class="panel-view queue-panel">
         <div class="section-head">
@@ -638,8 +643,17 @@ input:focus, textarea:focus, select:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
 .field-hint { margin: -3px 0 10px; color: #6e7681; font-size: 11px; line-height: 1.4; }
 .agents { display: grid; gap: 8px; }
-.agent-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid #30363d; }
-.agent-editor.disabled { opacity: .55; pointer-events: none; }
+.agent-editor { margin-top: 16px; padding-top: 12px; border-top: 1px solid #30363d; }
+.settings-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; cursor: pointer; list-style: none; }
+.settings-summary::-webkit-details-marker { display: none; }
+.settings-summary:hover { border-color: #58a6ff; background: #1c2128; }
+.settings-summary span:first-child { display: grid; gap: 2px; min-width: 0; }
+.settings-summary strong { color: #e6edf3; font-size: 13px; }
+.settings-summary small { color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-caret { color: #8b949e; font-weight: 700; transition: transform .15s ease; }
+.agent-editor[open] .settings-caret { transform: rotate(90deg); }
+.agent-editor-form { padding-top: 12px; }
+.agent-editor-form.disabled { opacity: .55; pointer-events: none; }
 .agent-actions { display: flex; gap: 8px; justify-content: space-between; }
 .agent-actions button { flex: 1; }
 .empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
