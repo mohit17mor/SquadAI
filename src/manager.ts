@@ -137,7 +137,9 @@ export class CodexAgentManager extends EventEmitter {
       }
 
       this.setStatus(record, "running");
-      await this.recordEvent(record.definition.id, "turn_started", "Turn started.", {});
+      await this.recordEvent(record.definition.id, "turn_started", "Turn started.", {
+        input,
+      });
 
       const result = await session.ask(input, {
         ...record.definition.defaultAskOptions,

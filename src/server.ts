@@ -297,40 +297,47 @@ function renderHtml(title: string): string {
     <aside class="sidebar">
       <div class="brand">
         <h1>${escapeHtml(title)}</h1>
-        <span id="connection">connecting</span>
+        <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">Connecting</span></div>
       </div>
       <section class="panel">
-        <h2>Create Agent</h2>
+        <div class="section-head">
+          <h2>Create Agent</h2>
+          <span>runtime</span>
+        </div>
         <form id="agent-form">
           <label>ID<input name="id" autocomplete="off" placeholder="maintenance"></label>
           <label>Name<input name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
-          <label>cwd<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
+          <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
-          <button type="submit">Create</button>
+          <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
       </section>
       <section class="panel">
-        <h2>Agents</h2>
+        <div class="section-head">
+          <h2>Agents</h2>
+          <span id="agent-count">0</span>
+        </div>
         <div id="agents" class="agents"></div>
       </section>
     </aside>
-    <section class="workspace">
+    <section class="workspace chat-stream">
       <header class="topbar">
         <div>
           <h2 id="selected-title">No agent selected</h2>
           <p id="selected-meta">Create or select an agent to begin.</p>
         </div>
-        <button id="refresh" type="button">Refresh</button>
+        <button id="refresh" type="button" class="secondary">Refresh</button>
       </header>
-      <section class="activity" id="activity"></section>
+      <section class="message-list" id="messages"></section>
       <form id="message-form" class="composer">
-        <textarea id="message" rows="4" placeholder="Send a message to the selected agent"></textarea>
+        <textarea id="message" rows="1" placeholder="Message the selected agent"></textarea>
         <div class="composer-row">
           <label><input id="allow-network" type="checkbox" checked> Network</label>
           <button type="submit">Send</button>
         </div>
       </form>
     </section>
+    <div id="toasts" class="toasts"></div>
   </main>
   <script>${js()}</script>
 </body>
@@ -340,38 +347,68 @@ function renderHtml(title: string): string {
 function css(): string {
   return `
 * { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2933; background: #f6f7f9; }
+html, body { height: 100%; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e6edf3; background: #0d1117; overflow: hidden; }
 button, input, textarea { font: inherit; }
-.shell { display: grid; grid-template-columns: 360px minmax(0, 1fr); min-height: 100vh; }
-.sidebar { border-right: 1px solid #d8dde6; background: #ffffff; padding: 18px; overflow: auto; }
-.brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-h1 { margin: 0; font-size: 20px; }
-h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; color: #52606d; }
-#connection { color: #66788a; font-size: 12px; }
-.panel { border-top: 1px solid #e5e8ee; padding-top: 16px; margin-top: 16px; }
-label { display: grid; gap: 5px; margin-bottom: 10px; color: #52606d; font-size: 12px; }
-input, textarea { width: 100%; border: 1px solid #c9d2df; border-radius: 6px; padding: 8px 10px; background: #fff; color: #1f2933; }
+button { border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 8px; padding: 9px 13px; cursor: pointer; font-weight: 600; transition: background .15s, border-color .15s, opacity .15s; }
+button:hover { background: #388bfd; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.secondary { background: #161b22; color: #e6edf3; }
+button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
+.shell { display: grid; grid-template-columns: 360px minmax(0, 1fr); height: 100vh; }
+.sidebar { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.brand { padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid #30363d; }
+h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
+h2 { margin: 0; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; }
+.connection { display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 12px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 999px; background: #f85149; display: inline-block; }
+.dot.connected { background: #3fb950; }
+.panel { padding: 16px 18px; border-bottom: 1px solid #30363d; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.section-head span { color: #8b949e; font-size: 12px; }
+label { display: grid; gap: 6px; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
+input, textarea { width: 100%; border: 1px solid #30363d; border-radius: 8px; padding: 9px 11px; background: #0d1117; color: #e6edf3; outline: none; }
+input:focus, textarea:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
-button { border: 1px solid #1f6feb; background: #1f6feb; color: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
-button:disabled { opacity: .55; cursor: not-allowed; }
 .agents { display: grid; gap: 8px; }
-.agent { width: 100%; border: 1px solid #d8dde6; background: #fff; color: #1f2933; text-align: left; display: grid; gap: 3px; }
-.agent.active { border-color: #1f6feb; background: #eef5ff; }
-.agent strong { font-size: 14px; }
-.agent span { font-size: 12px; color: #52606d; }
-.workspace { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; }
-.topbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 18px 22px; background: #fff; border-bottom: 1px solid #d8dde6; }
-.topbar h2 { text-transform: none; letter-spacing: 0; color: #1f2933; font-size: 18px; margin: 0; }
-.topbar p { margin: 4px 0 0; color: #66788a; }
-.activity { overflow: auto; padding: 18px 22px; display: grid; align-content: start; gap: 10px; }
-.event { background: #fff; border: 1px solid #d8dde6; border-radius: 8px; padding: 10px 12px; }
-.event-head { display: flex; justify-content: space-between; gap: 12px; color: #52606d; font-size: 12px; margin-bottom: 6px; }
-.event-message { white-space: pre-wrap; overflow-wrap: anywhere; }
-.composer { border-top: 1px solid #d8dde6; background: #fff; padding: 14px 22px; }
-.composer-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
-.composer-row label { display: flex; grid-template-columns: none; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
-.composer-row input { width: auto; }
-@media (max-width: 800px) { .shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid #d8dde6; } }
+.empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
+.agent { width: 100%; background: #0d1117; color: #e6edf3; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; border: 1px solid #30363d; }
+.agent.active { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88,166,255,.3) inset; }
+.agent strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
+.status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
+.status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
+.status-pill.failed { background: rgba(248,81,73,.14); color: #f85149; }
+.workspace { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.topbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 16px 22px; background: #161b22; border-bottom: 1px solid #30363d; }
+.topbar h2 { text-transform: none; letter-spacing: 0; color: #e6edf3; font-size: 18px; margin: 0; }
+.topbar p { margin: 4px 0 0; color: #8b949e; font-size: 13px; overflow-wrap: anywhere; }
+.message-list { overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 13px; }
+.message-list::-webkit-scrollbar { width: 6px; }
+.message-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.message-row { display: flex; flex-direction: column; max-width: 78%; gap: 4px; animation: fadeIn .15s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.message-row.user { align-self: flex-end; align-items: flex-end; }
+.message-row.agent, .message-row.system { align-self: flex-start; align-items: flex-start; }
+.message-row.status { align-self: center; align-items: center; max-width: 90%; }
+.message-meta { color: #8b949e; font-size: 11px; }
+.message-bubble { padding: 10px 14px; border-radius: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-bubble.user { background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
+.message-bubble.agent { background: #1c2128; border: 1px solid #30363d; border-bottom-left-radius: 4px; }
+.message-bubble.system { background: transparent; color: #d29922; padding: 3px 8px; font-size: 12px; }
+.pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
+.pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.composer { background: #161b22; border-top: 1px solid #30363d; padding: 13px 22px; }
+.composer textarea { min-height: 44px; max-height: 150px; resize: none; }
+.composer-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 12px; }
+.composer-row label { display: flex; grid-template-columns: none; align-items: center; gap: 7px; margin: 0; font-size: 13px; }
+.composer-row input { width: auto; accent-color: #58a6ff; }
+.toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
+.toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+.toast.error { border-left-color: #f85149; }
+@media (max-width: 850px) { body { overflow: auto; } .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .sidebar { max-height: none; } .workspace { min-height: 70vh; } .message-row { max-width: 92%; } }
 `;
 }
 
@@ -380,23 +417,46 @@ function js(): string {
 let agents = [];
 let selectedAgentId = null;
 let events = [];
+let pendingMessages = [];
+let sendInFlight = false;
 
 const agentList = document.getElementById("agents");
-const activity = document.getElementById("activity");
+const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
 const selectedMeta = document.getElementById("selected-meta");
 const connection = document.getElementById("connection");
+const connectionDot = document.getElementById("connection-dot");
+const messageForm = document.getElementById("message-form");
+const messageInput = document.getElementById("message");
+const agentCount = document.getElementById("agent-count");
+const toasts = document.getElementById("toasts");
 
 document.getElementById("refresh").addEventListener("click", refresh);
 document.getElementById("agent-form").addEventListener("submit", createAgent);
-document.getElementById("message-form").addEventListener("submit", sendMessage);
+messageForm.addEventListener("submit", sendMessage);
+messageInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    messageForm.requestSubmit();
+  }
+});
+messageInput.addEventListener("input", () => {
+  messageInput.style.height = "auto";
+  messageInput.style.height = Math.min(messageInput.scrollHeight, 150) + "px";
+});
 
 const stream = new EventSource("/api/events/stream");
-stream.onopen = () => { connection.textContent = "live"; };
-stream.onerror = () => { connection.textContent = "reconnecting"; };
+stream.onopen = () => {
+  connection.textContent = "Live";
+  connectionDot.classList.add("connected");
+};
+stream.onerror = () => {
+  connection.textContent = "Reconnecting";
+  connectionDot.classList.remove("connected");
+};
 stream.addEventListener("agent-event", (message) => {
   events.push(JSON.parse(message.data));
-  refreshAgents();
+  void refreshAgents();
   render();
 });
 
@@ -410,6 +470,7 @@ async function refreshAgents() {
   const body = await response.json();
   agents = body.agents;
   if (!selectedAgentId && agents.length) selectedAgentId = agents[0].id;
+  agentCount.textContent = String(agents.length);
 }
 
 async function refreshEvents() {
@@ -422,28 +483,45 @@ async function createAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const body = Object.fromEntries(form.entries());
+  const button = document.getElementById("create-agent-button");
+  button.disabled = true;
+  button.textContent = "Creating";
   const response = await fetch("/api/agents", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const result = await response.json();
+  button.disabled = false;
+  button.textContent = "Create Agent";
   if (!response.ok) {
-    alert(result.error || "Failed to create agent");
+    toast(result.error || "Failed to create agent", "error");
     return;
   }
   selectedAgentId = result.agent.id;
   event.currentTarget.reset();
   await refresh();
+  toast("Agent created");
 }
 
 async function sendMessage(event) {
   event.preventDefault();
   if (!selectedAgentId) return;
-  const textarea = document.getElementById("message");
+  const textarea = messageInput;
   const message = textarea.value.trim();
   if (!message) return;
   textarea.value = "";
+  textarea.style.height = "auto";
+  const pending = {
+    id: String(Date.now()) + "-" + Math.random().toString(16).slice(2),
+    agentId: selectedAgentId,
+    text: message,
+  };
+  pendingMessages.push(pending);
+  sendInFlight = true;
+  render();
+  scrollDown();
+  toast("Message sent");
   const allowNetwork = document.getElementById("allow-network").checked;
   const response = await fetch("/api/agents/" + encodeURIComponent(selectedAgentId) + "/messages", {
     method: "POST",
@@ -451,7 +529,11 @@ async function sendMessage(event) {
     body: JSON.stringify({ message, options: { network: allowNetwork ? "allow" : "deny" } }),
   });
   const result = await response.json();
-  if (!response.ok) alert(result.error || "Send failed");
+  pendingMessages = pendingMessages.filter((item) => item.id !== pending.id);
+  sendInFlight = false;
+  if (!response.ok) {
+    toast(result.error || "Send failed", "error");
+  }
   await refresh();
 }
 
@@ -459,9 +541,10 @@ function render() {
   agentList.innerHTML = agents.map((agent) => \`
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
-      <span>\${escapeHtml(agent.id)} · \${escapeHtml(agent.status)}</span>
+      <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
+      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)}</span>
     </button>
-  \`).join("") || "<p>No agents yet.</p>";
+  \`).join("") || '<div class="empty">No agents yet. Create one from the form above.</div>';
   for (const button of agentList.querySelectorAll(".agent")) {
     button.addEventListener("click", () => {
       selectedAgentId = button.dataset.agentId;
@@ -470,14 +553,69 @@ function render() {
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} · \${selected.status} · \${selected.cwd}\` : "Create or select an agent to begin.";
-  const visibleEvents = selectedAgentId ? events.filter((event) => event.agentId === selectedAgentId) : events;
-  activity.innerHTML = visibleEvents.slice().reverse().map((event) => \`
-    <article class="event">
-      <div class="event-head"><span>\${escapeHtml(event.type)}</span><time>\${escapeHtml(new Date(event.createdAt).toLocaleString())}</time></div>
-      <div class="event-message">\${escapeHtml(event.message)}</div>
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
+  const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : events;
+  const persistedMessages = visibleEvents.flatMap(eventToMessages);
+  const localMessages = pendingMessages
+    .filter((item) => !selectedAgentId || item.agentId === selectedAgentId)
+    .flatMap((item) => [
+      { kind: "user", meta: "You", text: item.text },
+      { kind: "status", meta: "", text: "Agent is working", pending: true },
+    ]);
+  const rendered = [...persistedMessages, ...localMessages];
+  messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
+  scrollDown();
+}
+
+function eventToMessages(event) {
+  if (event.type === "turn_started") {
+    const input = event.payload && event.payload.input ? String(event.payload.input) : "";
+    return input
+      ? [{ kind: "user", meta: "You", text: input, time: event.createdAt }]
+      : [{ kind: "status", meta: "", text: "Turn started", time: event.createdAt }];
+  }
+  if (event.type === "turn_completed") {
+    return [{ kind: "agent", meta: agentName(event.agentId), text: event.message, time: event.createdAt }];
+  }
+  if (event.type === "turn_failed") {
+    return [{ kind: "system", meta: "", text: "Agent failed: " + event.message, time: event.createdAt }];
+  }
+  if (event.type === "agent_starting") {
+    return [{ kind: "status", meta: "", text: "Starting agent session", pending: true, time: event.createdAt }];
+  }
+  if (event.type === "agent_started") {
+    return [{ kind: "system", meta: "", text: "Agent session ready", time: event.createdAt }];
+  }
+  return [{ kind: "system", meta: "", text: event.type + ": " + event.message, time: event.createdAt }];
+}
+
+function renderMessage(message) {
+  if (message.pending) {
+    return \`<div class="message-row status"><div class="pending-message">\${escapeHtml(message.text)}</div></div>\`;
+  }
+  const meta = message.time ? \`\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}\` : escapeHtml(message.meta);
+  return \`
+    <article class="message-row \${escapeAttr(message.kind)}">
+      \${meta ? \`<div class="message-meta">\${meta}</div>\` : ""}
+      <div class="message-bubble \${escapeAttr(message.kind)}">\${escapeHtml(message.text)}</div>
     </article>
-  \`).join("") || "<p>No activity yet.</p>";
+  \`;
+}
+
+function agentName(agentId) {
+  return agents.find((agent) => agent.id === agentId)?.name || agentId;
+}
+
+function toast(message, type = "info") {
+  const node = document.createElement("div");
+  node.className = "toast " + type;
+  node.textContent = message;
+  toasts.appendChild(node);
+  setTimeout(() => node.remove(), 3500);
+}
+
+function scrollDown() {
+  messages.scrollTop = messages.scrollHeight;
 }
 
 function escapeHtml(value) {

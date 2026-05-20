@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -79,6 +83,62 @@ test("command center API creates agents, lists them, sends messages, and exposes
     const page = await fetch(`${baseUrl}/`);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Jarvis Command Center/);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center UI exposes chat-style messaging affordances", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/`);
+    const html = await response.text();
+
+    assert.match(html, /chat-stream/);
+    assert.match(html, /class="message-list"/);
+    assert.match(html, /message-bubble\.user/);
+    assert.match(html, /message-bubble\.agent/);
+    assert.match(html, /pending-message/);
+    assert.match(html, /Agent created/);
+    assert.match(html, /Message sent/);
+    assert.match(html, /e\.key === "Enter" && !e\.shiftKey/);
+    assert.doesNotMatch(html, /slice\(\)\.reverse\(\)/);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center inline script parses as JavaScript", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/`);
+    const html = await response.text();
+    const start = html.indexOf("<script>") + "<script>".length;
+    const end = html.lastIndexOf("</script>");
+    assert.ok(start > -1 && end > start);
+
+    const dir = await mkdtemp(join(tmpdir(), "codex-agent-manager-ui-"));
+    const scriptPath = join(dir, "inline.js");
+    await writeFile(scriptPath, html.slice(start, end), "utf8");
+
+    const result = spawnSync(process.execPath, ["--check", scriptPath], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
   } finally {
     await server.close();
     await manager.close();
