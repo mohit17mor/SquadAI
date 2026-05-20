@@ -573,6 +573,7 @@ async function sendMessage(event) {
     id: String(Date.now()) + "-" + Math.random().toString(16).slice(2),
     agentId: selectedAgentId,
     text: message,
+    createdAt: Date.now(),
   };
   pendingMessages.push(pending);
   sendInFlight = true;
@@ -615,6 +616,7 @@ function render() {
   dedupePendingMessages(visibleEvents);
   const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
   const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
+  const activeTurnPending = hasActiveTurnPending(visibleEvents);
   const persistedMessages = visibleEvents.flatMap((event) => eventToMessages(event, {
     hasCompletion,
     hasTurnStarted,
@@ -625,19 +627,41 @@ function render() {
       { kind: "user", meta: "You", text: item.text },
       { kind: "status", meta: "", text: "Agent is working", pending: true },
     ]);
-  const rendered = [...persistedMessages, ...localMessages];
+  const workingMessage = activeTurnPending && !localMessages.some((item) => item.pending)
+    ? [{ kind: "status", meta: "", text: "Agent is working", pending: true }]
+    : [];
+  const rendered = [...persistedMessages, ...localMessages, ...workingMessage];
   messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
   scrollDown();
 }
 
+function hasActiveTurnPending(visibleEvents) {
+  let turnStartedAt = -1;
+  let turnFinishedAt = -1;
+  visibleEvents.forEach((event, index) => {
+    if (event.type === "turn_started") {
+      turnStartedAt = index;
+    }
+    if (event.type === "turn_completed" || event.type === "turn_failed") {
+      turnFinishedAt = index;
+    }
+  });
+  return turnStartedAt > turnFinishedAt;
+}
+
 function dedupePendingMessages(visibleEvents) {
-  const startedTexts = new Set(
-    visibleEvents
-      .filter((event) => event.type === "turn_started" && event.payload && event.payload.input)
-      .map((event) => String(event.payload.input)),
-  );
-  if (!startedTexts.size) return;
-  pendingMessages = pendingMessages.filter((item) => !startedTexts.has(item.text));
+  const startedEvents = visibleEvents
+    .filter((event) => event.type === "turn_started" && event.payload && event.payload.input)
+    .map((event) => ({
+      input: String(event.payload.input),
+      startedAt: Date.parse(event.createdAt),
+    }));
+  if (!startedEvents.length) return;
+  pendingMessages = pendingMessages.filter((item) => {
+    return !startedEvents.some((event) => {
+      return event.input === item.text && Number.isFinite(event.startedAt) && event.startedAt >= item.createdAt;
+    });
+  });
 }
 
 function eventToMessages(event, state) {

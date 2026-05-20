@@ -136,6 +136,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /deriveAgentId/);
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
+    assert.match(html, /hasActiveTurnPending/);
+    assert.match(html, /turnStartedAt > turnFinishedAt/);
+    assert.match(html, /event\.startedAt >= item\.createdAt/);
     assert.match(html, /e\.key === "Enter" && !e\.shiftKey/);
     assert.match(html, /dedupePendingMessages/);
     assert.match(html, /hasCompletion/);
