@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -20,6 +21,8 @@ export class MemoryAgentStateStore implements AgentStateStore {
 }
 
 export class JsonFileAgentStateStore implements AgentStateStore {
+  private saveChain: Promise<void> = Promise.resolve();
+
   constructor(private readonly path: string) {}
 
   async load(): Promise<PersistedAgentManagerState> {
@@ -34,8 +37,15 @@ export class JsonFileAgentStateStore implements AgentStateStore {
   }
 
   async save(state: PersistedAgentManagerState): Promise<void> {
+    const snapshot = cloneState(state);
+    const write = () => this.writeState(snapshot);
+    this.saveChain = this.saveChain.then(write, write);
+    return this.saveChain;
+  }
+
+  private async writeState(state: PersistedAgentManagerState): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
-    const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
+    const tempPath = `${this.path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
     await writeFile(tempPath, `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`, "utf8");
     await rename(tempPath, this.path);
   }
