@@ -662,8 +662,7 @@ textarea { resize: vertical; }
 .message-list { overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 13px; }
 .message-list::-webkit-scrollbar { width: 6px; }
 .message-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
-.message-row { display: flex; flex-direction: column; max-width: 78%; gap: 4px; animation: fadeIn .15s ease-out; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.message-row { display: flex; flex-direction: column; max-width: 78%; gap: 4px; }
 .message-row.user { align-self: flex-end; align-items: flex-end; }
 .message-row.agent, .message-row.system { align-self: flex-start; align-items: flex-start; }
 .message-row.status { align-self: center; align-items: center; max-width: 90%; }
@@ -717,6 +716,8 @@ let workItems = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let activePanel = "agents";
+let lastAgentListHtml = "";
+let lastMessagesHtml = "";
 const defaultRouterInstructions = [
   "You are the router agent for the multi-agent Codex command center.",
   "Your job is to inspect incoming sensor events and choose the best worker agent.",
@@ -834,6 +835,7 @@ function upsertAgent(agent) {
   } else {
     agents = [...agents, agent];
   }
+  lastAgentListHtml = "";
   agentCount.textContent = String(agents.length);
   agentPanelCount.textContent = String(agents.length);
 }
@@ -880,6 +882,7 @@ async function createAgent(event) {
   }
   upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
+  lastMessagesHtml = "";
   activePanel = "agents";
   editAgentDirty = false;
   editAgentLoadedId = null;
@@ -965,6 +968,8 @@ async function deleteSelectedAgent() {
   }
   agents = agents.filter((agent) => agent.id !== selected.id);
   selectedAgentId = agents[0]?.id || null;
+  lastAgentListHtml = "";
+  lastMessagesHtml = "";
   editAgentDirty = false;
   editAgentLoadedId = null;
   await refreshAgents();
@@ -1027,19 +1032,24 @@ async function sendMessage(event) {
 
 function render() {
   renderPanel();
-  agentList.innerHTML = agents.map((agent) => \`
+  const agentListHtml = agents.map((agent) => \`
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
       <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
       <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)}</span>
     </button>
   \`).join("") || '<div class="empty">No agents yet. Create one from the Create Agent section.</div>';
-  for (const button of agentList.querySelectorAll(".agent")) {
-    button.addEventListener("click", () => {
-      selectedAgentId = button.dataset.agentId;
-      editAgentDirty = false;
-      render();
-    });
+  if (agentListHtml !== lastAgentListHtml) {
+    agentList.innerHTML = agentListHtml;
+    lastAgentListHtml = agentListHtml;
+    for (const button of agentList.querySelectorAll(".agent")) {
+      button.addEventListener("click", () => {
+        selectedAgentId = button.dataset.agentId;
+        lastMessagesHtml = "";
+        editAgentDirty = false;
+        render();
+      });
+    }
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
@@ -1085,10 +1095,8 @@ function render() {
   ].sort((left, right) => {
     return Date.parse(left.time || "") - Date.parse(right.time || "");
   });
-  messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">Create or select an agent to begin.</div>';
-  bindApprovalButtons();
+  renderMessagesIfChanged(rendered.map(renderMessage).join("") || '<div class="empty">Create or select an agent to begin.</div>');
   renderQueues();
-  scrollDown();
 }
 
 function renderAgentEditor(selected) {
@@ -1607,6 +1615,21 @@ function toast(message, type = "info") {
   node.textContent = message;
   toasts.appendChild(node);
   setTimeout(() => node.remove(), 3500);
+}
+
+function renderMessagesIfChanged(nextHtml) {
+  if (nextHtml === lastMessagesHtml) return;
+  const shouldStickToBottom = isScrolledNearBottom(messages);
+  messages.innerHTML = nextHtml;
+  lastMessagesHtml = nextHtml;
+  bindApprovalButtons();
+  if (shouldStickToBottom) {
+    scrollDown();
+  }
+}
+
+function isScrolledNearBottom(node) {
+  return node.scrollHeight - node.scrollTop - node.clientHeight < 80;
 }
 
 function scrollDown() {

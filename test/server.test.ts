@@ -320,6 +320,10 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /message-bubble\.user/);
     assert.match(html, /message-bubble\.agent/);
     assert.match(html, /pending-message/);
+    assert.match(html, /lastMessagesHtml/);
+    assert.match(html, /renderMessagesIfChanged/);
+    assert.match(html, /isScrolledNearBottom/);
+    assert.doesNotMatch(html, /message-row .*animation/);
     assert.match(html, /Agent created/);
     assert.match(html, /Message sent/);
     assert.match(html, /deriveAgentId/);
