@@ -341,7 +341,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /activity-sequence/);
     assert.match(html, /activity-toggle/);
     assert.match(html, /shouldShowTimelineInChat/);
-    assert.match(html, /summary\.status === "running" \|\| summary\.status === "failed"/);
+    assert.match(html, /summary\.status === "running" \|\| summary\.status === "failed" \|\| summary\.hasApproval \|\| summary\.hasCompaction/);
+    assert.match(html, /hasCompaction/);
     assert.match(html, /Approve Tool/);
     assert.match(html, /approved-session/);
     assert.match(html, /canApproveApprovalForSession/);
@@ -351,6 +352,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.doesNotMatch(html, /activity-card/);
     assert.match(html, /summarizeActivityEvents/);
     assert.match(html, /codex_item_completed/);
+    assert.match(html, /codex_thread_compacted/);
+    assert.match(html, /Thread compacted/);
     assert.match(html, /summarizeWorkEvents/);
     assert.match(html, /workSummaryToTimelineMessage/);
     assert.match(html, /activitySummaryToTimelineMessage/);

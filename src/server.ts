@@ -1244,7 +1244,7 @@ function summarizeWorkEvents(visibleEvents) {
 }
 
 function shouldShowTimelineInChat(summary) {
-  return summary.status === "running" || summary.status === "failed" || summary.hasApproval;
+  return summary.status === "running" || summary.status === "failed" || summary.hasApproval || summary.hasCompaction;
 }
 
 function workSummaryToTimelineMessage(summary) {
@@ -1281,6 +1281,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
         entries: [],
         status: "running",
         hasApproval: false,
+        hasCompaction: false,
         createdAt: event.createdAt,
         updatedAt: event.createdAt,
       };
@@ -1293,6 +1294,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
           entries: [],
           status: "running",
           hasApproval: false,
+          hasCompaction: false,
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
@@ -1318,6 +1320,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
           entries: [],
           status: "running",
           hasApproval: true,
+          hasCompaction: false,
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
@@ -1339,12 +1342,14 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
           entries: [],
           status: "running",
           hasApproval: false,
+          hasCompaction: true,
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
       }
       current.eventIds.push(event.id);
       current.updatedAt = event.createdAt;
+      current.hasCompaction = true;
       current.entries.push({
         itemType: "memory",
         title: "Thread compacted",
@@ -1371,7 +1376,7 @@ function activitySummaryToTimelineMessage(summary) {
   return {
     kind: "timeline",
     meta: "Codex activity",
-    title: summary.status === "running" ? "Agent is working" : "Activity",
+    title: summary.hasCompaction ? "Thread compacted" : summary.status === "running" ? "Agent is working" : "Activity",
     status: summary.status,
     entries: summary.entries.slice(-10).map((entry) => ({
       label: entry.itemType,
@@ -1379,6 +1384,7 @@ function activitySummaryToTimelineMessage(summary) {
     })),
     hiddenCount: Math.max(0, summary.entries.length - 10),
     hasApproval: summary.hasApproval,
+    hasCompaction: summary.hasCompaction,
     time: summary.updatedAt,
   };
 }
