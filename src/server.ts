@@ -172,9 +172,10 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
 
 function parseAgentDefinition(body: unknown): AgentDefinition {
   const value = asRecord(body);
+  const name = requiredString(value.name, "name");
   const definition: AgentDefinition = {
-    id: requiredString(value.id, "id"),
-    name: requiredString(value.name, "name"),
+    id: optionalString(value.id) ?? deriveAgentId(name),
+    name,
     cwd: requiredString(value.cwd, "cwd"),
     instructions: requiredString(value.instructions, "instructions"),
   };
@@ -204,6 +205,18 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
     definition.metadata = metadata;
   }
   return definition;
+}
+
+function deriveAgentId(name: string): string {
+  const id = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  if (!id) {
+    throw new Error("Agent name must contain at least one letter or number.");
+  }
+  return id;
 }
 
 function parseMessage(body: unknown): string {
@@ -305,8 +318,9 @@ function renderHtml(title: string): string {
           <span>runtime</span>
         </div>
         <form id="agent-form">
-          <label>ID<input name="id" autocomplete="off" placeholder="maintenance"></label>
-          <label>Name<input name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
+          <label>Name<input id="agent-name" name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
+          <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
+          <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
@@ -370,6 +384,7 @@ label { display: grid; gap: 6px; margin-bottom: 10px; color: #8b949e; font-size:
 input, textarea { width: 100%; border: 1px solid #30363d; border-radius: 8px; padding: 9px 11px; background: #0d1117; color: #e6edf3; outline: none; }
 input:focus, textarea:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
+.field-hint { margin: -3px 0 10px; color: #6e7681; font-size: 11px; line-height: 1.4; }
 .agents { display: grid; gap: 8px; }
 .empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
 .agent { width: 100%; background: #0d1117; color: #e6edf3; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; border: 1px solid #30363d; }
@@ -430,10 +445,20 @@ const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message");
 const agentCount = document.getElementById("agent-count");
 const toasts = document.getElementById("toasts");
+const agentNameInput = document.getElementById("agent-name");
+const agentIdInput = document.getElementById("agent-id");
+const agentIdHint = document.getElementById("agent-id-hint");
+let agentIdTouched = false;
 
 document.getElementById("refresh").addEventListener("click", refresh);
-document.getElementById("agent-form").addEventListener("submit", createAgent);
+const agentForm = document.getElementById("agent-form");
+agentForm.addEventListener("submit", createAgent);
 messageForm.addEventListener("submit", sendMessage);
+agentNameInput.addEventListener("input", updateDerivedAgentId);
+agentIdInput.addEventListener("input", () => {
+  agentIdTouched = true;
+  updateDerivedAgentId();
+});
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -473,6 +498,16 @@ async function refreshAgents() {
   agentCount.textContent = String(agents.length);
 }
 
+function upsertAgent(agent) {
+  const index = agents.findIndex((item) => item.id === agent.id);
+  if (index >= 0) {
+    agents[index] = agent;
+  } else {
+    agents = [...agents, agent];
+  }
+  agentCount.textContent = String(agents.length);
+}
+
 async function refreshEvents() {
   const response = await fetch("/api/events");
   const body = await response.json();
@@ -498,10 +533,32 @@ async function createAgent(event) {
     toast(result.error || "Failed to create agent", "error");
     return;
   }
+  upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
   event.currentTarget.reset();
-  await refresh();
+  agentIdTouched = false;
+  updateDerivedAgentId();
+  render();
+  void refresh();
   toast("Agent created");
+}
+
+function deriveAgentId(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function updateDerivedAgentId() {
+  const derived = deriveAgentId(agentNameInput.value);
+  if (!agentIdTouched) {
+    agentIdInput.value = derived;
+  }
+  agentIdHint.textContent = derived
+    ? "Stable ID: " + (agentIdInput.value.trim() || derived)
+    : "Used in API paths and state. Leave empty to derive from name.";
 }
 
 async function sendMessage(event) {

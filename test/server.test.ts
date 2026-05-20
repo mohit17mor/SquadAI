@@ -89,6 +89,31 @@ test("command center API creates agents, lists them, sends messages, and exposes
   }
 });
 
+test("command center API derives an agent id from name when id is omitted", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const created = await jsonFetch(`http://127.0.0.1:${server.port}/api/agents`, {
+      method: "POST",
+      body: {
+        name: "Slack Debugger",
+        cwd: "/tmp/ops-poc",
+        instructions: "You specialize in Slack workflows.",
+      },
+    });
+
+    assert.equal(created.agent.id, "slack-debugger");
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center UI exposes chat-style messaging affordances", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -108,6 +133,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /pending-message/);
     assert.match(html, /Agent created/);
     assert.match(html, /Message sent/);
+    assert.match(html, /deriveAgentId/);
+    assert.match(html, /upsertAgent/);
+    assert.match(html, /ID \(optional\)/);
     assert.match(html, /e\.key === "Enter" && !e\.shiftKey/);
     assert.match(html, /dedupePendingMessages/);
     assert.match(html, /hasCompletion/);
