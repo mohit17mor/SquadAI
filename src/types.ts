@@ -12,6 +12,7 @@ export type AgentEventType =
   | "work_item_started"
   | "work_item_completed"
   | "work_item_failed"
+  | "work_item_requeued"
   | "turn_started"
   | "turn_completed"
   | "turn_failed"

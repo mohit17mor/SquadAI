@@ -220,6 +220,59 @@ test("resumes persisted thread ids instead of starting new Codex threads", async
   assert.equal((await send).threadId, "existing-thread");
 });
 
+test("recovers from stale persisted thread ids by starting a fresh Codex thread", async () => {
+  const clients: FakeCodexClient[] = [];
+  const state = {
+    agents: {
+      maintenance: {
+        threadId: "missing-thread",
+        status: "failed" as const,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        updatedAt: "2026-05-20T00:00:00.000Z",
+      },
+    },
+  };
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    stateStore: {
+      async load() {
+        return state;
+      },
+      async save(nextState) {
+        Object.assign(state, nextState);
+      },
+    },
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "continue after restart");
+  await waitFor(() => clients.length === 1, "stale thread client");
+  const staleSession = clients[0]?.session("missing-thread");
+  staleSession?.pending?.reject(
+    new Error(JSON.stringify({ code: -32600, message: "no rollout found for thread id missing-thread" })),
+  );
+  if (staleSession) {
+    staleSession.pending = null;
+  }
+
+  await waitFor(() => clients.length === 2, "fresh thread client");
+  assert.equal(clients[1]?.startCalls.length, 1);
+  clients[1]?.session("thread-1").complete("fresh session worked");
+  const result = await send;
+
+  assert.equal(result.threadId, "thread-1");
+  assert.equal(result.finalText, "fresh session worked");
+  assert.equal(manager.getAgent("maintenance").threadId, "thread-1");
+  assert.equal(manager.getAgent("maintenance").status, "idle");
+  assert.deepEqual(clients[0]?.resumeCalls, ["missing-thread"]);
+  assert.equal(clients[0]?.closeCalls.length, 1);
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "agent_failed" && event.payload.staleThreadId === "missing-thread"),
+  );
+});
+
 test("emits durable status events for agent lifecycle transitions", async () => {
   const clients: FakeCodexClient[] = [];
   const events: string[] = [];
@@ -469,4 +522,61 @@ test("dispatches queued work to a failed agent so it can recover", async () => {
   clients[0]?.session("thread-1").complete("classification recovered");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "recovered work");
   assert.equal(manager.getAgent("ops-debugger").status, "idle");
+});
+
+test("requeues failed work items so they can be dispatched again", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "ops-debugger",
+        name: "Ops Debugger",
+        instructions: "You classify issue tracker tickets.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1 needs classification.",
+  });
+  const route = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 1, "router client for retry test");
+  clients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-debugger",
+      prompt: "Classify INC-01-1.",
+      reason: "Ops ticket classification.",
+    }),
+  );
+  const work = await route;
+
+  await manager.dispatchQueuedWork();
+  await waitFor(() => clients.length === 2, "worker client for retry test");
+  clients[1]?.session("thread-1").pending?.reject(new Error("transient worker failure"));
+  if (clients[1]) {
+    clients[1].session("thread-1").pending = null;
+  }
+  await waitFor(() => manager.getWorkItem(work.id).status === "failed", "failed work item");
+
+  const retried = await manager.retryWorkItem(work.id);
+  assert.equal(retried.status, "queued");
+  assert.equal(retried.failureReason, null);
+
+  await manager.dispatchQueuedWork();
+  await waitFor(
+    () => clients[1]?.session("thread-1").pending?.input === "Classify INC-01-1.",
+    "retry worker prompt",
+  );
+  clients[1]?.session("thread-1").complete("classification succeeded after retry");
+  await waitFor(() => manager.getWorkItem(work.id).status === "done", "retried work completion");
+  assert.equal(manager.getWorkItem(work.id).result, "classification succeeded after retry");
 });

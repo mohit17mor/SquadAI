@@ -187,6 +187,30 @@ export class CodexAgentManager extends EventEmitter {
     return cloneWorkItem(workItem);
   }
 
+  async retryWorkItem(workItemId: string): Promise<WorkItem> {
+    this.assertOpen();
+    await this.start();
+    const workItem = this.workItems.find((item) => item.id === workItemId);
+    if (!workItem) {
+      throw new CodexAgentManagerError(`Unknown work item: ${workItemId}`);
+    }
+    if (workItem.status !== "failed") {
+      throw new CodexAgentManagerError(`Only failed work items can be retried: ${workItemId}`);
+    }
+    workItem.status = "queued";
+    workItem.result = null;
+    workItem.failureReason = null;
+    workItem.startedAt = null;
+    workItem.completedAt = null;
+    workItem.updatedAt = this.now();
+    await this.recordEvent(workItem.targetAgentId, "work_item_requeued", "Work item requeued.", {
+      workItemId: workItem.id,
+      sensorEventId: workItem.eventId,
+    });
+    await this.persist();
+    return cloneWorkItem(workItem);
+  }
+
   async ingestSensorEvent(input: SensorEventInput): Promise<SensorEvent> {
     this.assertOpen();
     await this.start();
@@ -326,36 +350,20 @@ export class CodexAgentManager extends EventEmitter {
     input: string,
     options: AskOptions,
   ): Promise<SendResult> {
+    let recoveredStaleSession = false;
     try {
-      await this.ensureSession(record);
-      const session = record.session;
-      if (!session) {
-        throw new CodexAgentManagerError(`Agent ${record.definition.id} did not create a session.`);
+      for (;;) {
+        try {
+          return await this.runTurnOnce(record, input, options);
+        } catch (error) {
+          if (!recoveredStaleSession && record.threadId && isMissingRolloutError(error)) {
+            recoveredStaleSession = true;
+            await this.recoverStaleSession(record, error);
+            continue;
+          }
+          throw error;
+        }
       }
-
-      this.setStatus(record, "running");
-      await this.recordEvent(record.definition.id, "turn_started", "Turn started.", {
-        input,
-      });
-
-      const result = await session.ask(input, {
-        ...record.definition.defaultAskOptions,
-        ...options,
-      });
-      this.setStatus(record, "idle");
-      record.lastError = null;
-      await this.recordEvent(record.definition.id, "turn_completed", result.finalText, {
-        threadId: result.threadId,
-        turnStatus: result.turn.status,
-      });
-      await this.persist();
-
-      return {
-        agentId: record.definition.id,
-        threadId: result.threadId,
-        finalText: result.finalText,
-        turn: result.turn,
-      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.setStatus(record, "failed");
@@ -371,6 +379,64 @@ export class CodexAgentManager extends EventEmitter {
       );
       record.activeTurn = null;
     }
+  }
+
+  private async runTurnOnce(
+    record: RuntimeRecord,
+    input: string,
+    options: AskOptions,
+  ): Promise<SendResult> {
+    await this.ensureSession(record);
+    const session = record.session;
+    if (!session) {
+      throw new CodexAgentManagerError(`Agent ${record.definition.id} did not create a session.`);
+    }
+
+    this.setStatus(record, "running");
+    await this.recordEvent(record.definition.id, "turn_started", "Turn started.", {
+      input,
+    });
+
+    const result = await session.ask(input, {
+      ...record.definition.defaultAskOptions,
+      ...options,
+    });
+    this.setStatus(record, "idle");
+    record.lastError = null;
+    await this.recordEvent(record.definition.id, "turn_completed", result.finalText, {
+      threadId: result.threadId,
+      turnStatus: result.turn.status,
+    });
+    await this.persist();
+
+    return {
+      agentId: record.definition.id,
+      threadId: result.threadId,
+      finalText: result.finalText,
+      turn: result.turn,
+    };
+  }
+
+  private async recoverStaleSession(record: RuntimeRecord, error: unknown): Promise<void> {
+    const staleThreadId = record.threadId;
+    if (record.client) {
+      await record.client.close();
+    }
+    record.client = null;
+    record.session = null;
+    record.threadId = null;
+    record.lastError = null;
+    this.setStatus(record, "idle");
+    await this.recordEvent(
+      record.definition.id,
+      "agent_failed",
+      "Stored Codex session was unavailable; starting a fresh session.",
+      {
+        staleThreadId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    await this.persist();
   }
 
   private async ensureSession(record: RuntimeRecord): Promise<void> {
@@ -838,6 +904,11 @@ function cloneWorkItem(workItem: WorkItem): WorkItem {
     ...workItem,
     metadata: cloneRecord(workItem.metadata),
   };
+}
+
+function isMissingRolloutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no rollout found for thread id/i.test(message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

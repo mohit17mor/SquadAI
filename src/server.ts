@@ -104,6 +104,16 @@ export class CommandCenterServer {
         return;
       }
 
+      const workItemRetryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/retry$/);
+      if (request.method === "POST" && workItemRetryMatch?.[1]) {
+        const workItem = await this.options.manager.retryWorkItem(
+          decodeURIComponent(workItemRetryMatch[1]),
+        );
+        this.kickAutomation();
+        this.json(response, { workItem });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/automation/tick") {
         const body = await readJson(request);
         const result = await this.options.manager.runAutomationCycle(parseRouterAgentId(body));
