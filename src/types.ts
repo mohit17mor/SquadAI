@@ -6,6 +6,8 @@ export type AgentEventType =
   | "approval_requested"
   | "approval_resolved"
   | "approval_auto_approved"
+  | "codex_item_completed"
+  | "codex_thread_compacted"
   | "sensor_event_ingested"
   | "sensor_event_routed"
   | "sensor_event_failed"
@@ -178,6 +180,7 @@ export type CodexControlClientLike = {
 
 export type CodexSessionLike = {
   threadId: string;
+  on?(event: string, handler: (...args: unknown[]) => void): unknown;
   ask(
     input: string,
     options: Record<string, unknown>,

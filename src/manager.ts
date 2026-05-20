@@ -575,6 +575,7 @@ export class CodexAgentManager extends EventEmitter {
       });
       record.threadId = record.session.threadId;
     }
+    this.attachSessionEvents(record);
 
     this.setStatus(record, "idle");
     record.lastError = null;
@@ -695,6 +696,35 @@ export class CodexAgentManager extends EventEmitter {
     });
 
     return response;
+  }
+
+  private attachSessionEvents(record: RuntimeRecord): void {
+    const session = record.session;
+    if (!session?.on) {
+      return;
+    }
+    session.on("item.completed", (item) => {
+      void this.recordCodexItemCompleted(record.definition.id, session.threadId, item);
+    });
+    session.on("thread.compacted", (params) => {
+      void this.recordEvent(record.definition.id, "codex_thread_compacted", "Thread compacted.", {
+        threadId: session.threadId,
+        params: cloneUnknown(params),
+      });
+    });
+  }
+
+  private async recordCodexItemCompleted(
+    agentId: string,
+    threadId: string,
+    item: unknown,
+  ): Promise<void> {
+    const summary = summarizeCodexItem(item);
+    await this.recordEvent(agentId, "codex_item_completed", summary.title, {
+      threadId,
+      ...summary,
+      item: cloneUnknown(item),
+    });
   }
 
   private findApprovalGrant(agentId: string, request: ApprovalRequest): ApprovalGrant | null {
@@ -1008,6 +1038,53 @@ function sameApprovalGrant(left: ApprovalGrant, right: ApprovalGrant): boolean {
     left.scope === right.scope;
 }
 
+function summarizeCodexItem(item: unknown): {
+  itemType: string;
+  title: string;
+  summary: string;
+  serverName?: string;
+  toolName?: string;
+} {
+  const value = isRecord(item) ? item : {};
+  const itemType = optionalTrimmed(value.type) ?? "item";
+  const serverName = firstTrimmed(value.serverName, value.mcpServerName, value.server);
+  const toolName = firstTrimmed(
+    value.toolName,
+    value.tool,
+    value.name,
+    value.title,
+    isRecord(value.call) ? value.call.name : undefined,
+  );
+  const title = serverName && toolName ? `${serverName}/${toolName}` : toolName ?? itemType;
+  const text = firstTrimmed(value.text, value.message, value.summary, value.status);
+  const summary = text ?? truncateForEvent(JSON.stringify(cloneUnknown(item)));
+  return {
+    itemType,
+    title,
+    summary,
+    ...(serverName ? { serverName } : {}),
+    ...(toolName ? { toolName } : {}),
+  };
+}
+
+function firstTrimmed(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const trimmed = optionalTrimmed(value);
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function truncateForEvent(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 500) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 497)}...`;
+}
+
 function routingDescription(definition: AgentDefinition): string {
   const metadata = definition.metadata ?? {};
   const explicit = optionalTrimmed(metadata.routingDescription) ?? optionalTrimmed(metadata.capabilities);
@@ -1133,6 +1210,10 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
 
 function cloneRecord(value: Record<string, unknown> | undefined): Record<string, unknown> {
   return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : {};
+}
+
+function cloneUnknown<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function cloneSensorEvent(event: SensorEvent): SensorEvent {

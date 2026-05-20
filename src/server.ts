@@ -686,6 +686,10 @@ textarea { resize: vertical; }
 .work-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #f0f6fc; font-weight: 700; }
 .work-detail { color: #c9d1d9; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .work-muted { color: #8b949e; font-size: 11px; }
+.activity-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: min(520px, 80vw); max-width: 720px; }
+.activity-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 12px; }
+.activity-row strong { color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row span { color: #c9d1d9; overflow-wrap: anywhere; }
 .pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
 .pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
@@ -1049,8 +1053,11 @@ function render() {
   const resolvedApprovals = approvalResolutionMap(visibleEvents);
   const workSummaries = summarizeWorkEvents(visibleEvents);
   const workEventIds = new Set(workSummaries.flatMap((summary) => summary.eventIds));
+  const activitySummaries = summarizeActivityEvents(visibleEvents);
+  const activityEventIds = new Set(activitySummaries.flatMap((summary) => summary.eventIds));
   const persistedMessages = visibleEvents
     .filter((event) => !workEventIds.has(event.id))
+    .filter((event) => !activityEventIds.has(event.id))
     .flatMap((event) => eventToMessages(event, {
     hasCompletion,
     hasTurnStarted,
@@ -1063,11 +1070,13 @@ function render() {
       { kind: "status", meta: "", text: "Agent is working", pending: true },
     ]);
   const workingMessage = activeTurnPending && !localMessages.some((item) => item.pending)
+    && !activitySummaries.some((summary) => summary.status === "running")
     ? [{ kind: "status", meta: "", text: "Agent is working", pending: true }]
     : [];
   const rendered = [
     ...persistedMessages,
     ...workSummaries.map(workSummaryToMessage),
+    ...activitySummaries.map(activitySummaryToMessage),
     ...localMessages,
     ...workingMessage,
   ].sort((left, right) => {
@@ -1246,6 +1255,87 @@ function workSummaryToMessage(summary) {
   };
 }
 
+function summarizeActivityEvents(visibleEvents) {
+  const summaries = [];
+  let current = null;
+  for (const event of visibleEvents) {
+    if (event.type === "turn_started") {
+      if (current && current.entries.length) {
+        summaries.push(current);
+      }
+      current = {
+        eventIds: [],
+        entries: [],
+        status: "running",
+        createdAt: event.createdAt,
+        updatedAt: event.createdAt,
+      };
+      continue;
+    }
+    if (event.type === "codex_item_completed") {
+      if (!current) {
+        current = {
+          eventIds: [],
+          entries: [],
+          status: "running",
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+      }
+      current.eventIds.push(event.id);
+      current.updatedAt = event.createdAt;
+      current.entries.push({
+        itemType: String(event.payload?.itemType || "item"),
+        title: String(event.payload?.title || "Codex item"),
+        summary: String(event.payload?.summary || ""),
+      });
+      continue;
+    }
+    if (event.type === "codex_thread_compacted") {
+      if (!current) {
+        current = {
+          eventIds: [],
+          entries: [],
+          status: "running",
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+      }
+      current.eventIds.push(event.id);
+      current.updatedAt = event.createdAt;
+      current.entries.push({
+        itemType: "memory",
+        title: "Thread compacted",
+        summary: "Conversation history was compacted.",
+      });
+      continue;
+    }
+    if (event.type === "turn_completed" || event.type === "turn_failed") {
+      if (current && current.entries.length) {
+        current.status = event.type === "turn_completed" ? "done" : "failed";
+        current.updatedAt = event.createdAt;
+        summaries.push(current);
+        current = null;
+      }
+    }
+  }
+  if (current && current.entries.length) {
+    summaries.push(current);
+  }
+  return summaries;
+}
+
+function activitySummaryToMessage(summary) {
+  return {
+    kind: "activity",
+    meta: "Codex activity",
+    status: summary.status,
+    entries: summary.entries.slice(-8),
+    hiddenCount: Math.max(0, summary.entries.length - 8),
+    time: summary.updatedAt,
+  };
+}
+
 function eventToMessages(event, state) {
   if (event.type === "turn_started") {
     const input = event.payload && event.payload.input ? String(event.payload.input) : "";
@@ -1278,6 +1368,9 @@ function eventToMessages(event, state) {
   if (event.type === "approval_auto_approved") {
     return [];
   }
+  if (event.type === "codex_item_completed" || event.type === "codex_thread_compacted") {
+    return [];
+  }
   if (event.type === "agent_starting") {
     return state.hasTurnStarted || state.hasCompletion
       ? []
@@ -1293,6 +1386,30 @@ function eventToMessages(event, state) {
 }
 
 function renderMessage(message) {
+  if (message.kind === "activity") {
+    const rows = message.entries.map((entry) => \`
+      <div class="activity-row">
+        <strong>\${escapeHtml(entry.itemType)}</strong>
+        <span>\${escapeHtml(entry.title)}\${entry.summary ? " - " + escapeHtml(entry.summary) : ""}</span>
+      </div>
+    \`).join("");
+    const hidden = message.hiddenCount
+      ? \`<div class="work-muted">\${escapeHtml(message.hiddenCount)} earlier events hidden</div>\`
+      : "";
+    return \`
+      <article class="message-row system">
+        <div class="message-meta">\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}</div>
+        <div class="activity-card">
+          <div class="work-title">
+            <span>Activity</span>
+            <span class="status-pill \${escapeAttr(message.status || "running")}">\${escapeHtml(message.status || "running")}</span>
+          </div>
+          \${rows}
+          \${hidden}
+        </div>
+      </article>
+    \`;
+  }
   if (message.kind === "work") {
     const status = message.status || "queued";
     const detail = message.text || message.prompt || "No details yet.";
@@ -1346,7 +1463,13 @@ function approvalText(payload) {
   const params = payload.params && typeof payload.params === "object" ? payload.params : {};
   const tool = approvalToolLabel(params);
   if (tool) {
-    return \`\${kind}\\nTool: \${tool}\\n\${params.message || ""}\`.trim();
+    const paramsText = approvalParamsText(params);
+    return [
+      kind,
+      \`Tool: \${tool}\`,
+      params.message ? String(params.message) : "",
+      paramsText ? \`Params:\\n\${paramsText}\` : "",
+    ].filter(Boolean).join("\\n");
   }
   if (Array.isArray(params.command)) {
     return \`\${kind}\\nCommand: \${params.command.join(" ")}\\nDirectory: \${params.cwd || ""}\`;
@@ -1360,11 +1483,25 @@ function approvalText(payload) {
   return \`\${kind}\\n\${JSON.stringify(params, null, 2)}\`;
 }
 
+function approvalParamsText(params) {
+  const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
+  const toolParams = metadata.tool_params;
+  if (!toolParams || typeof toolParams !== "object") {
+    return "";
+  }
+  return truncateText(JSON.stringify(toolParams, null, 2), 1800);
+}
+
 function approvalToolLabel(params) {
   const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
   const serverName = typeof params.serverName === "string" ? params.serverName : "";
   const toolName = typeof metadata.tool_title === "string" ? metadata.tool_title : "";
   return serverName && toolName ? serverName + "/" + toolName : "";
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value);
+  return text.length <= maxLength ? text : text.slice(0, maxLength - 3) + "...";
 }
 
 function canApproveApprovalForSession(payload) {

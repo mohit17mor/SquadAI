@@ -343,6 +343,11 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /approved-session/);
     assert.match(html, /canApproveApprovalForSession/);
     assert.match(html, /const scope = decision === "approved-session" \? "session" : "once"/);
+    assert.match(html, /approvalParamsText/);
+    assert.match(html, /tool_params/);
+    assert.match(html, /activity-card/);
+    assert.match(html, /summarizeActivityEvents/);
+    assert.match(html, /codex_item_completed/);
     assert.match(html, /summarizeWorkEvents/);
     assert.match(html, /workSummaryToMessage/);
     assert.match(html, /resolveApproval/);

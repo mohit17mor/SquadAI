@@ -42,6 +42,7 @@ class FakeCodexClient {
 
 class FakeCodexSession {
   readonly asks: Array<{ input: string; options: Record<string, unknown> }> = [];
+  private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   pending:
     | {
         input: string;
@@ -51,6 +52,23 @@ class FakeCodexSession {
     | null = null;
 
   constructor(readonly threadId: string) {}
+
+  on(event: string, handler: (...args: unknown[]) => void): this {
+    this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
+    return this;
+  }
+
+  emitItemCompleted(item: Record<string, unknown>): void {
+    for (const handler of this.handlers.get("item.completed") ?? []) {
+      handler(item);
+    }
+  }
+
+  emitThreadCompacted(params: Record<string, unknown>): void {
+    for (const handler of this.handlers.get("thread.compacted") ?? []) {
+      handler(params);
+    }
+  }
 
   async ask(
     input: string,
@@ -632,6 +650,46 @@ test("can approve repeated MCP tool calls for the current agent session", async 
   );
 
   clients[0]?.session("thread-1").complete("done");
+  assert.equal((await send).finalText, "done");
+});
+
+test("records Codex item and compaction events emitted by the session", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "inspect ticket");
+  await waitFor(() => clients.length === 1, "codex activity client");
+  const session = clients[0]?.session("thread-1");
+  assert.ok(session);
+
+  session.emitItemCompleted({
+    type: "mcpToolCall",
+    serverName: "mcp-issue-tracker",
+    toolName: "get_issue",
+    arguments: { ticket_id: "INC-01-1" },
+  });
+  session.emitThreadCompacted({ threadId: "thread-1", reason: "history limit" });
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "codex_item_completed"),
+    "codex item event",
+  );
+  const itemEvent = manager
+    .listEvents("maintenance")
+    .find((event) => event.type === "codex_item_completed");
+  assert.equal(itemEvent?.payload.itemType, "mcpToolCall");
+  assert.equal(itemEvent?.payload.title, "mcp-issue-tracker/get_issue");
+
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "codex_thread_compacted"),
+  );
+
+  session.complete("done");
   assert.equal((await send).finalText, "done");
 });
 
