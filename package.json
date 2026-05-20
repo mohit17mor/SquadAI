@@ -1,0 +1,29 @@
+{
+  "name": "codex-agent-manager",
+  "version": "0.1.0",
+  "description": "Reusable persistent multi-agent session manager built on codex-control.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "codex-agent-manager": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/tsc.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "check": "npm run test",
+    "start": "npm run build && node dist/src/cli.js"
+  },
+  "dependencies": {
+    "codex-control": "file:../codex-control"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "typescript": "^6.0.3"
+  },
+  "license": "UNLICENSED"
+}
