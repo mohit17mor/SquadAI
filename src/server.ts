@@ -590,6 +590,12 @@ textarea { resize: vertical; }
 .approval-actions button[data-approval-action="declined"] { background: #21262d; color: #f85149; }
 .approval-actions button[data-approval-action="declined"]:hover { border-color: #f85149; }
 .approval-resolved { color: #8b949e; font-size: 12px; text-align: right; }
+.work-card { background: #1c2128; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: min(520px, 80vw); max-width: 720px; }
+.work-card.failed { border-color: rgba(248,81,73,.55); }
+.work-card.done { border-color: rgba(63,185,80,.45); }
+.work-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #f0f6fc; font-weight: 700; }
+.work-detail { color: #c9d1d9; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-muted { color: #8b949e; font-size: 11px; }
 .pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
 .pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
@@ -848,7 +854,11 @@ function render() {
   const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
   const activeTurnPending = hasActiveTurnPending(visibleEvents);
   const resolvedApprovals = approvalResolutionMap(visibleEvents);
-  const persistedMessages = visibleEvents.flatMap((event) => eventToMessages(event, {
+  const workSummaries = summarizeWorkEvents(visibleEvents);
+  const workEventIds = new Set(workSummaries.flatMap((summary) => summary.eventIds));
+  const persistedMessages = visibleEvents
+    .filter((event) => !workEventIds.has(event.id))
+    .flatMap((event) => eventToMessages(event, {
     hasCompletion,
     hasTurnStarted,
     resolvedApprovals,
@@ -862,7 +872,14 @@ function render() {
   const workingMessage = activeTurnPending && !localMessages.some((item) => item.pending)
     ? [{ kind: "status", meta: "", text: "Agent is working", pending: true }]
     : [];
-  const rendered = [...persistedMessages, ...localMessages, ...workingMessage];
+  const rendered = [
+    ...persistedMessages,
+    ...workSummaries.map(workSummaryToMessage),
+    ...localMessages,
+    ...workingMessage,
+  ].sort((left, right) => {
+    return Date.parse(left.time || "") - Date.parse(right.time || "");
+  });
   messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
   bindApprovalButtons();
   renderQueues();
@@ -947,6 +964,73 @@ function dedupePendingMessages(visibleEvents) {
   });
 }
 
+function summarizeWorkEvents(visibleEvents) {
+  const summaries = new Map();
+  for (const event of visibleEvents) {
+    const workItemId = event.payload && event.payload.workItemId ? String(event.payload.workItemId) : "";
+    if (!workItemId || !event.type.startsWith("work_item_")) {
+      continue;
+    }
+    const current = summaries.get(workItemId) || {
+      workItemId,
+      eventIds: [],
+      status: "created",
+      title: "Work item",
+      detail: "",
+      createdAt: event.createdAt,
+      updatedAt: event.createdAt,
+    };
+    current.eventIds.push(event.id);
+    current.updatedAt = event.createdAt;
+    if (event.payload && event.payload.sensorEventId) {
+      current.sensorEventId = String(event.payload.sensorEventId);
+    }
+    if (event.type === "work_item_created") {
+      current.status = "queued";
+      current.title = "Work item queued";
+      current.detail = event.payload && event.payload.reason ? String(event.payload.reason) : event.message;
+    }
+    if (event.type === "work_item_requeued") {
+      current.status = "queued";
+      current.title = "Work item requeued";
+      current.detail = event.message;
+    }
+    if (event.type === "work_item_started") {
+      current.status = "running";
+      current.title = "Work item running";
+      current.detail = event.message;
+    }
+    if (event.type === "work_item_completed") {
+      current.status = "done";
+      current.title = "Work item completed";
+      current.detail = event.message;
+    }
+    if (event.type === "work_item_failed") {
+      current.status = "failed";
+      current.title = "Work item failed";
+      current.detail = event.message;
+    }
+    summaries.set(workItemId, current);
+  }
+  return Array.from(summaries.values());
+}
+
+function workSummaryToMessage(summary) {
+  const workItem = workItems.find((item) => item.id === summary.workItemId);
+  const status = workItem ? workItem.status : summary.status;
+  const detail = workItem?.failureReason || workItem?.result || summary.detail || "";
+  return {
+    kind: "work",
+    meta: "Work queue",
+    text: detail,
+    status,
+    workItemId: summary.workItemId,
+    sensorEventId: workItem?.eventId || summary.sensorEventId || "",
+    time: workItem?.updatedAt || summary.updatedAt,
+    prompt: workItem?.prompt || "",
+  };
+}
+
 function eventToMessages(event, state) {
   if (event.type === "turn_started") {
     const input = event.payload && event.payload.input ? String(event.payload.input) : "";
@@ -983,10 +1067,30 @@ function eventToMessages(event, state) {
   if (event.type === "agent_started") {
     return state.hasCompletion ? [] : [{ kind: "system", meta: "", text: "Agent session ready", time: event.createdAt }];
   }
+  if (event.type === "agent_failed" && event.payload && event.payload.staleThreadId) {
+    return [];
+  }
   return [{ kind: "system", meta: "", text: event.type + ": " + event.message, time: event.createdAt }];
 }
 
 function renderMessage(message) {
+  if (message.kind === "work") {
+    const status = message.status || "queued";
+    const detail = message.text || message.prompt || "No details yet.";
+    return \`
+      <article class="message-row system">
+        <div class="message-meta">\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}</div>
+        <div class="work-card \${escapeAttr(status)}">
+          <div class="work-title">
+            <span>\${escapeHtml(message.workItemId || "Work item")}</span>
+            <span class="status-pill \${escapeAttr(status)}">\${escapeHtml(status)}</span>
+          </div>
+          \${message.sensorEventId ? \`<div class="work-muted">From \${escapeHtml(message.sensorEventId)}</div>\` : ""}
+          <div class="work-detail">\${escapeHtml(detail)}</div>
+        </div>
+      </article>
+    \`;
+  }
   if (message.kind === "approval") {
     const resolved = message.resolvedDecision
       ? \`<div class="approval-resolved">Resolved: \${escapeHtml(message.resolvedDecision)}</div>\`
