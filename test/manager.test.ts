@@ -961,6 +961,82 @@ test("sends compact router roster once and omits long worker instructions from e
   await secondRoute;
 });
 
+test("does not resend router roster after manager restart when router thread is resumed", async () => {
+  const stateStore = new MemoryAgentStateStore();
+  const firstClients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "ops-helper",
+        name: "Ops Helper",
+        instructions: "Debug ops tickets.",
+        metadata: {
+          routingDescription: "Helps in debugging ops tickets/issues.",
+        },
+      }),
+    ],
+    stateStore,
+    clientFactory: fakeFactory(firstClients),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1 needs routing.",
+  });
+  const firstRoute = manager.processNextSensorEvent("router");
+  await waitFor(() => firstClients.length === 1, "initial router client");
+  await completeRouterRosterUpdate(firstClients[0], "initial router event prompt");
+  firstClients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-helper",
+      prompt: "Handle INC-01-1.",
+      reason: "Ops ticket.",
+    }),
+  );
+  await firstRoute;
+  await manager.close();
+
+  const resumedClients: FakeCodexClient[] = [];
+  const resumed = new CodexAgentManager({
+    agents: [],
+    stateStore,
+    clientFactory: fakeFactory(resumedClients),
+  });
+  await resumed.start();
+  await resumed.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-2 needs routing.",
+  });
+
+  const secondRoute = resumed.processNextSensorEvent("router");
+  await waitFor(() => resumedClients.length === 1, "resumed router client");
+  assert.deepEqual(resumedClients[0]?.resumeCalls, ["thread-1"]);
+  await waitFor(
+    () => resumedClients[0]?.session("thread-1").pending?.input.includes("INC-01-2") ?? false,
+    "resumed router event prompt",
+  );
+  const resumedPrompt = resumedClients[0]?.session("thread-1").pending?.input ?? "";
+  assert.doesNotMatch(resumedPrompt, /Worker roster update/);
+  assert.match(resumedPrompt, /Use the compact worker roster already provided/);
+  resumedClients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-helper",
+      prompt: "Handle INC-01-2.",
+      reason: "Ops ticket.",
+    }),
+  );
+  await secondRoute;
+  await resumed.close();
+});
+
 test("dispatches queued work to a failed agent so it can recover", async () => {
   const clients: FakeCodexClient[] = [];
   const manager = new CodexAgentManager({

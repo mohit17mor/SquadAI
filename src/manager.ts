@@ -65,6 +65,11 @@ type RouterRosterEntry = {
   metadata: Record<string, unknown>;
 };
 
+type RouterRosterState = {
+  digest: string;
+  threadId: string;
+};
+
 export class CodexAgentManager extends EventEmitter {
   private readonly definitions = new Map<string, AgentDefinition>();
   private readonly records = new Map<string, RuntimeRecord>();
@@ -80,7 +85,7 @@ export class CodexAgentManager extends EventEmitter {
   private nextApprovalId = 1;
   private nextSensorEventId = 1;
   private nextWorkItemId = 1;
-  private routerRosterDigests = new Map<string, string>();
+  private routerRosterStates = new Map<string, RouterRosterState>();
   private started: Promise<void> | null = null;
   private closed = false;
 
@@ -355,13 +360,13 @@ export class CodexAgentManager extends EventEmitter {
       let result: SendResult | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         await this.ensureRouterRosterCurrent(router);
-        const expectedRosterDigest = this.routerRosterDigests.get(router.definition.id) ?? null;
+        const expectedRosterDigest = this.currentRouterRosterDigest(router.definition.id);
         result = await this.sendToAgent(
           router.definition.id,
           this.routerPrompt(event, expectedRosterDigest),
           { timeoutMs: 600_000 },
         );
-        if (this.routerRosterDigests.get(router.definition.id) === expectedRosterDigest) {
+        if (this.currentRouterRosterDigest(router.definition.id) === expectedRosterDigest) {
           break;
         }
         result = null;
@@ -529,7 +534,7 @@ export class CodexAgentManager extends EventEmitter {
     record.session = null;
     record.threadId = null;
     record.lastError = null;
-    this.routerRosterDigests.delete(record.definition.id);
+    this.routerRosterStates.delete(record.definition.id);
     this.setStatus(record, "idle");
     await this.recordEvent(
       record.definition.id,
@@ -609,6 +614,16 @@ export class CodexAgentManager extends EventEmitter {
         continue;
       }
       record.threadId = persisted.threadId ?? null;
+      if (
+        persisted.routerRosterDigest
+        && persisted.routerRosterThreadId
+        && persisted.threadId === persisted.routerRosterThreadId
+      ) {
+        this.routerRosterStates.set(agentId, {
+          digest: persisted.routerRosterDigest,
+          threadId: persisted.routerRosterThreadId,
+        });
+      }
       record.status = normalizeRecoveredStatus(persisted.status);
       record.createdAt = persisted.createdAt ?? record.createdAt;
       record.updatedAt = persisted.updatedAt ?? record.updatedAt;
@@ -798,7 +813,8 @@ export class CodexAgentManager extends EventEmitter {
 
   private async ensureRouterRosterCurrent(router: RuntimeRecord): Promise<void> {
     const { digest, roster } = this.workerRoster(router.definition.id);
-    if (this.routerRosterDigests.get(router.definition.id) === digest) {
+    const current = this.routerRosterStates.get(router.definition.id);
+    if (current?.digest === digest && current.threadId === router.threadId) {
       return;
     }
     await this.sendToAgent(
@@ -806,7 +822,18 @@ export class CodexAgentManager extends EventEmitter {
       this.routerRosterPrompt(roster, digest),
       { timeoutMs: 600_000 },
     );
-    this.routerRosterDigests.set(router.definition.id, digest);
+    if (!router.threadId) {
+      throw new CodexAgentManagerError("Router session did not have a thread id after roster update.");
+    }
+    this.routerRosterStates.set(router.definition.id, {
+      digest,
+      threadId: router.threadId,
+    });
+    await this.persist();
+  }
+
+  private currentRouterRosterDigest(routerAgentId: string): string | null {
+    return this.routerRosterStates.get(routerAgentId)?.digest ?? null;
   }
 
   private routerRosterPrompt(roster: RouterRosterEntry[], digest: string): string {
@@ -853,7 +880,7 @@ export class CodexAgentManager extends EventEmitter {
   }
 
   private invalidateRouterRosters(): void {
-    this.routerRosterDigests.clear();
+    this.routerRosterStates.clear();
   }
 
   private validateRoutingDecision(decision: RoutingDecision, routerAgentId: string): void {
@@ -944,6 +971,11 @@ export class CodexAgentManager extends EventEmitter {
       };
       if (record.threadId) {
         persisted.threadId = record.threadId;
+      }
+      const routerRoster = this.routerRosterStates.get(record.definition.id);
+      if (routerRoster && routerRoster.threadId === record.threadId) {
+        persisted.routerRosterDigest = routerRoster.digest;
+        persisted.routerRosterThreadId = routerRoster.threadId;
       }
       agents[record.definition.id] = persisted;
     }

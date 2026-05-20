@@ -153,6 +153,8 @@ export type RoutingDecision = {
 export type PersistedAgentState = {
   definition?: AgentDefinition;
   threadId?: string;
+  routerRosterDigest?: string;
+  routerRosterThreadId?: string;
   status?: AgentStatus;
   createdAt?: string;
   updatedAt?: string;
