@@ -268,7 +268,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
     assert.match(html, /<option value="router">Router<\/option>/);
-    assert.match(html, /body\.metadata = \{ role: body\.role \}/);
+    assert.match(html, /Routing description/);
+    assert.match(html, /metadata\.routingDescription = body\.routingDescription/);
     assert.match(html, /approval-card/);
     assert.match(html, /resolveApproval/);
     assert.match(html, /data-approval-action="approved"/);

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { MemoryAgentStateStore } from "./stateStore.js";
@@ -45,6 +46,13 @@ type PendingApproval = {
   settled: boolean;
 };
 
+type RouterRosterEntry = {
+  id: string;
+  name: string;
+  capabilities: string;
+  metadata: Record<string, unknown>;
+};
+
 export class CodexAgentManager extends EventEmitter {
   private readonly definitions = new Map<string, AgentDefinition>();
   private readonly records = new Map<string, RuntimeRecord>();
@@ -59,6 +67,7 @@ export class CodexAgentManager extends EventEmitter {
   private nextApprovalId = 1;
   private nextSensorEventId = 1;
   private nextWorkItemId = 1;
+  private routerRosterDigests = new Map<string, string>();
   private started: Promise<void> | null = null;
   private closed = false;
 
@@ -258,11 +267,23 @@ export class CodexAgentManager extends EventEmitter {
     await this.persist();
 
     try {
-      const result = await this.sendToAgent(
-        router.definition.id,
-        this.routerPrompt(event, router.definition.id),
-        { timeoutMs: 600_000 },
-      );
+      let result: SendResult | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await this.ensureRouterRosterCurrent(router);
+        const expectedRosterDigest = this.routerRosterDigests.get(router.definition.id) ?? null;
+        result = await this.sendToAgent(
+          router.definition.id,
+          this.routerPrompt(event, expectedRosterDigest),
+          { timeoutMs: 600_000 },
+        );
+        if (this.routerRosterDigests.get(router.definition.id) === expectedRosterDigest) {
+          break;
+        }
+        result = null;
+      }
+      if (!result) {
+        throw new CodexAgentManagerError("Router session changed while routing; retry the event.");
+      }
       const decision = parseRoutingDecision(result.finalText);
       this.validateRoutingDecision(decision, router.definition.id);
       const workItem = await this.createWorkItemFromDecision(event, router.definition.id, decision);
@@ -426,6 +447,7 @@ export class CodexAgentManager extends EventEmitter {
     record.session = null;
     record.threadId = null;
     record.lastError = null;
+    this.routerRosterDigests.delete(record.definition.id);
     this.setStatus(record, "idle");
     await this.recordEvent(
       record.definition.id,
@@ -613,31 +635,60 @@ export class CodexAgentManager extends EventEmitter {
     );
   }
 
-  private routerPrompt(event: SensorEvent, routerAgentId: string): string {
-    const roster = Array.from(this.records.values())
-      .filter((record) => record.definition.id !== routerAgentId)
-      .map((record) => {
-        return {
-          id: record.definition.id,
-          name: record.definition.name,
-          status: record.status,
-          description: record.definition.instructions,
-          metadata: record.definition.metadata ?? {},
-        };
-      });
+  private async ensureRouterRosterCurrent(router: RuntimeRecord): Promise<void> {
+    const { digest, roster } = this.workerRoster(router.definition.id);
+    if (this.routerRosterDigests.get(router.definition.id) === digest) {
+      return;
+    }
+    await this.sendToAgent(
+      router.definition.id,
+      this.routerRosterPrompt(roster, digest),
+      { timeoutMs: 600_000 },
+    );
+    this.routerRosterDigests.set(router.definition.id, digest);
+  }
 
+  private routerRosterPrompt(roster: RouterRosterEntry[], digest: string): string {
     return [
-      "You are the routing agent for a multi-agent Codex command center.",
-      "Read the incoming sensor event and choose the best existing worker agent.",
+      "Worker roster update for the multi-agent Codex command center.",
+      `Roster digest: ${digest}`,
+      "Remember this compact worker roster for future routing decisions in this session.",
+      "Use only these worker ids when assigning work. Do not assign work to yourself.",
+      "The manager may queue work for busy or failed workers, so route by capability, not transient availability.",
+      "",
+      "Worker roster:",
+      JSON.stringify(roster, null, 2),
+      "",
+      "Reply exactly: roster updated",
+    ].join("\n");
+  }
+
+  private routerPrompt(event: SensorEvent, rosterDigest: string | null): string {
+    return [
+      "You are routing one sensor event for the multi-agent Codex command center.",
+      `Use the compact worker roster already provided in this session${rosterDigest ? ` with digest ${rosterDigest}` : ""}.`,
       "Return only a JSON object with targetAgentId, prompt, and reason.",
       "Do not solve the task yourself. Do not assign work to yourself.",
       "",
-      "Available worker agents:",
-      JSON.stringify(roster, null, 2),
-      "",
-      "Sensor event:",
+      "Sensor event to route:",
       JSON.stringify(event, null, 2),
     ].join("\n");
+  }
+
+  private workerRoster(routerAgentId: string): { digest: string; roster: RouterRosterEntry[] } {
+    const roster = Array.from(this.records.values())
+      .filter((record) => record.definition.id !== routerAgentId)
+      .filter((record) => record.definition.metadata?.role !== "router")
+      .map((record) => ({
+        id: record.definition.id,
+        name: record.definition.name,
+        capabilities: routingDescription(record.definition),
+        metadata: routingMetadata(record.definition.metadata),
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const serialized = JSON.stringify(roster);
+    const digest = createHash("sha256").update(serialized).digest("hex").slice(0, 16);
+    return { digest, roster };
   }
 
   private validateRoutingDecision(decision: RoutingDecision, routerAgentId: string): void {
@@ -792,6 +843,35 @@ function validateDefinition(definition: AgentDefinition): void {
   if (!definition.instructions.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have instructions.`);
   }
+}
+
+function routingDescription(definition: AgentDefinition): string {
+  const metadata = definition.metadata ?? {};
+  const explicit = optionalTrimmed(metadata.routingDescription) ?? optionalTrimmed(metadata.capabilities);
+  if (explicit) {
+    return truncateForRouting(explicit);
+  }
+  const firstLine = definition.instructions
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return truncateForRouting(firstLine ?? definition.name);
+}
+
+function routingMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  const cloned = cloneRecord(metadata);
+  delete cloned.role;
+  delete cloned.routingDescription;
+  delete cloned.capabilities;
+  return cloned;
+}
+
+function truncateForRouting(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 240) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 237)}...`;
 }
 
 function normalizeRecoveredStatus(status: AgentStatus | undefined): AgentStatus {

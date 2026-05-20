@@ -106,6 +106,21 @@ async function waitFor(condition: () => boolean, label: string): Promise<void> {
   assert.fail(`timed out waiting for ${label}`);
 }
 
+async function completeRouterRosterUpdate(
+  client: FakeCodexClient | undefined,
+  nextPromptLabel: string,
+): Promise<void> {
+  await waitFor(
+    () => client?.session("thread-1").pending?.input.includes("Worker roster update") ?? false,
+    "router roster update",
+  );
+  client?.session("thread-1").complete("roster updated");
+  await waitFor(
+    () => client?.session("thread-1").pending?.input.includes("Sensor event to route") ?? false,
+    nextPromptLabel,
+  );
+}
+
 function agent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   return {
     id: "maintenance",
@@ -444,6 +459,7 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
 
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 1, "router client");
+  await completeRouterRosterUpdate(clients[0], "router event prompt");
   assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /platform-123/);
   assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /storage/);
   clients[0]?.session("thread-1").complete(
@@ -467,6 +483,87 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   clients[1]?.session("thread-1").complete("storage investigation complete");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
+});
+
+test("sends compact router roster once and omits long worker instructions from event prompts", async () => {
+  const clients: FakeCodexClient[] = [];
+  const longInstructions = [
+    "You are an on-call ticket intake agent.",
+    "For this POC, do not investigate, update tickets, run commands, or contact anyone.",
+    "Treat tickets as instance-maintenance candidates when DbInstances are unavailable.",
+  ].join("\n");
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "ops-debugger",
+        name: "Ops Debugger",
+        instructions: longInstructions,
+        metadata: {
+          routingDescription: "Classifies issue tracker tickets for instance-maintenance candidates.",
+        },
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1 needs classification.",
+  });
+  const firstRoute = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 1, "router client");
+
+  const rosterPrompt = clients[0]?.session("thread-1").pending?.input ?? "";
+  assert.match(rosterPrompt, /Worker roster update/);
+  assert.match(rosterPrompt, /Classifies issue tracker tickets for instance-maintenance candidates/);
+  assert.doesNotMatch(rosterPrompt, /For this POC, do not investigate/);
+
+  clients[0]?.session("thread-1").complete("roster updated");
+  await waitFor(
+    () => clients[0]?.session("thread-1").pending?.input.includes("Sensor event to route") ?? false,
+    "first route event prompt",
+  );
+  const firstEventPrompt = clients[0]?.session("thread-1").pending?.input ?? "";
+  assert.doesNotMatch(firstEventPrompt, /Available worker agents/);
+  assert.doesNotMatch(firstEventPrompt, /For this POC, do not investigate/);
+  clients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-debugger",
+      prompt: "Classify INC-01-1.",
+      reason: "issue tracker classification.",
+    }),
+  );
+  await firstRoute;
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-2 needs classification.",
+  });
+  const secondRoute = manager.processNextSensorEvent("router");
+  await waitFor(
+    () => clients[0]?.session("thread-1").pending?.input.includes("INC-01-2") ?? false,
+    "second route event prompt",
+  );
+  const secondEventPrompt = clients[0]?.session("thread-1").pending?.input ?? "";
+  assert.doesNotMatch(secondEventPrompt, /Worker roster update/);
+  assert.doesNotMatch(secondEventPrompt, /Available worker agents/);
+  assert.doesNotMatch(secondEventPrompt, /Classifies issue tracker tickets for instance-maintenance candidates/);
+  clients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-debugger",
+      prompt: "Classify INC-01-2.",
+      reason: "issue tracker classification.",
+    }),
+  );
+  await secondRoute;
 });
 
 test("dispatches queued work to a failed agent so it can recover", async () => {
@@ -504,6 +601,7 @@ test("dispatches queued work to a failed agent so it can recover", async () => {
   });
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 2, "router client");
+  await completeRouterRosterUpdate(clients[1], "router event prompt for failed worker");
   clients[1]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",
@@ -550,6 +648,7 @@ test("requeues failed work items so they can be dispatched again", async () => {
   });
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 1, "router client for retry test");
+  await completeRouterRosterUpdate(clients[0], "router event prompt for retry test");
   clients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",

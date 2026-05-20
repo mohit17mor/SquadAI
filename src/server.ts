@@ -446,6 +446,7 @@ function renderHtml(title: string): string {
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
           <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
+          <label>Routing description<textarea name="routingDescription" rows="2" placeholder="Short capability summary for the router"></textarea></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
@@ -688,10 +689,18 @@ async function createAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const body = Object.fromEntries(form.entries());
+  const metadata = {};
   if (body.role) {
-    body.metadata = { role: body.role };
+    metadata.role = body.role;
+  }
+  if (body.routingDescription) {
+    metadata.routingDescription = body.routingDescription;
+  }
+  if (Object.keys(metadata).length) {
+    body.metadata = metadata;
   }
   delete body.role;
+  delete body.routingDescription;
   const button = document.getElementById("create-agent-button");
   button.disabled = true;
   button.textContent = "Creating";
