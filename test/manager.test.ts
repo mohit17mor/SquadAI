@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CodexAgentManager,
+  MemoryAgentStateStore,
   type AgentDefinition,
   type CodexControlClientContext,
   type CodexControlClientFactory,
@@ -163,6 +164,29 @@ function mcpApprovalRequest(query: string) {
         codex_approval_kind: "mcp_tool_call",
         persist: ["session"],
         tool_title: "search_issues",
+        tool_params: { tql: query },
+      },
+      requestedSchema: { type: "object", properties: {} },
+    },
+    proposedDecision: "declined" as const,
+    proposedResult: { action: "decline", content: null, _meta: null },
+  };
+}
+
+function mcpApprovalRequestWithoutToolTitle(query: string) {
+  return {
+    timestamp: "2026-05-20T00:00:00.000Z",
+    kind: "mcp_elicitation" as const,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      serverName: "mcp-issue-tracker",
+      mode: "form",
+      message: 'Allow the mcp-issue-tracker MCP server to run tool "search_issues"?',
+      _meta: {
+        codex_approval_kind: "mcp_tool_call",
+        persist: ["session"],
         tool_params: { tql: query },
       },
       requestedSchema: { type: "object", properties: {} },
@@ -601,6 +625,56 @@ test("surfaces approval requests and resolves them through the manager", async (
   assert.equal((await send).finalText, "tests passed");
 });
 
+test("continues approval ids from persisted approval events", async () => {
+  const clients: FakeCodexClient[] = [];
+  const contexts: CodexControlClientContext[] = [];
+  const stateStore = new MemoryAgentStateStore({
+    events: [
+      {
+        id: 1,
+        agentId: "maintenance",
+        type: "approval_resolved",
+        message: "Approval approved.",
+        payload: { approvalId: "approval-4", decision: "approved" },
+        createdAt: "2026-05-20T00:00:00.000Z",
+      },
+    ],
+  });
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: contextualFakeFactory(clients, contexts),
+    stateStore,
+  });
+
+  const send = manager.sendToAgent("maintenance", "run tests");
+  await waitFor(() => contexts.length === 1, "client context");
+  assert.ok(contexts[0]?.approvalHandler, "expected approval handler");
+
+  const approval = contexts[0].approvalHandler({
+    timestamp: "2026-05-20T00:00:00.000Z",
+    kind: "command_approval",
+    method: "item/commandExecution/requestApproval",
+    params: { command: ["npm", "test"], cwd: "/tmp/ops-poc" },
+    proposedDecision: "declined",
+    proposedResult: { decision: "decline" },
+  });
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "approval_requested"),
+    "approval requested event",
+  );
+  const requested = manager
+    .listEvents("maintenance")
+    .filter((event) => event.type === "approval_requested")
+    .at(-1);
+  assert.equal(requested?.payload.approvalId, "approval-5");
+
+  await manager.resolveApproval(String(requested?.payload.approvalId), "approved");
+  assert.deepEqual(await approval, { decision: "approved" });
+  clients[0]?.session("thread-1").complete("tests passed");
+  assert.equal((await send).finalText, "tests passed");
+});
+
 test("can approve repeated MCP tool calls for the current agent session", async () => {
   const clients: FakeCodexClient[] = [];
   const contexts: CodexControlClientContext[] = [];
@@ -647,6 +721,53 @@ test("can approve repeated MCP tool calls for the current agent session", async 
     manager
       .listEvents("maintenance")
       .some((event) => event.type === "approval_auto_approved"),
+  );
+
+  clients[0]?.session("thread-1").complete("done");
+  assert.equal((await send).finalText, "done");
+});
+
+test("can approve repeated MCP tool calls when tool name is only in the elicitation message", async () => {
+  const clients: FakeCodexClient[] = [];
+  const contexts: CodexControlClientContext[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: contextualFakeFactory(clients, contexts),
+  });
+
+  const send = manager.sendToAgent("maintenance", "search tickets");
+  await waitFor(() => contexts.length === 1, "mcp approval context");
+  const context = contexts[0];
+  assert.ok(context);
+  const firstApproval = context.approvalHandler(mcpApprovalRequestWithoutToolTitle("one"));
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "approval_requested"),
+    "first mcp approval requested",
+  );
+  const requested = manager
+    .listEvents("maintenance")
+    .find((event) => event.type === "approval_requested");
+
+  await manager.resolveApproval(
+    String(requested?.payload.approvalId),
+    "approved",
+    "safe read-only lookup",
+    "session",
+  );
+  assert.deepEqual(await firstApproval, {
+    decision: "approved",
+    reason: "safe read-only lookup",
+  });
+
+  const secondApproval = await context.approvalHandler(mcpApprovalRequestWithoutToolTitle("two"));
+  assert.deepEqual(secondApproval, {
+    decision: "approved",
+    reason: "Approved by session rule for mcp-issue-tracker/search_issues.",
+  });
+  assert.equal(
+    manager.listEvents("maintenance").filter((event) => event.type === "approval_requested").length,
+    1,
   );
 
   clients[0]?.session("thread-1").complete("done");
@@ -952,4 +1073,45 @@ test("requeues failed work items so they can be dispatched again", async () => {
   clients[1]?.session("thread-1").complete("classification succeeded after retry");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "retried work completion");
   assert.equal(manager.getWorkItem(work.id).result, "classification succeeded after retry");
+});
+
+test("recovers running work items as failed after manager restart", async () => {
+  const stateStore = new MemoryAgentStateStore({
+    workItems: [
+      {
+        id: "work-9",
+        eventId: "sensor-9",
+        targetAgentId: "maintenance",
+        prompt: "Investigate ticket.",
+        status: "running",
+        routerAgentId: "router",
+        reason: "matched worker",
+        result: null,
+        failureReason: null,
+        metadata: {},
+        createdAt: "2026-05-20T00:00:00.000Z",
+        updatedAt: "2026-05-20T00:01:00.000Z",
+        startedAt: "2026-05-20T00:01:00.000Z",
+        completedAt: null,
+      },
+    ],
+  });
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(),
+    stateStore,
+    clock: () => new Date("2026-05-20T00:02:00.000Z"),
+  });
+
+  await manager.start();
+
+  const recovered = manager.getWorkItem("work-9");
+  assert.equal(recovered.status, "failed");
+  assert.equal(recovered.failureReason, "Manager restarted while work item was running.");
+  assert.equal(recovered.completedAt, "2026-05-20T00:02:00.000Z");
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "work_item_failed" && event.payload.recovered === true),
+  );
 });

@@ -1495,8 +1495,16 @@ function approvalParamsText(params) {
 function approvalToolLabel(params) {
   const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
   const serverName = typeof params.serverName === "string" ? params.serverName : "";
-  const toolName = typeof metadata.tool_title === "string" ? metadata.tool_title : "";
+  const toolName = typeof metadata.tool_title === "string"
+    ? metadata.tool_title
+    : toolNameFromApprovalMessage(params.message);
   return serverName && toolName ? serverName + "/" + toolName : "";
+}
+
+function toolNameFromApprovalMessage(value) {
+  if (typeof value !== "string") return "";
+  const match = value.match(/\\btool\\s+"([^"]+)"/i);
+  return match && match[1] ? match[1].trim() : "";
 }
 
 function truncateText(value, maxLength) {

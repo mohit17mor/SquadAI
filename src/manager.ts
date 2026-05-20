@@ -595,6 +595,7 @@ export class CodexAgentManager extends EventEmitter {
     this.workItems = (state.workItems ?? []).map(cloneWorkItem);
     this.nextEventId =
       this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
+    this.nextApprovalId = nextApprovalEventId(this.events);
     this.nextSensorEventId = nextNumericId(this.sensorEvents, "sensor");
     this.nextWorkItemId = nextNumericId(this.workItems, "work");
 
@@ -613,7 +614,24 @@ export class CodexAgentManager extends EventEmitter {
       record.updatedAt = persisted.updatedAt ?? record.updatedAt;
       record.lastError = persisted.lastError ?? null;
     }
+    await this.recoverInterruptedWorkItems();
     await this.persist();
+  }
+
+  private async recoverInterruptedWorkItems(): Promise<void> {
+    const interrupted = this.workItems.filter((item) => item.status === "running");
+    for (const workItem of interrupted) {
+      const now = this.now();
+      workItem.status = "failed";
+      workItem.failureReason = "Manager restarted while work item was running.";
+      workItem.completedAt = now;
+      workItem.updatedAt = now;
+      await this.recordEvent(workItem.targetAgentId, "work_item_failed", workItem.failureReason, {
+        workItemId: workItem.id,
+        sensorEventId: workItem.eventId,
+        recovered: true,
+      });
+    }
   }
 
   private snapshot(record: RuntimeRecord): AgentSnapshot {
@@ -1013,7 +1031,8 @@ function approvalGrantForRequest(
   const params = isRecord(request.params) ? request.params : {};
   const metadata = isRecord(params._meta) ? params._meta : {};
   const serverName = optionalTrimmed(params.serverName);
-  const toolName = optionalTrimmed(metadata.tool_title);
+  const toolName =
+    optionalTrimmed(metadata.tool_title) ?? toolNameFromApprovalMessage(params.message);
   const threadId = optionalTrimmed(params.threadId);
   if (!serverName || !toolName || !threadId) {
     return null;
@@ -1244,4 +1263,23 @@ function nextNumericId(items: Array<{ id: string }>, prefix: string): number {
     const match = item.id.match(new RegExp(`^${prefix}-(\\d+)$`));
     return match?.[1] ? Math.max(max, Number(match[1])) : max;
   }, 0) + 1;
+}
+
+function nextApprovalEventId(events: AgentEvent[]): number {
+  return events.reduce((max, event) => {
+    const approvalId = event.payload?.approvalId;
+    if (typeof approvalId !== "string") {
+      return max;
+    }
+    const match = approvalId.match(/^approval-(\d+)$/);
+    return match?.[1] ? Math.max(max, Number(match[1])) : max;
+  }, 0) + 1;
+}
+
+function toolNameFromApprovalMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const match = value.match(/\btool\s+"([^"]+)"/i);
+  return match?.[1]?.trim() || undefined;
 }
