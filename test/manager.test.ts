@@ -415,3 +415,58 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
 });
+
+test("dispatches queued work to a failed agent so it can recover", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "ops-debugger",
+        name: "Ops Debugger",
+        instructions: "You classify issue tracker tickets.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const failing = manager.sendToAgent("ops-debugger", "fail once");
+  await waitFor(() => clients.length === 1, "failed worker client");
+  clients[0]?.session("thread-1").pending?.reject(new Error("temporary failure"));
+  if (clients[0]) {
+    clients[0].session("thread-1").pending = null;
+  }
+  await assert.rejects(failing, /temporary failure/);
+  assert.equal(manager.getAgent("ops-debugger").status, "failed");
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1 needs classification.",
+  });
+  const route = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 2, "router client");
+  clients[1]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "ops-debugger",
+      prompt: "Classify INC-01-1.",
+      reason: "Ops ticket classification.",
+    }),
+  );
+  const work = await route;
+
+  await manager.dispatchQueuedWork();
+  assert.equal(manager.getWorkItem(work.id).status, "running");
+  await waitFor(
+    () => clients[0]?.session("thread-1").pending?.input === "Classify INC-01-1.",
+    "recovery worker prompt",
+  );
+  clients[0]?.session("thread-1").complete("classification recovered");
+  await waitFor(() => manager.getWorkItem(work.id).status === "done", "recovered work");
+  assert.equal(manager.getAgent("ops-debugger").status, "idle");
+});

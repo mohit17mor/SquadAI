@@ -647,7 +647,7 @@ export class CodexAgentManager extends EventEmitter {
   }
 
   private isAgentAvailable(record: RuntimeRecord): boolean {
-    return !record.activeTurn && record.status === "idle";
+    return !record.activeTurn && (record.status === "idle" || record.status === "failed");
   }
 
   private async persist(): Promise<void> {
