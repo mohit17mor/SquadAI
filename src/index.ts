@@ -15,6 +15,7 @@ export type {
   ApprovalHandler,
   ApprovalRequest,
   ApprovalResponse,
+  ApprovalScope,
   CodexAgentManagerOptions,
   CodexControlClientContext,
   CodexControlClientFactory,

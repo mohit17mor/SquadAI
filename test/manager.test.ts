@@ -131,6 +131,29 @@ function agent(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
   };
 }
 
+function mcpApprovalRequest(query: string) {
+  return {
+    timestamp: "2026-05-20T00:00:00.000Z",
+    kind: "mcp_elicitation" as const,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      serverName: "mcp-issue-tracker",
+      mode: "form",
+      _meta: {
+        codex_approval_kind: "mcp_tool_call",
+        persist: ["session"],
+        tool_title: "search_issues",
+        tool_params: { tql: query },
+      },
+      requestedSchema: { type: "object", properties: {} },
+    },
+    proposedDecision: "declined" as const,
+    proposedResult: { action: "decline", content: null, _meta: null },
+  };
+}
+
 test("starts named agents lazily and sends plain text to the matching session", async () => {
   const clients: FakeCodexClient[] = [];
   const manager = new CodexAgentManager({
@@ -558,6 +581,58 @@ test("surfaces approval requests and resolves them through the manager", async (
 
   clients[0]?.session("thread-1").complete("tests passed");
   assert.equal((await send).finalText, "tests passed");
+});
+
+test("can approve repeated MCP tool calls for the current agent session", async () => {
+  const clients: FakeCodexClient[] = [];
+  const contexts: CodexControlClientContext[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: contextualFakeFactory(clients, contexts),
+  });
+
+  const send = manager.sendToAgent("maintenance", "search tickets");
+  await waitFor(() => contexts.length === 1, "mcp approval context");
+  const context = contexts[0];
+  assert.ok(context);
+  const firstApproval = context.approvalHandler(mcpApprovalRequest("one"));
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "approval_requested"),
+    "first mcp approval requested",
+  );
+  const requested = manager
+    .listEvents("maintenance")
+    .find((event) => event.type === "approval_requested");
+
+  await manager.resolveApproval(
+    String(requested?.payload.approvalId),
+    "approved",
+    "safe read-only lookup",
+    "session",
+  );
+  assert.deepEqual(await firstApproval, {
+    decision: "approved",
+    reason: "safe read-only lookup",
+  });
+
+  const secondApproval = await context.approvalHandler(mcpApprovalRequest("two"));
+  assert.deepEqual(secondApproval, {
+    decision: "approved",
+    reason: "Approved by session rule for mcp-issue-tracker/search_issues.",
+  });
+  assert.equal(
+    manager.listEvents("maintenance").filter((event) => event.type === "approval_requested").length,
+    1,
+  );
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "approval_auto_approved"),
+  );
+
+  clients[0]?.session("thread-1").complete("done");
+  assert.equal((await send).finalText, "done");
 });
 
 test("ingests sensor events, routes them through a router agent, and dispatches work", async () => {

@@ -6,6 +6,7 @@ import type {
   AgentDefinition,
   AgentDefinitionUpdate,
   AgentEvent,
+  ApprovalScope,
   AskOptions,
   SensorEventInput,
 } from "./types.js";
@@ -396,13 +397,14 @@ function parseAskOptions(body: unknown): AskOptions {
 
 function parseApprovalResolution(
   body: unknown,
-): ["approved" | "declined", string | undefined] {
+): ["approved" | "declined", string | undefined, ApprovalScope | undefined] {
   const value = asRecord(body);
   const decision = optionalEnum(value.decision, ["approved", "declined"]);
   if (!decision) {
     throw new Error("Field decision must be approved or declined.");
   }
-  return [decision, optionalString(value.reason)];
+  const scope = optionalEnum(value.scope, ["once", "session"]);
+  return [decision, optionalString(value.reason), scope];
 }
 
 function parseSensorEvent(body: unknown): SensorEventInput {
@@ -1266,10 +1268,14 @@ function eventToMessages(event, state) {
       text: approvalText(event.payload || {}),
       approvalId,
       resolvedDecision: resolved && resolved.payload ? String(resolved.payload.decision || "") : "",
+      canApproveSession: canApproveApprovalForSession(event.payload || {}),
       time: event.createdAt,
     }];
   }
   if (event.type === "approval_resolved") {
+    return [];
+  }
+  if (event.type === "approval_auto_approved") {
     return [];
   }
   if (event.type === "agent_starting") {
@@ -1309,6 +1315,7 @@ function renderMessage(message) {
       ? \`<div class="approval-resolved">Resolved: \${escapeHtml(message.resolvedDecision)}</div>\`
       : \`<div class="approval-actions">
           <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="declined">Decline</button>
+          \${message.canApproveSession ? \`<button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="approved-session">Approve Tool</button>\` : ""}
           <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="approved">Approve</button>
         </div>\`;
     return \`
@@ -1337,6 +1344,10 @@ function renderMessage(message) {
 function approvalText(payload) {
   const kind = String(payload.kind || "approval");
   const params = payload.params && typeof payload.params === "object" ? payload.params : {};
+  const tool = approvalToolLabel(params);
+  if (tool) {
+    return \`\${kind}\\nTool: \${tool}\\n\${params.message || ""}\`.trim();
+  }
   if (Array.isArray(params.command)) {
     return \`\${kind}\\nCommand: \${params.command.join(" ")}\\nDirectory: \${params.cwd || ""}\`;
   }
@@ -1349,6 +1360,22 @@ function approvalText(payload) {
   return \`\${kind}\\n\${JSON.stringify(params, null, 2)}\`;
 }
 
+function approvalToolLabel(params) {
+  const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
+  const serverName = typeof params.serverName === "string" ? params.serverName : "";
+  const toolName = typeof metadata.tool_title === "string" ? metadata.tool_title : "";
+  return serverName && toolName ? serverName + "/" + toolName : "";
+}
+
+function canApproveApprovalForSession(payload) {
+  const params = payload.params && typeof payload.params === "object" ? payload.params : {};
+  const metadata = params._meta && typeof params._meta === "object" ? params._meta : {};
+  return payload.method === "mcpServer/elicitation/request" &&
+    Array.isArray(metadata.persist) &&
+    metadata.persist.includes("session") &&
+    Boolean(approvalToolLabel(params));
+}
+
 function bindApprovalButtons() {
   for (const button of messages.querySelectorAll("[data-approval-action]")) {
     button.addEventListener("click", () => {
@@ -1359,6 +1386,8 @@ function bindApprovalButtons() {
 
 async function resolveApproval(approvalId, decision) {
   if (!approvalId || !decision) return;
+  const approved = decision === "approved" || decision === "approved-session";
+  const scope = decision === "approved-session" ? "session" : "once";
   for (const button of messages.querySelectorAll("[data-approval-id]")) {
     if (button.dataset.approvalId === approvalId) {
       button.disabled = true;
@@ -1367,7 +1396,7 @@ async function resolveApproval(approvalId, decision) {
   const response = await fetch("/api/approvals/" + encodeURIComponent(approvalId), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision: approved ? "approved" : "declined", scope }),
   });
   const body = await response.json();
   if (!response.ok) {
@@ -1375,7 +1404,7 @@ async function resolveApproval(approvalId, decision) {
     await refresh();
     return;
   }
-  toast(decision === "approved" ? "Approval sent" : "Approval declined");
+  toast(approved ? (scope === "session" ? "Tool approved for session" : "Approval sent") : "Approval declined");
   await refresh();
 }
 

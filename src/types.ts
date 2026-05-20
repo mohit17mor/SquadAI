@@ -5,6 +5,7 @@ export type AgentEventType =
   | "agent_started"
   | "approval_requested"
   | "approval_resolved"
+  | "approval_auto_approved"
   | "sensor_event_ingested"
   | "sensor_event_routed"
   | "sensor_event_failed"
@@ -62,6 +63,8 @@ export type ApprovalResponse = {
   reason?: string;
   result?: unknown;
 };
+
+export type ApprovalScope = "once" | "session";
 
 export type ApprovalHandler = (
   request: ApprovalRequest,

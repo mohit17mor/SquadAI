@@ -14,6 +14,7 @@ import type {
   AskOptions,
   ApprovalRequest,
   ApprovalResponse,
+  ApprovalScope,
   CodexAgentManagerOptions,
   CodexControlClientFactory,
   CodexControlClientLike,
@@ -47,6 +48,16 @@ type PendingApproval = {
   settled: boolean;
 };
 
+type ApprovalGrant = {
+  agentId: string;
+  method: string;
+  serverName: string;
+  toolName: string;
+  threadId: string;
+  scope: Exclude<ApprovalScope, "once">;
+  createdAt: string;
+};
+
 type RouterRosterEntry = {
   id: string;
   name: string;
@@ -64,6 +75,7 @@ export class CodexAgentManager extends EventEmitter {
   private sensorEvents: SensorEvent[] = [];
   private workItems: WorkItem[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
+  private approvalGrants: ApprovalGrant[] = [];
   private nextEventId = 1;
   private nextApprovalId = 1;
   private nextSensorEventId = 1;
@@ -210,6 +222,7 @@ export class CodexAgentManager extends EventEmitter {
     approvalId: string,
     decision: ApprovalResponse["decision"],
     reason?: string,
+    scope: ApprovalScope = "once",
   ): Promise<AgentEvent> {
     this.assertOpen();
     await this.start();
@@ -220,6 +233,13 @@ export class CodexAgentManager extends EventEmitter {
 
     pending.settled = true;
     this.pendingApprovals.delete(approvalId);
+    if (decision === "approved" && scope === "session") {
+      const grant = approvalGrantForRequest(pending.agentId, pending.request, this.now(), scope);
+      if (grant) {
+        this.approvalGrants = this.approvalGrants.filter((item) => !sameApprovalGrant(item, grant));
+        this.approvalGrants.push(grant);
+      }
+    }
     const response: ApprovalResponse = reason ? { decision, reason } : { decision };
     pending.resolve(response);
     return this.recordEvent(
@@ -230,6 +250,7 @@ export class CodexAgentManager extends EventEmitter {
         approvalId,
         decision,
         reason,
+        scope,
         kind: pending.request.kind,
         method: pending.request.method,
       },
@@ -639,6 +660,21 @@ export class CodexAgentManager extends EventEmitter {
     agentId: string,
     request: ApprovalRequest,
   ): Promise<ApprovalResponse> {
+    const grant = this.findApprovalGrant(agentId, request);
+    if (grant) {
+      await this.recordEvent(agentId, "approval_auto_approved", "Approval auto-approved.", {
+        kind: request.kind,
+        method: request.method,
+        scope: grant.scope,
+        serverName: grant.serverName,
+        toolName: grant.toolName,
+        threadId: grant.threadId,
+      });
+      return {
+        decision: "approved",
+        reason: `Approved by ${grant.scope} rule for ${grant.serverName}/${grant.toolName}.`,
+      };
+    }
     const approvalId = `approval-${this.nextApprovalId++}`;
     const response = new Promise<ApprovalResponse>((resolve) => {
       this.pendingApprovals.set(approvalId, {
@@ -659,6 +695,14 @@ export class CodexAgentManager extends EventEmitter {
     });
 
     return response;
+  }
+
+  private findApprovalGrant(agentId: string, request: ApprovalRequest): ApprovalGrant | null {
+    const requested = approvalGrantForRequest(agentId, request, this.now(), "session");
+    if (!requested) {
+      return null;
+    }
+    return this.approvalGrants.find((grant) => sameApprovalGrant(grant, requested)) ?? null;
   }
 
   private async resolvePendingApprovalsForAgent(
@@ -925,6 +969,43 @@ function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition):
     previous.approvalPolicy !== next.approvalPolicy ||
     previous.sandbox !== next.sandbox ||
     JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);
+}
+
+function approvalGrantForRequest(
+  agentId: string,
+  request: ApprovalRequest,
+  createdAt: string,
+  scope: Exclude<ApprovalScope, "once">,
+): ApprovalGrant | null {
+  if (request.method !== "mcpServer/elicitation/request") {
+    return null;
+  }
+  const params = isRecord(request.params) ? request.params : {};
+  const metadata = isRecord(params._meta) ? params._meta : {};
+  const serverName = optionalTrimmed(params.serverName);
+  const toolName = optionalTrimmed(metadata.tool_title);
+  const threadId = optionalTrimmed(params.threadId);
+  if (!serverName || !toolName || !threadId) {
+    return null;
+  }
+  return {
+    agentId,
+    method: request.method,
+    serverName,
+    toolName,
+    threadId,
+    scope,
+    createdAt,
+  };
+}
+
+function sameApprovalGrant(left: ApprovalGrant, right: ApprovalGrant): boolean {
+  return left.agentId === right.agentId &&
+    left.method === right.method &&
+    left.serverName === right.serverName &&
+    left.toolName === right.toolName &&
+    left.threadId === right.threadId &&
+    left.scope === right.scope;
 }
 
 function routingDescription(definition: AgentDefinition): string {
