@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CodexAgentManager,
   type AgentDefinition,
+  type CodexControlClientContext,
   type CodexControlClientFactory,
 } from "../src/index.js";
 
@@ -75,6 +76,19 @@ class FakeCodexSession {
 
 function fakeFactory(clients: FakeCodexClient[] = []): CodexControlClientFactory {
   return () => {
+    const client = new FakeCodexClient();
+    clients.push(client);
+    return client;
+  };
+}
+
+function contextualFakeFactory(
+  clients: FakeCodexClient[] = [],
+  contexts: CodexControlClientContext[] = [],
+): CodexControlClientFactory {
+  return (context) => {
+    assert.ok(context, "expected client context");
+    contexts.push(context);
     const client = new FakeCodexClient();
     clients.push(client);
     return client;
@@ -286,4 +300,53 @@ test("creates agents dynamically and persists their definitions", async () => {
 
   assert.equal(resumed.getAgent("dynamic").name, "Dynamic Agent");
   assert.equal(resumed.getAgent("dynamic").cwd, "/tmp/ops-poc");
+});
+
+test("surfaces approval requests and resolves them through the manager", async () => {
+  const clients: FakeCodexClient[] = [];
+  const contexts: CodexControlClientContext[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: contextualFakeFactory(clients, contexts),
+  });
+
+  const send = manager.sendToAgent("maintenance", "run tests");
+  await waitFor(() => contexts.length === 1, "client context");
+  assert.ok(contexts[0]?.approvalHandler, "expected approval handler");
+
+  const approval = contexts[0].approvalHandler({
+    timestamp: "2026-05-20T00:00:00.000Z",
+    kind: "command_approval",
+    method: "item/commandExecution/requestApproval",
+    params: { command: ["npm", "test"], cwd: "/tmp/ops-poc" },
+    proposedDecision: "declined",
+    proposedResult: { decision: "decline" },
+  });
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "approval_requested"),
+    "approval requested event",
+  );
+  const requested = manager
+    .listEvents("maintenance")
+    .find((event) => event.type === "approval_requested");
+  assert.equal(requested?.payload.kind, "command_approval");
+  assert.deepEqual(requested?.payload.params, {
+    command: ["npm", "test"],
+    cwd: "/tmp/ops-poc",
+  });
+
+  await manager.resolveApproval(String(requested?.payload.approvalId), "approved", "looks safe");
+  assert.deepEqual(await approval, {
+    decision: "approved",
+    reason: "looks safe",
+  });
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "approval_resolved" && event.payload.decision === "approved"),
+  );
+
+  clients[0]?.session("thread-1").complete("tests passed");
+  assert.equal((await send).finalText, "tests passed");
 });

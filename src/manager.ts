@@ -10,6 +10,8 @@ import type {
   AgentStateStore,
   AgentStatus,
   AskOptions,
+  ApprovalRequest,
+  ApprovalResponse,
   CodexAgentManagerOptions,
   CodexControlClientFactory,
   CodexControlClientLike,
@@ -31,6 +33,14 @@ type RuntimeRecord = {
   activeTurn: Promise<SendResult> | null;
 };
 
+type PendingApproval = {
+  approvalId: string;
+  agentId: string;
+  request: ApprovalRequest;
+  resolve: (response: ApprovalResponse) => void;
+  settled: boolean;
+};
+
 export class CodexAgentManager extends EventEmitter {
   private readonly definitions = new Map<string, AgentDefinition>();
   private readonly records = new Map<string, RuntimeRecord>();
@@ -38,7 +48,9 @@ export class CodexAgentManager extends EventEmitter {
   private readonly clientFactory: CodexControlClientFactory;
   private readonly clock: () => Date;
   private events: AgentEvent[] = [];
+  private pendingApprovals = new Map<string, PendingApproval>();
   private nextEventId = 1;
+  private nextApprovalId = 1;
   private started: Promise<void> | null = null;
   private closed = false;
 
@@ -113,6 +125,36 @@ export class CodexAgentManager extends EventEmitter {
     return turn;
   }
 
+  async resolveApproval(
+    approvalId: string,
+    decision: ApprovalResponse["decision"],
+    reason?: string,
+  ): Promise<AgentEvent> {
+    this.assertOpen();
+    await this.start();
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending || pending.settled) {
+      throw new CodexAgentManagerError(`Unknown or resolved approval: ${approvalId}`);
+    }
+
+    pending.settled = true;
+    this.pendingApprovals.delete(approvalId);
+    const response: ApprovalResponse = reason ? { decision, reason } : { decision };
+    pending.resolve(response);
+    return this.recordEvent(
+      pending.agentId,
+      "approval_resolved",
+      decision === "approved" ? "Approval approved." : "Approval declined.",
+      {
+        approvalId,
+        decision,
+        reason,
+        kind: pending.request.kind,
+        method: pending.request.method,
+      },
+    );
+  }
+
   async close(): Promise<void> {
     if (this.closed) {
       return;
@@ -167,6 +209,11 @@ export class CodexAgentManager extends EventEmitter {
       await this.persist();
       throw error;
     } finally {
+      await this.resolvePendingApprovalsForAgent(
+        record.definition.id,
+        "declined",
+        "Turn ended before approval was answered.",
+      );
       record.activeTurn = null;
     }
   }
@@ -179,7 +226,10 @@ export class CodexAgentManager extends EventEmitter {
     this.setStatus(record, "starting");
     await this.recordEvent(record.definition.id, "agent_starting", "Agent session starting.", {});
 
-    record.client = this.clientFactory();
+    record.client = this.clientFactory({
+      agentId: record.definition.id,
+      approvalHandler: (request) => this.handleApprovalRequest(record.definition.id, request),
+    });
     if (record.threadId) {
       record.session = await record.client.resumeSession(record.threadId);
     } else {
@@ -267,6 +317,54 @@ export class CodexAgentManager extends EventEmitter {
     this.emit("event", event);
     await this.persist();
     return event;
+  }
+
+  private async handleApprovalRequest(
+    agentId: string,
+    request: ApprovalRequest,
+  ): Promise<ApprovalResponse> {
+    const approvalId = `approval-${this.nextApprovalId++}`;
+    const response = new Promise<ApprovalResponse>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        approvalId,
+        agentId,
+        request,
+        resolve,
+        settled: false,
+      });
+    });
+    await this.recordEvent(agentId, "approval_requested", "Approval requested.", {
+      approvalId,
+      kind: request.kind,
+      method: request.method,
+      params: request.params,
+      proposedDecision: request.proposedDecision,
+      proposedResult: request.proposedResult,
+    });
+
+    return response;
+  }
+
+  private async resolvePendingApprovalsForAgent(
+    agentId: string,
+    decision: ApprovalResponse["decision"],
+    reason: string,
+  ): Promise<void> {
+    const approvals = Array.from(this.pendingApprovals.values()).filter(
+      (approval) => approval.agentId === agentId && !approval.settled,
+    );
+    for (const approval of approvals) {
+      approval.settled = true;
+      this.pendingApprovals.delete(approval.approvalId);
+      approval.resolve({ decision, reason });
+      await this.recordEvent(agentId, "approval_resolved", "Approval resolved.", {
+        approvalId: approval.approvalId,
+        decision,
+        reason,
+        kind: approval.request.kind,
+        method: approval.request.method,
+      });
+    }
   }
 
   private async persist(): Promise<void> {

@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   CodexAgentManager,
+  type CodexControlClientContext,
   createCommandCenterServer,
   type CodexControlClientFactory,
 } from "../src/index.js";
@@ -41,8 +42,42 @@ class ImmediateCodexSession {
   }
 }
 
+class PendingCodexClient {
+  async startSession(): Promise<PendingCodexSession> {
+    return new PendingCodexSession("thread-1");
+  }
+
+  async resumeSession(threadId: string): Promise<PendingCodexSession> {
+    return new PendingCodexSession(threadId);
+  }
+
+  async close(): Promise<void> {}
+}
+
+class PendingCodexSession {
+  constructor(readonly threadId: string) {}
+
+  async ask(): Promise<{
+    finalText: string;
+    threadId: string;
+    turn: Record<string, unknown>;
+  }> {
+    return new Promise(() => {});
+  }
+}
+
 function immediateFactory(): CodexControlClientFactory {
   return () => new ImmediateCodexClient();
+}
+
+function approvalCapturingFactory(
+  contexts: CodexControlClientContext[],
+): CodexControlClientFactory {
+  return (context) => {
+    assert.ok(context, "expected client context");
+    contexts.push(context);
+    return new PendingCodexClient();
+  };
 }
 
 test("command center API creates agents, lists them, sends messages, and exposes events", async () => {
@@ -114,6 +149,61 @@ test("command center API derives an agent id from name when id is omitted", asyn
   }
 });
 
+test("command center API resolves pending approvals", async () => {
+  const contexts: CodexControlClientContext[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      {
+        id: "maintenance",
+        name: "Maintenance Debugger",
+        cwd: "/tmp/ops-poc",
+        instructions: "You specialize in maintenance debugging.",
+      },
+    ],
+    clientFactory: approvalCapturingFactory(contexts),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    void manager.sendToAgent("maintenance", "run tests").catch(() => {});
+    await waitFor(() => contexts.length === 1, "approval context");
+    const approval = contexts[0]?.approvalHandler({
+      timestamp: "2026-05-20T00:00:00.000Z",
+      kind: "command_approval",
+      method: "item/commandExecution/requestApproval",
+      params: { command: ["npm", "test"], cwd: "/tmp/ops-poc" },
+      proposedDecision: "declined",
+      proposedResult: { decision: "decline" },
+    });
+
+    await waitFor(
+      () => manager.listEvents("maintenance").some((event) => event.type === "approval_requested"),
+      "approval requested",
+    );
+    const event = manager
+      .listEvents("maintenance")
+      .find((item) => item.type === "approval_requested");
+
+    const resolved = await jsonFetch(
+      `http://127.0.0.1:${server.port}/api/approvals/${event?.payload.approvalId}`,
+      {
+        method: "POST",
+        body: { decision: "approved", reason: "confirmed from UI" },
+      },
+    );
+
+    assert.equal(resolved.approval.payload.decision, "approved");
+    assert.deepEqual(await approval, {
+      decision: "approved",
+      reason: "confirmed from UI",
+    });
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center UI exposes chat-style messaging affordances", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -136,6 +226,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /deriveAgentId/);
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
+    assert.match(html, /approval-card/);
+    assert.match(html, /resolveApproval/);
+    assert.match(html, /data-approval-action="approved"/);
     assert.match(html, /hasActiveTurnPending/);
     assert.match(html, /turnStartedAt > turnFinishedAt/);
     assert.match(html, /event\.startedAt >= item\.createdAt/);
@@ -149,6 +242,17 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     await manager.close();
   }
 });
+
+async function waitFor(condition: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(`timed out waiting for ${label}`);
+}
 
 test("command center inline script parses as JavaScript", async () => {
   const manager = new CodexAgentManager({

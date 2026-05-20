@@ -3,6 +3,8 @@ export type AgentStatus = "idle" | "starting" | "running" | "failed" | "stopped"
 export type AgentEventType =
   | "agent_starting"
   | "agent_started"
+  | "approval_requested"
+  | "approval_resolved"
   | "turn_started"
   | "turn_completed"
   | "turn_failed"
@@ -33,6 +35,25 @@ export type AskOptions = {
     reason?: string;
   };
 };
+
+export type ApprovalRequest = {
+  timestamp: string;
+  kind: "command_approval" | "file_approval" | "permission_approval" | "mcp_elicitation";
+  method: string;
+  params: unknown;
+  proposedDecision: "approved" | "declined" | "failed";
+  proposedResult: unknown;
+};
+
+export type ApprovalResponse = {
+  decision: "approved" | "declined";
+  reason?: string;
+  result?: unknown;
+};
+
+export type ApprovalHandler = (
+  request: ApprovalRequest,
+) => ApprovalResponse | Promise<ApprovalResponse>;
 
 export type AgentSnapshot = {
   id: string;
@@ -101,7 +122,14 @@ export type CodexSessionLike = {
   }>;
 };
 
-export type CodexControlClientFactory = () => CodexControlClientLike;
+export type CodexControlClientContext = {
+  agentId: string;
+  approvalHandler: ApprovalHandler;
+};
+
+export type CodexControlClientFactory = (
+  context?: CodexControlClientContext,
+) => CodexControlClientLike;
 
 export type CodexAgentManagerOptions = {
   agents: AgentDefinition[];

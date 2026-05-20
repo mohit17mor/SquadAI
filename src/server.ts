@@ -77,6 +77,17 @@ export class CommandCenterServer {
         return;
       }
 
+      const approvalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)$/);
+      if (request.method === "POST" && approvalMatch?.[1]) {
+        const body = await readJson(request);
+        const approval = await this.options.manager.resolveApproval(
+          decodeURIComponent(approvalMatch[1]),
+          ...parseApprovalResolution(body),
+        );
+        this.json(response, { approval });
+        return;
+      }
+
       const messageMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/messages$/);
       if (request.method === "POST" && messageMatch?.[1]) {
         const body = await readJson(request);
@@ -251,6 +262,17 @@ function parseAskOptions(body: unknown): AskOptions {
   return parsed;
 }
 
+function parseApprovalResolution(
+  body: unknown,
+): ["approved" | "declined", string | undefined] {
+  const value = asRecord(body);
+  const decision = optionalEnum(value.decision, ["approved", "declined"]);
+  if (!decision) {
+    throw new Error("Field decision must be approved or declined.");
+  }
+  return [decision, optionalString(value.reason)];
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Expected a JSON object.");
@@ -412,6 +434,14 @@ textarea { resize: vertical; }
 .message-bubble.user { background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
 .message-bubble.agent { background: #1c2128; border: 1px solid #30363d; border-bottom-left-radius: 4px; }
 .message-bubble.system { background: transparent; color: #d29922; padding: 3px 8px; font-size: 12px; }
+.approval-card { background: #1c2128; border: 1px solid #d29922; border-radius: 8px; padding: 12px; display: grid; gap: 9px; min-width: min(520px, 80vw); box-shadow: 0 10px 24px rgba(0,0,0,.22); }
+.approval-title { color: #f0f6fc; font-weight: 700; }
+.approval-detail { color: #c9d1d9; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.approval-actions button { padding: 7px 10px; border-radius: 7px; }
+.approval-actions button[data-approval-action="declined"] { background: #21262d; color: #f85149; }
+.approval-actions button[data-approval-action="declined"]:hover { border-color: #f85149; }
+.approval-resolved { color: #8b949e; font-size: 12px; text-align: right; }
 .pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
 .pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
@@ -617,9 +647,11 @@ function render() {
   const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
   const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
   const activeTurnPending = hasActiveTurnPending(visibleEvents);
+  const resolvedApprovals = approvalResolutionMap(visibleEvents);
   const persistedMessages = visibleEvents.flatMap((event) => eventToMessages(event, {
     hasCompletion,
     hasTurnStarted,
+    resolvedApprovals,
   }));
   const localMessages = pendingMessages
     .filter((item) => !selectedAgentId || item.agentId === selectedAgentId)
@@ -632,7 +664,18 @@ function render() {
     : [];
   const rendered = [...persistedMessages, ...localMessages, ...workingMessage];
   messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
+  bindApprovalButtons();
   scrollDown();
+}
+
+function approvalResolutionMap(visibleEvents) {
+  const map = new Map();
+  for (const event of visibleEvents) {
+    if (event.type === "approval_resolved" && event.payload && event.payload.approvalId) {
+      map.set(String(event.payload.approvalId), event);
+    }
+  }
+  return map;
 }
 
 function hasActiveTurnPending(visibleEvents) {
@@ -677,6 +720,21 @@ function eventToMessages(event, state) {
   if (event.type === "turn_failed") {
     return [{ kind: "system", meta: "", text: "Agent failed: " + event.message, time: event.createdAt }];
   }
+  if (event.type === "approval_requested") {
+    const approvalId = event.payload && event.payload.approvalId ? String(event.payload.approvalId) : "";
+    const resolved = state.resolvedApprovals.get(approvalId);
+    return [{
+      kind: "approval",
+      meta: "Approval needed",
+      text: approvalText(event.payload || {}),
+      approvalId,
+      resolvedDecision: resolved && resolved.payload ? String(resolved.payload.decision || "") : "",
+      time: event.createdAt,
+    }];
+  }
+  if (event.type === "approval_resolved") {
+    return [];
+  }
   if (event.type === "agent_starting") {
     return state.hasTurnStarted || state.hasCompletion
       ? []
@@ -689,6 +747,24 @@ function eventToMessages(event, state) {
 }
 
 function renderMessage(message) {
+  if (message.kind === "approval") {
+    const resolved = message.resolvedDecision
+      ? \`<div class="approval-resolved">Resolved: \${escapeHtml(message.resolvedDecision)}</div>\`
+      : \`<div class="approval-actions">
+          <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="declined">Decline</button>
+          <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="approved">Approve</button>
+        </div>\`;
+    return \`
+      <article class="message-row system">
+        <div class="message-meta">\${escapeHtml(message.meta)}</div>
+        <div class="approval-card">
+          <div class="approval-title">Approval requested</div>
+          <div class="approval-detail">\${escapeHtml(message.text)}</div>
+          \${resolved}
+        </div>
+      </article>
+    \`;
+  }
   if (message.pending) {
     return \`<div class="message-row status"><div class="pending-message">\${escapeHtml(message.text)}</div></div>\`;
   }
@@ -699,6 +775,51 @@ function renderMessage(message) {
       <div class="message-bubble \${escapeAttr(message.kind)}">\${escapeHtml(message.text)}</div>
     </article>
   \`;
+}
+
+function approvalText(payload) {
+  const kind = String(payload.kind || "approval");
+  const params = payload.params && typeof payload.params === "object" ? payload.params : {};
+  if (Array.isArray(params.command)) {
+    return \`\${kind}\\nCommand: \${params.command.join(" ")}\\nDirectory: \${params.cwd || ""}\`;
+  }
+  if (params.permissions) {
+    return \`\${kind}\\nPermissions: \${JSON.stringify(params.permissions, null, 2)}\`;
+  }
+  if (params.message) {
+    return \`\${kind}\\n\${params.message}\`;
+  }
+  return \`\${kind}\\n\${JSON.stringify(params, null, 2)}\`;
+}
+
+function bindApprovalButtons() {
+  for (const button of messages.querySelectorAll("[data-approval-action]")) {
+    button.addEventListener("click", () => {
+      void resolveApproval(button.dataset.approvalId, button.dataset.approvalAction);
+    });
+  }
+}
+
+async function resolveApproval(approvalId, decision) {
+  if (!approvalId || !decision) return;
+  for (const button of messages.querySelectorAll("[data-approval-id]")) {
+    if (button.dataset.approvalId === approvalId) {
+      button.disabled = true;
+    }
+  }
+  const response = await fetch("/api/approvals/" + encodeURIComponent(approvalId), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    toast(body.error || "Approval failed", "error");
+    await refresh();
+    return;
+  }
+  toast(decision === "approved" ? "Approval sent" : "Approval declined");
+  await refresh();
 }
 
 function agentName(agentId) {
