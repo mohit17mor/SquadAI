@@ -16,6 +16,8 @@ export type AgentEventType =
   | "turn_started"
   | "turn_completed"
   | "turn_failed"
+  | "agent_updated"
+  | "agent_deleted"
   | "agent_failed"
   | "agent_stopped";
 
@@ -31,6 +33,8 @@ export type AgentDefinition = {
   dynamicTools?: unknown[];
   metadata?: Record<string, unknown>;
 };
+
+export type AgentDefinitionUpdate = Partial<Omit<AgentDefinition, "id">>;
 
 export type AskOptions = {
   timeoutMs?: number;
@@ -67,6 +71,7 @@ export type AgentSnapshot = {
   id: string;
   name: string;
   cwd: string;
+  instructions: string;
   status: AgentStatus;
   threadId: string | null;
   model: string | null;

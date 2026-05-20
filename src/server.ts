@@ -2,7 +2,13 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
 
 import type { CodexAgentManager } from "./manager.js";
-import type { AgentDefinition, AgentEvent, AskOptions, SensorEventInput } from "./types.js";
+import type {
+  AgentDefinition,
+  AgentDefinitionUpdate,
+  AgentEvent,
+  AskOptions,
+  SensorEventInput,
+} from "./types.js";
 
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
@@ -82,6 +88,23 @@ export class CommandCenterServer {
       if (request.method === "POST" && url.pathname === "/api/agents") {
         const body = await readJson(request);
         const agent = await this.options.manager.createAgent(parseAgentDefinition(body));
+        this.json(response, { agent });
+        return;
+      }
+
+      const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+      if (agentMatch?.[1] && request.method === "PATCH") {
+        const body = await readJson(request);
+        const agent = await this.options.manager.updateAgent(
+          decodeURIComponent(agentMatch[1]),
+          parseAgentUpdate(body),
+        );
+        this.json(response, { agent });
+        return;
+      }
+
+      if (agentMatch?.[1] && request.method === "DELETE") {
+        const agent = await this.options.manager.deleteAgent(decodeURIComponent(agentMatch[1]));
         this.json(response, { agent });
         return;
       }
@@ -284,6 +307,49 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   return definition;
 }
 
+function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
+  const value = asRecord(body);
+  const update: AgentDefinitionUpdate = {};
+  const name = optionalString(value.name);
+  const cwd = optionalString(value.cwd);
+  const instructions = optionalString(value.instructions);
+  const model = optionalString(value.model);
+  const approvalPolicy = optionalEnum(value.approvalPolicy, [
+    "untrusted",
+    "on-failure",
+    "on-request",
+    "never",
+  ]);
+  const sandbox = optionalEnum(value.sandbox, [
+    "read-only",
+    "workspace-write",
+    "danger-full-access",
+  ]);
+  const metadata = asOptionalRecord(value.metadata);
+  if (name) {
+    update.name = name;
+  }
+  if (cwd) {
+    update.cwd = cwd;
+  }
+  if (instructions) {
+    update.instructions = instructions;
+  }
+  if (model !== undefined) {
+    update.model = model;
+  }
+  if (approvalPolicy) {
+    update.approvalPolicy = approvalPolicy;
+  }
+  if (sandbox) {
+    update.sandbox = sandbox;
+  }
+  if (metadata) {
+    update.metadata = metadata;
+  }
+  return update;
+}
+
 function deriveAgentId(name: string): string {
   const id = name
     .toLowerCase()
@@ -475,6 +541,22 @@ function renderHtml(title: string): string {
           <span id="agent-panel-count">0</span>
         </div>
         <div id="agents" class="agents"></div>
+        <form id="edit-agent-form" class="agent-editor">
+          <div class="section-head">
+            <h2>Agent Settings</h2>
+            <span id="edit-agent-status">select one</span>
+          </div>
+          <label>Name<input name="name" autocomplete="off"></label>
+          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
+          <label>Working directory<input name="cwd" autocomplete="off"></label>
+          <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
+          <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
+          <div class="field-hint">Saving developer instructions or session settings starts a fresh Codex session on the next turn.</div>
+          <div class="agent-actions">
+            <button type="submit">Save Changes</button>
+            <button id="delete-agent-button" type="button" class="danger">Delete</button>
+          </div>
+        </form>
       </section>
       <section id="panel-events" class="panel-view queue-panel">
         <div class="section-head">
@@ -525,6 +607,8 @@ button:hover { background: #388bfd; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.secondary { background: #161b22; color: #e6edf3; }
 button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
+button.danger { background: #21262d; color: #f85149; }
+button.danger:hover { border-color: #f85149; background: #2d1517; }
 .shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
 .command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 20px; border-bottom: 1px solid #30363d; }
@@ -552,6 +636,10 @@ input:focus, textarea:focus, select:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
 .field-hint { margin: -3px 0 10px; color: #6e7681; font-size: 11px; line-height: 1.4; }
 .agents { display: grid; gap: 8px; }
+.agent-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid #30363d; }
+.agent-editor.disabled { opacity: .55; pointer-events: none; }
+.agent-actions { display: flex; gap: 8px; justify-content: space-between; }
+.agent-actions button { flex: 1; }
 .empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
 .agent { width: 100%; background: #0d1117; color: #e6edf3; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; border: 1px solid #30363d; }
 .agent.active { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88,166,255,.3) inset; }
@@ -642,9 +730,14 @@ const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
 const agentIdHint = document.getElementById("agent-id-hint");
+const editAgentForm = document.getElementById("edit-agent-form");
+const editAgentStatus = document.getElementById("edit-agent-status");
+const deleteAgentButton = document.getElementById("delete-agent-button");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
 let agentIdTouched = false;
+let editAgentLoadedId = null;
+let editAgentDirty = false;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 for (const button of document.querySelectorAll("[data-panel]")) {
@@ -655,6 +748,11 @@ for (const button of document.querySelectorAll("[data-panel]")) {
 }
 const agentForm = document.getElementById("agent-form");
 agentForm.addEventListener("submit", createAgent);
+editAgentForm.addEventListener("submit", updateSelectedAgent);
+editAgentForm.addEventListener("input", () => {
+  editAgentDirty = true;
+});
+deleteAgentButton.addEventListener("click", deleteSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
 agentNameInput.addEventListener("input", updateDerivedAgentId);
 agentIdInput.addEventListener("input", () => {
@@ -739,18 +837,7 @@ async function createAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const body = Object.fromEntries(form.entries());
-  const metadata = {};
-  if (body.role) {
-    metadata.role = body.role;
-  }
-  if (body.routingDescription) {
-    metadata.routingDescription = body.routingDescription;
-  }
-  if (Object.keys(metadata).length) {
-    body.metadata = metadata;
-  }
-  delete body.role;
-  delete body.routingDescription;
+  applyRoleMetadata(body);
   const button = document.getElementById("create-agent-button");
   button.disabled = true;
   button.textContent = "Creating";
@@ -769,6 +856,8 @@ async function createAgent(event) {
   upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
   activePanel = "agents";
+  editAgentDirty = false;
+  editAgentLoadedId = null;
   event.currentTarget.reset();
   agentIdTouched = false;
   updateDerivedAgentId();
@@ -776,6 +865,72 @@ async function createAgent(event) {
   await refreshEvents();
   render();
   toast("Agent created");
+}
+
+function applyRoleMetadata(body, existingMetadata = {}, forceMetadata = false) {
+  const metadata = { ...existingMetadata };
+  delete metadata.role;
+  delete metadata.routingDescription;
+  if (body.role) {
+    metadata.role = body.role;
+  }
+  if (body.routingDescription) {
+    metadata.routingDescription = body.routingDescription;
+  }
+  if (Object.keys(metadata).length || forceMetadata) {
+    body.metadata = metadata;
+  }
+  delete body.role;
+  delete body.routingDescription;
+}
+
+async function updateSelectedAgent(event) {
+  event.preventDefault();
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected) return;
+  const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+  applyRoleMetadata(body, selected.metadata || {}, true);
+  const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    toast(result.error || "Failed to update agent", "error");
+    return;
+  }
+  upsertAgent(result.agent);
+  editAgentDirty = false;
+  editAgentLoadedId = null;
+  await refreshAgents();
+  await refreshEvents();
+  render();
+  toast(result.agent.threadId ? "Agent updated" : "Agent updated; next turn starts fresh");
+}
+
+async function deleteSelectedAgent() {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected) return;
+  if (!window.confirm("Delete agent " + selected.name + "? Completed history stays in events, but the agent will be removed.")) {
+    return;
+  }
+  const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
+    method: "DELETE",
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    toast(result.error || "Failed to delete agent", "error");
+    return;
+  }
+  agents = agents.filter((agent) => agent.id !== selected.id);
+  selectedAgentId = agents[0]?.id || null;
+  editAgentDirty = false;
+  editAgentLoadedId = null;
+  await refreshAgents();
+  await refreshEvents();
+  render();
+  toast("Agent deleted");
 }
 
 function deriveAgentId(name) {
@@ -842,12 +997,14 @@ function render() {
   for (const button of agentList.querySelectorAll(".agent")) {
     button.addEventListener("click", () => {
       selectedAgentId = button.dataset.agentId;
+      editAgentDirty = false;
       render();
     });
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
+  renderAgentEditor(selected);
   const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : events;
   dedupePendingMessages(visibleEvents);
   const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
@@ -884,6 +1041,28 @@ function render() {
   bindApprovalButtons();
   renderQueues();
   scrollDown();
+}
+
+function renderAgentEditor(selected) {
+  editAgentForm.classList.toggle("disabled", !selected);
+  if (!selected) {
+    editAgentStatus.textContent = "select one";
+    editAgentForm.reset();
+    editAgentLoadedId = null;
+    editAgentDirty = false;
+    return;
+  }
+  editAgentStatus.textContent = selected.status;
+  if (editAgentDirty && editAgentLoadedId === selected.id) {
+    return;
+  }
+  editAgentLoadedId = selected.id;
+  editAgentDirty = false;
+  editAgentForm.elements.name.value = selected.name || "";
+  editAgentForm.elements.role.value = selected.metadata?.role === "router" ? "router" : "";
+  editAgentForm.elements.cwd.value = selected.cwd || "";
+  editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
+  editAgentForm.elements.instructions.value = selected.instructions || "";
 }
 
 function renderPanel() {

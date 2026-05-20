@@ -5,6 +5,7 @@ export { createDefaultClientFactory } from "./codexControlFactory.js";
 export { JsonFileAgentStateStore, MemoryAgentStateStore } from "./stateStore.js";
 export type {
   AgentDefinition,
+  AgentDefinitionUpdate,
   AgentEvent,
   AgentEventType,
   AgentSnapshot,

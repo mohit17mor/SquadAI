@@ -5,6 +5,7 @@ import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { MemoryAgentStateStore } from "./stateStore.js";
 import type {
   AgentDefinition,
+  AgentDefinitionUpdate,
   AgentEvent,
   AgentEventType,
   AgentSnapshot,
@@ -110,8 +111,71 @@ export class CodexAgentManager extends EventEmitter {
       throw new CodexAgentManagerError(`Agent already exists: ${definition.id}`);
     }
     const record = this.addRecord(definition);
+    this.invalidateRouterRosters();
     await this.persist();
     return this.snapshot(record);
+  }
+
+  async updateAgent(agentId: string, update: AgentDefinitionUpdate): Promise<AgentSnapshot> {
+    this.assertOpen();
+    await this.start();
+    const record = this.requireRecord(agentId);
+    if (record.activeTurn || record.status === "starting" || record.status === "running") {
+      throw new CodexAgentManagerError(`Agent ${agentId} is running and cannot be edited.`);
+    }
+    const nextDefinition: AgentDefinition = {
+      ...record.definition,
+      ...update,
+      id: record.definition.id,
+    };
+    if (update.metadata !== undefined) {
+      nextDefinition.metadata = cloneRecord(update.metadata);
+    } else if (record.definition.metadata !== undefined) {
+      nextDefinition.metadata = record.definition.metadata;
+    }
+    validateDefinition(nextDefinition);
+    const restartNeeded = requiresFreshSession(record.definition, nextDefinition);
+    if (restartNeeded) {
+      await this.closeRecordClient(record);
+      record.session = null;
+      record.threadId = null;
+      record.status = "idle";
+      record.lastError = null;
+    }
+    record.definition = nextDefinition;
+    record.updatedAt = this.now();
+    this.definitions.set(agentId, nextDefinition);
+    this.invalidateRouterRosters();
+    await this.recordEvent(agentId, "agent_updated", "Agent updated.", {
+      restartNeeded,
+    });
+    await this.persist();
+    return this.snapshot(record);
+  }
+
+  async deleteAgent(agentId: string): Promise<AgentSnapshot> {
+    this.assertOpen();
+    await this.start();
+    const record = this.requireRecord(agentId);
+    if (record.activeTurn || record.status === "starting" || record.status === "running") {
+      throw new CodexAgentManagerError(`Agent ${agentId} is running and cannot be deleted.`);
+    }
+    const blockingWork = this.workItems.find(
+      (item) => item.targetAgentId === agentId && (item.status === "queued" || item.status === "running"),
+    );
+    if (blockingWork) {
+      throw new CodexAgentManagerError(
+        `Agent ${agentId} has active work item ${blockingWork.id} and cannot be deleted.`,
+      );
+    }
+    const snapshot = this.snapshot(record);
+    await this.closeRecordClient(record);
+    this.records.delete(agentId);
+    this.definitions.delete(agentId);
+    this.invalidateRouterRosters();
+    await this.recordEvent(agentId, "agent_deleted", "Agent deleted.", {});
+    await this.persist();
+    return snapshot;
   }
 
   listEvents(agentId?: string): AgentEvent[] {
@@ -440,10 +504,7 @@ export class CodexAgentManager extends EventEmitter {
 
   private async recoverStaleSession(record: RuntimeRecord, error: unknown): Promise<void> {
     const staleThreadId = record.threadId;
-    if (record.client) {
-      await record.client.close();
-    }
-    record.client = null;
+    await this.closeRecordClient(record);
     record.session = null;
     record.threadId = null;
     record.lastError = null;
@@ -459,6 +520,13 @@ export class CodexAgentManager extends EventEmitter {
       },
     );
     await this.persist();
+  }
+
+  private async closeRecordClient(record: RuntimeRecord): Promise<void> {
+    if (record.client) {
+      await record.client.close();
+    }
+    record.client = null;
   }
 
   private async ensureSession(record: RuntimeRecord): Promise<void> {
@@ -531,6 +599,7 @@ export class CodexAgentManager extends EventEmitter {
       id: record.definition.id,
       name: record.definition.name,
       cwd: record.definition.cwd,
+      instructions: record.definition.instructions,
       status: record.status,
       threadId: record.threadId,
       model: record.definition.model ?? null,
@@ -691,6 +760,10 @@ export class CodexAgentManager extends EventEmitter {
     return { digest, roster };
   }
 
+  private invalidateRouterRosters(): void {
+    this.routerRosterDigests.clear();
+  }
+
   private validateRoutingDecision(decision: RoutingDecision, routerAgentId: string): void {
     if (decision.targetAgentId === routerAgentId) {
       throw new CodexAgentManagerError("Router agent cannot assign work to itself.");
@@ -834,15 +907,24 @@ function validateDefinition(definition: AgentDefinition): void {
       `Invalid agent id ${JSON.stringify(definition.id)}. Use letters, numbers, _, ., or -.`,
     );
   }
-  if (!definition.name.trim()) {
+  if (typeof definition.name !== "string" || !definition.name.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have a name.`);
   }
-  if (!definition.cwd.trim()) {
+  if (typeof definition.cwd !== "string" || !definition.cwd.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have a cwd.`);
   }
-  if (!definition.instructions.trim()) {
+  if (typeof definition.instructions !== "string" || !definition.instructions.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have instructions.`);
   }
+}
+
+function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition): boolean {
+  return previous.cwd !== next.cwd ||
+    previous.instructions !== next.instructions ||
+    previous.model !== next.model ||
+    previous.approvalPolicy !== next.approvalPolicy ||
+    previous.sandbox !== next.sandbox ||
+    JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);
 }
 
 function routingDescription(definition: AgentDefinition): string {

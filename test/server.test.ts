@@ -149,6 +149,53 @@ test("command center API derives an agent id from name when id is omitted", asyn
   }
 });
 
+test("command center API updates and deletes agents", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    await jsonFetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      body: {
+        id: "maintenance",
+        name: "Maintenance Debugger",
+        cwd: "/tmp/ops-poc",
+        instructions: "You specialize in maintenance debugging.",
+        metadata: { routingDescription: "Debugs maintenance tickets." },
+      },
+    });
+
+    const updated = await jsonFetch(`${baseUrl}/api/agents/maintenance`, {
+      method: "PATCH",
+      body: {
+        name: "Postmortem Writer",
+        cwd: "/tmp/ops-poc",
+        instructions: "You write incident postmortems.",
+        metadata: { routingDescription: "Writes postmortems." },
+      },
+    });
+    assert.equal(updated.agent.name, "Postmortem Writer");
+    assert.equal(updated.agent.instructions, "You write incident postmortems.");
+    assert.equal(updated.agent.metadata.routingDescription, "Writes postmortems.");
+
+    const deleted = await jsonFetch(`${baseUrl}/api/agents/maintenance`, {
+      method: "DELETE",
+    });
+    assert.equal(deleted.agent.id, "maintenance");
+
+    const listed = await jsonFetch(`${baseUrl}/api/agents`);
+    assert.equal(listed.agents.length, 0);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center API resolves pending approvals", async () => {
   const contexts: CodexControlClientContext[] = [];
   const manager = new CodexAgentManager({
@@ -264,7 +311,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-panel="events"/);
     assert.match(html, /data-panel="work"/);
     assert.match(html, /activePanel = "agents"/);
-    assert.match(html, /activePanel = "agents";\n  event\.currentTarget\.reset/);
+    assert.match(html, /editAgentDirty = false/);
+    assert.match(html, /editAgentLoadedId = null/);
+    assert.match(html, /event\.currentTarget\.reset/);
     assert.match(html, /await refreshAgents\(\)/);
     assert.match(html, /renderPanel/);
     assert.match(html, /class="message-list"/);
@@ -279,6 +328,12 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /<option value="router">Router<\/option>/);
     assert.match(html, /Routing description/);
     assert.match(html, /metadata\.routingDescription = body\.routingDescription/);
+    assert.match(html, /edit-agent-form/);
+    assert.match(html, /Developer instructions/);
+    assert.match(html, /updateSelectedAgent/);
+    assert.match(html, /deleteSelectedAgent/);
+    assert.match(html, /method: "PATCH"/);
+    assert.match(html, /method: "DELETE"/);
     assert.match(html, /approval-card/);
     assert.match(html, /work-card/);
     assert.match(html, /summarizeWorkEvents/);

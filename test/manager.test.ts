@@ -370,6 +370,147 @@ test("creates agents dynamically and persists their definitions", async () => {
   assert.equal(resumed.getAgent("dynamic").cwd, "/tmp/ops-poc");
 });
 
+test("updates agent instructions by clearing the existing Codex session", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const first = manager.sendToAgent("maintenance", "hello");
+  await waitFor(() => clients.length === 1, "initial client");
+  clients[0]?.session("thread-1").complete("first");
+  await first;
+  assert.equal(manager.getAgent("maintenance").threadId, "thread-1");
+
+  const updated = await manager.updateAgent("maintenance", {
+    instructions: "You now specialize in postmortem drafting.",
+  });
+
+  assert.equal(updated.threadId, null);
+  assert.equal(clients[0]?.closeCalls.length, 1);
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "agent_updated" && event.payload.restartNeeded === true),
+  );
+
+  const second = manager.sendToAgent("maintenance", "continue");
+  await waitFor(() => clients.length === 2, "fresh client after update");
+  assert.deepEqual(clients[1]?.startCalls[0], {
+    cwd: "/tmp/ops-poc",
+    model: undefined,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    developerInstructions: "You now specialize in postmortem drafting.",
+    dynamicTools: undefined,
+  });
+  clients[1]?.session("thread-1").complete("second");
+  assert.equal((await second).finalText, "second");
+});
+
+test("updates routing metadata without clearing the worker session", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const first = manager.sendToAgent("maintenance", "hello");
+  await waitFor(() => clients.length === 1, "metadata update client");
+  clients[0]?.session("thread-1").complete("first");
+  await first;
+
+  const updated = await manager.updateAgent("maintenance", {
+    metadata: { routingDescription: "Drafts incident postmortems." },
+  });
+
+  assert.equal(updated.threadId, "thread-1");
+  assert.equal(updated.metadata.routingDescription, "Drafts incident postmortems.");
+  assert.equal(clients[0]?.closeCalls.length, 0);
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "agent_updated" && event.payload.restartNeeded === false),
+  );
+});
+
+test("deletes idle agents and persists removal", async () => {
+  const clients: FakeCodexClient[] = [];
+  const state: Record<string, unknown> = {};
+  const stateStore = {
+    async load() {
+      return state;
+    },
+    async save(nextState: Record<string, unknown>) {
+      Object.assign(state, nextState);
+    },
+  };
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    stateStore,
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "hello");
+  await waitFor(() => clients.length === 1, "delete client");
+  clients[0]?.session("thread-1").complete("done");
+  await send;
+
+  const deleted = await manager.deleteAgent("maintenance");
+
+  assert.equal(deleted.id, "maintenance");
+  assert.equal(clients[0]?.closeCalls.length, 1);
+  assert.equal(manager.listAgents().length, 0);
+  assert.throws(() => manager.getAgent("maintenance"), /Unknown agent/);
+  assert.equal(Object.keys((state.agents as Record<string, unknown>) ?? {}).length, 0);
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "agent_deleted"),
+  );
+});
+
+test("rejects deleting agents with queued or running work", async () => {
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "ops-debugger",
+        name: "Ops Debugger",
+        instructions: "You classify issue tracker tickets.",
+      }),
+    ],
+    clientFactory: fakeFactory(),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1 needs classification.",
+  });
+  await manager.start();
+  const work = await (manager as any).createWorkItemFromDecision(
+    manager.getSensorEvent("sensor-1"),
+    "router",
+    {
+      targetAgentId: "ops-debugger",
+      prompt: "Classify INC-01-1.",
+      reason: "Ops ticket classification.",
+    },
+  );
+
+  await assert.rejects(
+    manager.deleteAgent("ops-debugger"),
+    new RegExp(`active work item ${work.id}`),
+  );
+});
+
 test("surfaces approval requests and resolves them through the manager", async () => {
   const clients: FakeCodexClient[] = [];
   const contexts: CodexControlClientContext[] = [];
