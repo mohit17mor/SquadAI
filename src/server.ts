@@ -1005,7 +1005,7 @@ function render() {
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
   renderAgentEditor(selected);
-  const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : events;
+  const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : [];
   dedupePendingMessages(visibleEvents);
   const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
   const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
@@ -1020,7 +1020,7 @@ function render() {
     hasTurnStarted,
     resolvedApprovals,
   }));
-  const localMessages = pendingMessages
+  const localMessages = (selectedAgentId ? pendingMessages : [])
     .filter((item) => !selectedAgentId || item.agentId === selectedAgentId)
     .flatMap((item) => [
       { kind: "user", meta: "You", text: item.text },
@@ -1037,7 +1037,7 @@ function render() {
   ].sort((left, right) => {
     return Date.parse(left.time || "") - Date.parse(right.time || "");
   });
-  messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
+  messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">Create or select an agent to begin.</div>';
   bindApprovalButtons();
   renderQueues();
   scrollDown();
