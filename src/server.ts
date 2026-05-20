@@ -430,12 +430,30 @@ function renderHtml(title: string): string {
 </head>
 <body>
   <main class="shell">
-    <aside class="sidebar">
+    <nav class="command-rail">
       <div class="brand">
         <h1>${escapeHtml(title)}</h1>
-        <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">Connecting</span></div>
       </div>
-      <section class="panel">
+      <div class="rail-nav" aria-label="Command center sections">
+        <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
+        <button type="button" class="rail-item" data-panel="create">Create Agent</button>
+        <button type="button" class="rail-item" data-panel="events">Event Inbox <span id="event-count">0</span></button>
+        <button type="button" class="rail-item" data-panel="work">Work Queue <span id="work-count">0</span></button>
+      </div>
+      <div class="rail-footer">
+        <span id="connection-dot" class="dot"></span>
+        <span id="connection">Connecting</span>
+      </div>
+    </nav>
+    <aside class="side-panel">
+      <header class="panel-header">
+        <div>
+          <h2 id="panel-title">Agents</h2>
+          <p id="panel-subtitle">Manage live Codex sessions.</p>
+        </div>
+        <button id="refresh" type="button" class="secondary">Refresh</button>
+      </header>
+      <section id="panel-create" class="panel-view">
         <div class="section-head">
           <h2>Create Agent</h2>
           <span>runtime</span>
@@ -451,24 +469,24 @@ function renderHtml(title: string): string {
           <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
       </section>
-      <section class="panel">
+      <section id="panel-agents" class="panel-view active">
         <div class="section-head">
           <h2>Agents</h2>
-          <span id="agent-count">0</span>
+          <span id="agent-panel-count">0</span>
         </div>
         <div id="agents" class="agents"></div>
       </section>
-      <section class="panel queue-panel">
+      <section id="panel-events" class="panel-view queue-panel">
         <div class="section-head">
           <h2>Event Inbox</h2>
-          <span id="event-count">0</span>
+          <span id="event-panel-count">0</span>
         </div>
         <div id="sensor-events" class="queue-list"></div>
       </section>
-      <section class="panel queue-panel">
+      <section id="panel-work" class="panel-view queue-panel">
         <div class="section-head">
           <h2>Work Queue</h2>
-          <span id="work-count">0</span>
+          <span id="work-panel-count">0</span>
         </div>
         <div id="work-items" class="queue-list"></div>
       </section>
@@ -479,7 +497,6 @@ function renderHtml(title: string): string {
           <h2 id="selected-title">No agent selected</h2>
           <p id="selected-meta">Create or select an agent to begin.</p>
         </div>
-        <button id="refresh" type="button" class="secondary">Refresh</button>
       </header>
       <section class="message-list" id="messages"></section>
       <form id="message-form" class="composer">
@@ -508,15 +525,25 @@ button:hover { background: #388bfd; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.secondary { background: #161b22; color: #e6edf3; }
 button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
-.shell { display: grid; grid-template-columns: 360px minmax(0, 1fr); height: 100vh; }
-.sidebar { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
-.brand { padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid #30363d; }
+.shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
+.command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
+.brand { padding: 20px; border-bottom: 1px solid #30363d; }
 h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
 h2 { margin: 0; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; }
-.connection { display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 12px; white-space: nowrap; }
+.rail-nav { flex: 1; padding: 12px 8px; display: flex; flex-direction: column; gap: 3px; }
+.rail-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-radius: 6px; border: 0; background: transparent; color: #8b949e; text-align: left; font-size: 14px; font-weight: 500; }
+.rail-item:hover { background: #1c2128; color: #e6edf3; }
+.rail-item.active { background: rgba(88,166,255,.12); color: #58a6ff; font-weight: 700; }
+.rail-item span { min-width: 22px; border-radius: 999px; padding: 1px 7px; background: #0d1117; color: #8b949e; text-align: center; font-size: 11px; }
+.rail-footer { padding: 14px 18px; border-top: 1px solid #30363d; display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 12px; white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 999px; background: #f85149; display: inline-block; }
 .dot.connected { background: #3fb950; }
-.panel { padding: 16px 18px; border-bottom: 1px solid #30363d; }
+.side-panel { background: #0d1117; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.panel-header { padding: 16px 18px; border-bottom: 1px solid #30363d; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: #161b22; }
+.panel-header h2 { color: #e6edf3; font-size: 16px; text-transform: none; letter-spacing: 0; }
+.panel-header p { margin: 4px 0 0; color: #8b949e; font-size: 12px; line-height: 1.4; }
+.panel-view { display: none; padding: 16px 18px; overflow-y: auto; min-height: 0; }
+.panel-view.active { display: block; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .section-head span { color: #8b949e; font-size: 12px; }
 label { display: grid; gap: 6px; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
@@ -530,7 +557,6 @@ textarea { resize: vertical; }
 .agent.active { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88,166,255,.3) inset; }
 .agent strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queue-panel { padding-top: 14px; }
 .queue-list { display: grid; gap: 7px; }
 .queue-item { border: 1px solid #30363d; border-radius: 8px; padding: 9px; background: #0d1117; display: grid; gap: 4px; }
 .queue-item strong { color: #e6edf3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -575,7 +601,7 @@ textarea { resize: vertical; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
-@media (max-width: 850px) { body { overflow: auto; } .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .sidebar { max-height: none; } .workspace { min-height: 70vh; } .message-row { max-width: 92%; } }
+@media (max-width: 980px) { body { overflow: auto; } .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .message-row { max-width: 92%; } }
 `;
 }
 
@@ -588,6 +614,7 @@ let sensorEvents = [];
 let workItems = [];
 let pendingMessages = [];
 let sendInFlight = false;
+let activePanel = "agents";
 
 const agentList = document.getElementById("agents");
 const messages = document.getElementById("messages");
@@ -600,15 +627,26 @@ const messageInput = document.getElementById("message");
 const agentCount = document.getElementById("agent-count");
 const eventCount = document.getElementById("event-count");
 const workCount = document.getElementById("work-count");
+const agentPanelCount = document.getElementById("agent-panel-count");
+const eventPanelCount = document.getElementById("event-panel-count");
+const workPanelCount = document.getElementById("work-panel-count");
 const sensorEventList = document.getElementById("sensor-events");
 const workItemList = document.getElementById("work-items");
 const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
 const agentIdHint = document.getElementById("agent-id-hint");
+const panelTitle = document.getElementById("panel-title");
+const panelSubtitle = document.getElementById("panel-subtitle");
 let agentIdTouched = false;
 
 document.getElementById("refresh").addEventListener("click", refresh);
+for (const button of document.querySelectorAll("[data-panel]")) {
+  button.addEventListener("click", () => {
+    activePanel = button.dataset.panel || "agents";
+    renderPanel();
+  });
+}
 const agentForm = document.getElementById("agent-form");
 agentForm.addEventListener("submit", createAgent);
 messageForm.addEventListener("submit", sendMessage);
@@ -655,6 +693,7 @@ async function refreshAgents() {
   agents = body.agents;
   if (!selectedAgentId && agents.length) selectedAgentId = agents[0].id;
   agentCount.textContent = String(agents.length);
+  agentPanelCount.textContent = String(agents.length);
 }
 
 function upsertAgent(agent) {
@@ -665,6 +704,7 @@ function upsertAgent(agent) {
     agents = [...agents, agent];
   }
   agentCount.textContent = String(agents.length);
+  agentPanelCount.textContent = String(agents.length);
 }
 
 async function refreshEvents() {
@@ -682,6 +722,10 @@ async function refreshQueues() {
   const workBody = await workResponse.json();
   sensorEvents = sensorBody.events;
   workItems = workBody.workItems;
+  eventCount.textContent = String(sensorEvents.length);
+  eventPanelCount.textContent = String(sensorEvents.length);
+  workCount.textContent = String(workItems.length);
+  workPanelCount.textContent = String(workItems.length);
   renderQueues();
 }
 
@@ -718,11 +762,13 @@ async function createAgent(event) {
   }
   upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
+  activePanel = "agents";
   event.currentTarget.reset();
   agentIdTouched = false;
   updateDerivedAgentId();
+  await refreshAgents();
+  await refreshEvents();
   render();
-  void refresh();
   toast("Agent created");
 }
 
@@ -779,13 +825,14 @@ async function sendMessage(event) {
 }
 
 function render() {
+  renderPanel();
   agentList.innerHTML = agents.map((agent) => \`
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
       <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
       <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)}</span>
     </button>
-  \`).join("") || '<div class="empty">No agents yet. Create one from the form above.</div>';
+  \`).join("") || '<div class="empty">No agents yet. Create one from the Create Agent section.</div>';
   for (const button of agentList.querySelectorAll(".agent")) {
     button.addEventListener("click", () => {
       selectedAgentId = button.dataset.agentId;
@@ -822,9 +869,29 @@ function render() {
   scrollDown();
 }
 
+function renderPanel() {
+  const titles = {
+    agents: ["Agents", "Select an agent and watch its conversation on the right."],
+    create: ["Create Agent", "Add a specialized Codex session to the command center."],
+    events: ["Event Inbox", "Sensor events waiting to be routed or already routed."],
+    work: ["Work Queue", "Worker-owned items created by the router."],
+  };
+  const [title, subtitle] = titles[activePanel] || titles.agents;
+  panelTitle.textContent = title;
+  panelSubtitle.textContent = subtitle;
+  for (const button of document.querySelectorAll("[data-panel]")) {
+    button.classList.toggle("active", button.dataset.panel === activePanel);
+  }
+  for (const view of document.querySelectorAll(".panel-view")) {
+    view.classList.toggle("active", view.id === "panel-" + activePanel);
+  }
+}
+
 function renderQueues() {
   eventCount.textContent = String(sensorEvents.length);
+  eventPanelCount.textContent = String(sensorEvents.length);
   workCount.textContent = String(workItems.length);
+  workPanelCount.textContent = String(workItems.length);
   sensorEventList.innerHTML = sensorEvents.slice(-5).reverse().map((event) => \`
     <div class="queue-item">
       <strong>\${escapeHtml(event.title || event.type)}</strong>

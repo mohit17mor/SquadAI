@@ -258,6 +258,15 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     const html = await response.text();
 
     assert.match(html, /chat-stream/);
+    assert.match(html, /command-rail/);
+    assert.match(html, /side-panel/);
+    assert.match(html, /data-panel="create"/);
+    assert.match(html, /data-panel="events"/);
+    assert.match(html, /data-panel="work"/);
+    assert.match(html, /activePanel = "agents"/);
+    assert.match(html, /activePanel = "agents";\n  event\.currentTarget\.reset/);
+    assert.match(html, /await refreshAgents\(\)/);
+    assert.match(html, /renderPanel/);
     assert.match(html, /class="message-list"/);
     assert.match(html, /message-bubble\.user/);
     assert.match(html, /message-bubble\.agent/);
