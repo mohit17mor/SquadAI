@@ -328,6 +328,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /<option value="router">Router<\/option>/);
     assert.match(html, /Routing description/);
     assert.match(html, /metadata\.routingDescription = body\.routingDescription/);
+    assert.match(html, /defaultRouterInstructions/);
+    assert.match(html, /applyCreateRoleDefaults/);
+    assert.match(html, /You are the router agent for the multi-agent Codex command center/);
     assert.match(html, /edit-agent-form/);
     assert.match(html, /Developer instructions/);
     assert.match(html, /updateSelectedAgent/);

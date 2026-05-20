@@ -709,6 +709,16 @@ let workItems = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let activePanel = "agents";
+const defaultRouterInstructions = [
+  "You are the router agent for the multi-agent Codex command center.",
+  "Your job is to inspect incoming sensor events and choose the best worker agent.",
+  "Do not solve the work yourself.",
+  "Do not assign work to yourself.",
+  "Use the worker roster provided by the manager as the source of truth for available agents and their capabilities.",
+  "Return only a JSON object with targetAgentId, prompt, and reason.",
+  "The prompt should be clear, self-contained, and include any important event details the worker needs.",
+  "If no worker is a good fit, choose the closest safe worker and explain the uncertainty in reason.",
+].join("\\n");
 
 const agentList = document.getElementById("agents");
 const messages = document.getElementById("messages");
@@ -736,6 +746,7 @@ const deleteAgentButton = document.getElementById("delete-agent-button");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
 let agentIdTouched = false;
+let createInstructionsTouched = false;
 let editAgentLoadedId = null;
 let editAgentDirty = false;
 
@@ -747,7 +758,15 @@ for (const button of document.querySelectorAll("[data-panel]")) {
   });
 }
 const agentForm = document.getElementById("agent-form");
+const createRoleSelect = agentForm.elements.role;
+const createInstructionsInput = agentForm.elements.instructions;
 agentForm.addEventListener("submit", createAgent);
+agentForm.addEventListener("input", (event) => {
+  if (event.target === createInstructionsInput) {
+    createInstructionsTouched = true;
+  }
+});
+createRoleSelect.addEventListener("change", applyCreateRoleDefaults);
 editAgentForm.addEventListener("submit", updateSelectedAgent);
 editAgentForm.addEventListener("input", () => {
   editAgentDirty = true;
@@ -860,11 +879,26 @@ async function createAgent(event) {
   editAgentLoadedId = null;
   event.currentTarget.reset();
   agentIdTouched = false;
+  createInstructionsTouched = false;
   updateDerivedAgentId();
+  applyCreateRoleDefaults();
   await refreshAgents();
   await refreshEvents();
   render();
   toast("Agent created");
+}
+
+function applyCreateRoleDefaults() {
+  if (createRoleSelect.value === "router") {
+    if (!createInstructionsTouched || !createInstructionsInput.value.trim()) {
+      createInstructionsInput.value = defaultRouterInstructions;
+      createInstructionsTouched = false;
+    }
+    return;
+  }
+  if (!createInstructionsTouched && createInstructionsInput.value === defaultRouterInstructions) {
+    createInstructionsInput.value = "";
+  }
 }
 
 function applyRoleMetadata(body, existingMetadata = {}, forceMetadata = false) {
