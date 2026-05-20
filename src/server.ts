@@ -555,7 +555,13 @@ function render() {
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
   const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : events;
-  const persistedMessages = visibleEvents.flatMap(eventToMessages);
+  dedupePendingMessages(visibleEvents);
+  const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
+  const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
+  const persistedMessages = visibleEvents.flatMap((event) => eventToMessages(event, {
+    hasCompletion,
+    hasTurnStarted,
+  }));
   const localMessages = pendingMessages
     .filter((item) => !selectedAgentId || item.agentId === selectedAgentId)
     .flatMap((item) => [
@@ -567,7 +573,17 @@ function render() {
   scrollDown();
 }
 
-function eventToMessages(event) {
+function dedupePendingMessages(visibleEvents) {
+  const startedTexts = new Set(
+    visibleEvents
+      .filter((event) => event.type === "turn_started" && event.payload && event.payload.input)
+      .map((event) => String(event.payload.input)),
+  );
+  if (!startedTexts.size) return;
+  pendingMessages = pendingMessages.filter((item) => !startedTexts.has(item.text));
+}
+
+function eventToMessages(event, state) {
   if (event.type === "turn_started") {
     const input = event.payload && event.payload.input ? String(event.payload.input) : "";
     return input
@@ -581,10 +597,12 @@ function eventToMessages(event) {
     return [{ kind: "system", meta: "", text: "Agent failed: " + event.message, time: event.createdAt }];
   }
   if (event.type === "agent_starting") {
-    return [{ kind: "status", meta: "", text: "Starting agent session", pending: true, time: event.createdAt }];
+    return state.hasTurnStarted || state.hasCompletion
+      ? []
+      : [{ kind: "status", meta: "", text: "Starting agent session", pending: true, time: event.createdAt }];
   }
   if (event.type === "agent_started") {
-    return [{ kind: "system", meta: "", text: "Agent session ready", time: event.createdAt }];
+    return state.hasCompletion ? [] : [{ kind: "system", meta: "", text: "Agent session ready", time: event.createdAt }];
   }
   return [{ kind: "system", meta: "", text: event.type + ": " + event.message, time: event.createdAt }];
 }
