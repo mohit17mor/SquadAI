@@ -357,6 +357,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /resolveApproval/);
     assert.match(html, /data-approval-action="approved"/);
     assert.match(html, /Event Inbox/);
+    assert.match(html, /visibleSensorEvents/);
+    assert.match(html, /event\.status !== "routed"/);
+    assert.match(html, /No pending or failed sensor events/);
     assert.match(html, /Work Queue/);
     assert.match(html, /sensor-events/);
     assert.match(html, /work-items/);

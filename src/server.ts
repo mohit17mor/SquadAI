@@ -853,8 +853,6 @@ async function refreshQueues() {
   const workBody = await workResponse.json();
   sensorEvents = sensorBody.events;
   workItems = workBody.workItems;
-  eventCount.textContent = String(sensorEvents.length);
-  eventPanelCount.textContent = String(sensorEvents.length);
   workCount.textContent = String(workItems.length);
   workPanelCount.textContent = String(workItems.length);
   renderQueues();
@@ -1134,17 +1132,18 @@ function renderPanel() {
 }
 
 function renderQueues() {
-  eventCount.textContent = String(sensorEvents.length);
-  eventPanelCount.textContent = String(sensorEvents.length);
+  const visibleSensorEvents = sensorEvents.filter((event) => event.status !== "routed");
+  eventCount.textContent = String(visibleSensorEvents.length);
+  eventPanelCount.textContent = String(visibleSensorEvents.length);
   workCount.textContent = String(workItems.length);
   workPanelCount.textContent = String(workItems.length);
-  sensorEventList.innerHTML = sensorEvents.slice(-5).reverse().map((event) => \`
+  sensorEventList.innerHTML = visibleSensorEvents.slice(-5).reverse().map((event) => \`
     <div class="queue-item">
       <strong>\${escapeHtml(event.title || event.type)}</strong>
       <span class="sub">\${escapeHtml(event.source)} - \${escapeHtml(event.status)} - \${escapeHtml(event.id)}</span>
       <span class="sub">\${escapeHtml(event.body)}</span>
     </div>
-  \`).join("") || '<div class="empty">No sensor events yet.</div>';
+  \`).join("") || '<div class="empty">No pending or failed sensor events.</div>';
   workItemList.innerHTML = workItems.slice(-5).reverse().map((item) => \`
     <div class="queue-item">
       <strong>\${escapeHtml(item.targetAgentId)} - \${escapeHtml(item.status)}</strong>
