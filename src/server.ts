@@ -679,17 +679,19 @@ textarea { resize: vertical; }
 .approval-actions button { padding: 7px 10px; border-radius: 7px; }
 .approval-actions button[data-approval-action="declined"] { background: #21262d; color: #f85149; }
 .approval-actions button[data-approval-action="declined"]:hover { border-color: #f85149; }
-.approval-resolved { color: #8b949e; font-size: 12px; text-align: right; }
-.work-card { background: #1c2128; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: min(520px, 80vw); max-width: 720px; }
-.work-card.failed { border-color: rgba(248,81,73,.55); }
-.work-card.done { border-color: rgba(63,185,80,.45); }
-.work-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #f0f6fc; font-weight: 700; }
-.work-detail { color: #c9d1d9; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.work-muted { color: #8b949e; font-size: 11px; }
-.activity-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: min(520px, 80vw); max-width: 720px; }
+.activity-sequence { background: transparent; border: 1px solid #30363d; border-radius: 8px; max-width: min(560px, 80vw); color: #8b949e; }
+.activity-sequence[open] { background: #0d1117; }
+.activity-sequence.failed { border-color: rgba(248,81,73,.5); }
+.activity-sequence.running { border-color: rgba(210,153,34,.45); }
+.activity-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; cursor: pointer; list-style: none; font-size: 12px; }
+.activity-toggle::-webkit-details-marker { display: none; }
+.activity-toggle strong { color: #c9d1d9; font-weight: 600; }
+.activity-count { color: #8b949e; font-size: 11px; }
+.activity-detail-list { border-top: 1px solid #30363d; padding: 8px 10px 10px; display: grid; gap: 6px; }
 .activity-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 12px; }
 .activity-row strong { color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row span { color: #c9d1d9; overflow-wrap: anywhere; }
+.activity-muted { color: #8b949e; font-size: 11px; }
 .pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
 .pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
@@ -1053,8 +1055,12 @@ function render() {
   const resolvedApprovals = approvalResolutionMap(visibleEvents);
   const workSummaries = summarizeWorkEvents(visibleEvents);
   const workEventIds = new Set(workSummaries.flatMap((summary) => summary.eventIds));
-  const activitySummaries = summarizeActivityEvents(visibleEvents);
+  const activitySummaries = summarizeActivityEvents(visibleEvents, resolvedApprovals);
   const activityEventIds = new Set(activitySummaries.flatMap((summary) => summary.eventIds));
+  const timelineMessages = [
+    ...workSummaries.map(workSummaryToTimelineMessage),
+    ...activitySummaries.map(activitySummaryToTimelineMessage),
+  ].filter(Boolean).filter(shouldShowTimelineInChat);
   const persistedMessages = visibleEvents
     .filter((event) => !workEventIds.has(event.id))
     .filter((event) => !activityEventIds.has(event.id))
@@ -1070,13 +1076,12 @@ function render() {
       { kind: "status", meta: "", text: "Agent is working", pending: true },
     ]);
   const workingMessage = activeTurnPending && !localMessages.some((item) => item.pending)
-    && !activitySummaries.some((summary) => summary.status === "running")
+    && !timelineMessages.some((message) => message.status === "running")
     ? [{ kind: "status", meta: "", text: "Agent is working", pending: true }]
     : [];
   const rendered = [
     ...persistedMessages,
-    ...workSummaries.map(workSummaryToMessage),
-    ...activitySummaries.map(activitySummaryToMessage),
+    ...timelineMessages,
     ...localMessages,
     ...workingMessage,
   ].sort((left, right) => {
@@ -1239,23 +1244,32 @@ function summarizeWorkEvents(visibleEvents) {
   return Array.from(summaries.values());
 }
 
-function workSummaryToMessage(summary) {
+function shouldShowTimelineInChat(summary) {
+  return summary.status === "running" || summary.status === "failed" || summary.hasApproval;
+}
+
+function workSummaryToTimelineMessage(summary) {
   const workItem = workItems.find((item) => item.id === summary.workItemId);
   const status = workItem ? workItem.status : summary.status;
-  const detail = workItem?.failureReason || workItem?.result || summary.detail || "";
+  const detail = workItem?.failureReason || summary.detail || "";
   return {
-    kind: "work",
+    kind: "timeline",
     meta: "Work queue",
-    text: detail,
+    title: workItem?.status === "failed" ? "Work item failed" : "Work item",
     status,
-    workItemId: summary.workItemId,
-    sensorEventId: workItem?.eventId || summary.sensorEventId || "",
     time: workItem?.updatedAt || summary.updatedAt,
-    prompt: workItem?.prompt || "",
+    entries: [
+      { label: "work", text: \`\${summary.workItemId} - \${status}\` },
+      workItem?.eventId || summary.sensorEventId
+        ? { label: "event", text: workItem?.eventId || summary.sensorEventId }
+        : null,
+      detail ? { label: "detail", text: detail } : null,
+    ].filter(Boolean),
+    hasApproval: false,
   };
 }
 
-function summarizeActivityEvents(visibleEvents) {
+function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
   const summaries = [];
   let current = null;
   for (const event of visibleEvents) {
@@ -1267,6 +1281,7 @@ function summarizeActivityEvents(visibleEvents) {
         eventIds: [],
         entries: [],
         status: "running",
+        hasApproval: false,
         createdAt: event.createdAt,
         updatedAt: event.createdAt,
       };
@@ -1278,6 +1293,7 @@ function summarizeActivityEvents(visibleEvents) {
           eventIds: [],
           entries: [],
           status: "running",
+          hasApproval: false,
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
@@ -1291,12 +1307,39 @@ function summarizeActivityEvents(visibleEvents) {
       });
       continue;
     }
+    if (event.type === "approval_requested") {
+      const approvalId = event.payload && event.payload.approvalId ? String(event.payload.approvalId) : "";
+      const resolved = resolvedApprovals.get(approvalId);
+      if (!resolved) {
+        continue;
+      }
+      if (!current) {
+        current = {
+          eventIds: [],
+          entries: [],
+          status: "running",
+          hasApproval: true,
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+      }
+      current.eventIds.push(event.id);
+      current.updatedAt = resolved.createdAt || event.createdAt;
+      current.hasApproval = true;
+      current.entries.push({
+        itemType: "approval",
+        title: approvalSummary(event.payload || {}, resolved.payload || {}),
+        summary: "",
+      });
+      continue;
+    }
     if (event.type === "codex_thread_compacted") {
       if (!current) {
         current = {
           eventIds: [],
           entries: [],
           status: "running",
+          hasApproval: false,
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
@@ -1325,15 +1368,27 @@ function summarizeActivityEvents(visibleEvents) {
   return summaries;
 }
 
-function activitySummaryToMessage(summary) {
+function activitySummaryToTimelineMessage(summary) {
   return {
-    kind: "activity",
+    kind: "timeline",
     meta: "Codex activity",
+    title: summary.status === "running" ? "Agent is working" : "Activity",
     status: summary.status,
-    entries: summary.entries.slice(-8),
-    hiddenCount: Math.max(0, summary.entries.length - 8),
+    entries: summary.entries.slice(-10).map((entry) => ({
+      label: entry.itemType,
+      text: entry.summary ? \`\${entry.title} - \${entry.summary}\` : entry.title,
+    })),
+    hiddenCount: Math.max(0, summary.entries.length - 10),
+    hasApproval: summary.hasApproval,
     time: summary.updatedAt,
   };
+}
+
+function approvalSummary(requestPayload, resolvedPayload) {
+  const params = requestPayload.params && typeof requestPayload.params === "object" ? requestPayload.params : {};
+  const tool = approvalToolLabel(params);
+  const decision = String(resolvedPayload.decision || "resolved");
+  return tool ? \`\${decision}: \${tool}\` : \`\${decision}: \${requestPayload.kind || "approval"}\`;
 }
 
 function eventToMessages(event, state) {
@@ -1352,12 +1407,14 @@ function eventToMessages(event, state) {
   if (event.type === "approval_requested") {
     const approvalId = event.payload && event.payload.approvalId ? String(event.payload.approvalId) : "";
     const resolved = state.resolvedApprovals.get(approvalId);
+    if (resolved) {
+      return [];
+    }
     return [{
       kind: "approval",
       meta: "Approval needed",
       text: approvalText(event.payload || {}),
       approvalId,
-      resolvedDecision: resolved && resolved.payload ? String(resolved.payload.decision || "") : "",
       canApproveSession: canApproveApprovalForSession(event.payload || {}),
       time: event.createdAt,
     }];
@@ -1386,51 +1443,33 @@ function eventToMessages(event, state) {
 }
 
 function renderMessage(message) {
-  if (message.kind === "activity") {
+  if (message.kind === "timeline") {
     const rows = message.entries.map((entry) => \`
       <div class="activity-row">
-        <strong>\${escapeHtml(entry.itemType)}</strong>
-        <span>\${escapeHtml(entry.title)}\${entry.summary ? " - " + escapeHtml(entry.summary) : ""}</span>
+        <strong>\${escapeHtml(entry.label)}</strong>
+        <span>\${escapeHtml(entry.text)}</span>
       </div>
     \`).join("");
     const hidden = message.hiddenCount
-      ? \`<div class="work-muted">\${escapeHtml(message.hiddenCount)} earlier events hidden</div>\`
+      ? \`<div class="activity-muted">\${escapeHtml(message.hiddenCount)} earlier events hidden</div>\`
       : "";
     return \`
       <article class="message-row system">
-        <div class="message-meta">\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}</div>
-        <div class="activity-card">
-          <div class="work-title">
-            <span>Activity</span>
-            <span class="status-pill \${escapeAttr(message.status || "running")}">\${escapeHtml(message.status || "running")}</span>
+        <details class="activity-sequence \${escapeAttr(message.status || "done")}">
+          <summary class="activity-toggle">
+            <strong>\${escapeHtml(message.title || message.meta)}</strong>
+            <span class="activity-count">\${escapeHtml(message.status || "done")} · \${escapeHtml(message.entries.length)} steps</span>
+          </summary>
+          <div class="activity-detail-list">
+            \${rows}
+            \${hidden}
           </div>
-          \${rows}
-          \${hidden}
-        </div>
-      </article>
-    \`;
-  }
-  if (message.kind === "work") {
-    const status = message.status || "queued";
-    const detail = message.text || message.prompt || "No details yet.";
-    return \`
-      <article class="message-row system">
-        <div class="message-meta">\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}</div>
-        <div class="work-card \${escapeAttr(status)}">
-          <div class="work-title">
-            <span>\${escapeHtml(message.workItemId || "Work item")}</span>
-            <span class="status-pill \${escapeAttr(status)}">\${escapeHtml(status)}</span>
-          </div>
-          \${message.sensorEventId ? \`<div class="work-muted">From \${escapeHtml(message.sensorEventId)}</div>\` : ""}
-          <div class="work-detail">\${escapeHtml(detail)}</div>
-        </div>
+        </details>
       </article>
     \`;
   }
   if (message.kind === "approval") {
-    const resolved = message.resolvedDecision
-      ? \`<div class="approval-resolved">Resolved: \${escapeHtml(message.resolvedDecision)}</div>\`
-      : \`<div class="approval-actions">
+    const actions = \`<div class="approval-actions">
           <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="declined">Decline</button>
           \${message.canApproveSession ? \`<button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="approved-session">Approve Tool</button>\` : ""}
           <button type="button" data-approval-id="\${escapeAttr(message.approvalId)}" data-approval-action="approved">Approve</button>
@@ -1441,7 +1480,7 @@ function renderMessage(message) {
         <div class="approval-card">
           <div class="approval-title">Approval requested</div>
           <div class="approval-detail">\${escapeHtml(message.text)}</div>
-          \${resolved}
+          \${actions}
         </div>
       </article>
     \`;
