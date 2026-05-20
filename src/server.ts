@@ -2,24 +2,33 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
 
 import type { CodexAgentManager } from "./manager.js";
-import type { AgentDefinition, AgentEvent, AskOptions } from "./types.js";
+import type { AgentDefinition, AgentEvent, AskOptions, SensorEventInput } from "./types.js";
 
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   title?: string;
+  automation?: {
+    enabled?: boolean;
+    routerAgentId?: string;
+  };
 };
 
 export class CommandCenterServer {
   private readonly server: http.Server;
   private readonly sseClients = new Set<ServerResponse>();
   private readonly title: string;
+  private automationRunning = false;
+  private automationQueued = false;
 
   constructor(private readonly options: CommandCenterServerOptions) {
     this.title = options.title ?? "Jarvis Command Center";
     this.server = http.createServer((request, response) => {
       void this.handle(request, response);
     });
-    options.manager.on("event", (event) => this.broadcast(event as AgentEvent));
+    options.manager.on("event", (event) => {
+      this.broadcast(event as AgentEvent);
+      this.kickAutomation();
+    });
   }
 
   get port(): number {
@@ -74,6 +83,31 @@ export class CommandCenterServer {
         const body = await readJson(request);
         const agent = await this.options.manager.createAgent(parseAgentDefinition(body));
         this.json(response, { agent });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/sensor-events") {
+        this.json(response, { events: this.options.manager.listSensorEvents() });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/sensor-events") {
+        const body = await readJson(request);
+        const event = await this.options.manager.ingestSensorEvent(parseSensorEvent(body));
+        this.kickAutomation();
+        this.json(response, { event });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/work-items") {
+        this.json(response, { workItems: this.options.manager.listWorkItems() });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/automation/tick") {
+        const body = await readJson(request);
+        const result = await this.options.manager.runAutomationCycle(parseRouterAgentId(body));
+        this.json(response, { result });
         return;
       }
 
@@ -154,6 +188,28 @@ export class CommandCenterServer {
     const data = `event: agent-event\ndata: ${JSON.stringify(event)}\n\n`;
     for (const client of this.sseClients) {
       client.write(data);
+    }
+  }
+
+  private kickAutomation(): void {
+    if (this.options.automation?.enabled === false || this.automationRunning) {
+      this.automationQueued = this.automationRunning;
+      return;
+    }
+    this.automationRunning = true;
+    void this.runAutomationLoop();
+  }
+
+  private async runAutomationLoop(): Promise<void> {
+    try {
+      do {
+        this.automationQueued = false;
+        await this.options.manager.runAutomationCycle(this.options.automation?.routerAgentId);
+      } while (this.automationQueued);
+    } catch {
+      // Automation is opportunistic; explicit API calls expose errors to callers.
+    } finally {
+      this.automationRunning = false;
     }
   }
 }
@@ -273,6 +329,41 @@ function parseApprovalResolution(
   return [decision, optionalString(value.reason)];
 }
 
+function parseSensorEvent(body: unknown): SensorEventInput {
+  const value = asRecord(body);
+  const event: SensorEventInput = {
+    source: requiredString(value.source, "source"),
+    type: requiredString(value.type, "type"),
+    body: requiredString(value.body, "body"),
+  };
+  const title = optionalString(value.title);
+  const url = optionalString(value.url);
+  const dedupeKey = optionalString(value.dedupeKey);
+  const priority = optionalEnum(value.priority, ["low", "normal", "high"]);
+  const metadata = asOptionalRecord(value.metadata);
+  if (title) {
+    event.title = title;
+  }
+  if (url) {
+    event.url = url;
+  }
+  if (dedupeKey) {
+    event.dedupeKey = dedupeKey;
+  }
+  if (priority) {
+    event.priority = priority;
+  }
+  if (metadata) {
+    event.metadata = metadata;
+  }
+  return event;
+}
+
+function parseRouterAgentId(body: unknown): string | undefined {
+  const value = asRecord(body);
+  return optionalString(value.routerAgentId);
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Expected a JSON object.");
@@ -343,6 +434,7 @@ function renderHtml(title: string): string {
           <label>Name<input id="agent-name" name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
           <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
+          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
@@ -354,6 +446,20 @@ function renderHtml(title: string): string {
           <span id="agent-count">0</span>
         </div>
         <div id="agents" class="agents"></div>
+      </section>
+      <section class="panel queue-panel">
+        <div class="section-head">
+          <h2>Event Inbox</h2>
+          <span id="event-count">0</span>
+        </div>
+        <div id="sensor-events" class="queue-list"></div>
+      </section>
+      <section class="panel queue-panel">
+        <div class="section-head">
+          <h2>Work Queue</h2>
+          <span id="work-count">0</span>
+        </div>
+        <div id="work-items" class="queue-list"></div>
       </section>
     </aside>
     <section class="workspace chat-stream">
@@ -385,7 +491,7 @@ function css(): string {
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e6edf3; background: #0d1117; overflow: hidden; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 8px; padding: 9px 13px; cursor: pointer; font-weight: 600; transition: background .15s, border-color .15s, opacity .15s; }
 button:hover { background: #388bfd; }
 button:disabled { opacity: .5; cursor: not-allowed; }
@@ -403,8 +509,8 @@ h2 { margin: 0; font-size: 12px; color: #8b949e; text-transform: uppercase; lett
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .section-head span { color: #8b949e; font-size: 12px; }
 label { display: grid; gap: 6px; margin-bottom: 10px; color: #8b949e; font-size: 12px; }
-input, textarea { width: 100%; border: 1px solid #30363d; border-radius: 8px; padding: 9px 11px; background: #0d1117; color: #e6edf3; outline: none; }
-input:focus, textarea:focus { border-color: #58a6ff; }
+input, textarea, select { width: 100%; border: 1px solid #30363d; border-radius: 8px; padding: 9px 11px; background: #0d1117; color: #e6edf3; outline: none; }
+input:focus, textarea:focus, select:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
 .field-hint { margin: -3px 0 10px; color: #6e7681; font-size: 11px; line-height: 1.4; }
 .agents { display: grid; gap: 8px; }
@@ -413,6 +519,11 @@ textarea { resize: vertical; }
 .agent.active { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88,166,255,.3) inset; }
 .agent strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-panel { padding-top: 14px; }
+.queue-list { display: grid; gap: 7px; }
+.queue-item { border: 1px solid #30363d; border-radius: 8px; padding: 9px; background: #0d1117; display: grid; gap: 4px; }
+.queue-item strong { color: #e6edf3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item .sub { color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
 .status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
@@ -462,6 +573,8 @@ function js(): string {
 let agents = [];
 let selectedAgentId = null;
 let events = [];
+let sensorEvents = [];
+let workItems = [];
 let pendingMessages = [];
 let sendInFlight = false;
 
@@ -474,6 +587,10 @@ const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message");
 const agentCount = document.getElementById("agent-count");
+const eventCount = document.getElementById("event-count");
+const workCount = document.getElementById("work-count");
+const sensorEventList = document.getElementById("sensor-events");
+const workItemList = document.getElementById("work-items");
 const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
@@ -512,11 +629,12 @@ stream.onerror = () => {
 stream.addEventListener("agent-event", (message) => {
   events.push(JSON.parse(message.data));
   void refreshAgents();
+  void refreshQueues();
   render();
 });
 
 async function refresh() {
-  await Promise.all([refreshAgents(), refreshEvents()]);
+  await Promise.all([refreshAgents(), refreshEvents(), refreshQueues()]);
   render();
 }
 
@@ -544,10 +662,26 @@ async function refreshEvents() {
   events = body.events;
 }
 
+async function refreshQueues() {
+  const [sensorResponse, workResponse] = await Promise.all([
+    fetch("/api/sensor-events"),
+    fetch("/api/work-items"),
+  ]);
+  const sensorBody = await sensorResponse.json();
+  const workBody = await workResponse.json();
+  sensorEvents = sensorBody.events;
+  workItems = workBody.workItems;
+  renderQueues();
+}
+
 async function createAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const body = Object.fromEntries(form.entries());
+  if (body.role) {
+    body.metadata = { role: body.role };
+  }
+  delete body.role;
   const button = document.getElementById("create-agent-button");
   button.disabled = true;
   button.textContent = "Creating";
@@ -665,7 +799,27 @@ function render() {
   const rendered = [...persistedMessages, ...localMessages, ...workingMessage];
   messages.innerHTML = rendered.map(renderMessage).join("") || '<div class="empty">No messages yet. Send the first instruction to this agent.</div>';
   bindApprovalButtons();
+  renderQueues();
   scrollDown();
+}
+
+function renderQueues() {
+  eventCount.textContent = String(sensorEvents.length);
+  workCount.textContent = String(workItems.length);
+  sensorEventList.innerHTML = sensorEvents.slice(-5).reverse().map((event) => \`
+    <div class="queue-item">
+      <strong>\${escapeHtml(event.title || event.type)}</strong>
+      <span class="sub">\${escapeHtml(event.source)} - \${escapeHtml(event.status)} - \${escapeHtml(event.id)}</span>
+      <span class="sub">\${escapeHtml(event.body)}</span>
+    </div>
+  \`).join("") || '<div class="empty">No sensor events yet.</div>';
+  workItemList.innerHTML = workItems.slice(-5).reverse().map((item) => \`
+    <div class="queue-item">
+      <strong>\${escapeHtml(item.targetAgentId)} - \${escapeHtml(item.status)}</strong>
+      <span class="sub">\${escapeHtml(item.id)}\${item.eventId ? " from " + escapeHtml(item.eventId) : ""}</span>
+      <span class="sub">\${escapeHtml(item.prompt)}</span>
+    </div>
+  \`).join("") || '<div class="empty">No work queued yet.</div>';
 }
 
 function approvalResolutionMap(visibleEvents) {

@@ -204,6 +204,47 @@ test("command center API resolves pending approvals", async () => {
   }
 });
 
+test("command center API ingests sensor events and exposes work queues", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const created = await jsonFetch(`${baseUrl}/api/sensor-events`, {
+      method: "POST",
+      body: {
+        source: "jira",
+        type: "ticket.created",
+        body: "platform-123 needs triage.",
+        dedupeKey: "jira:platform-123",
+      },
+    });
+    const duplicate = await jsonFetch(`${baseUrl}/api/sensor-events`, {
+      method: "POST",
+      body: {
+        source: "jira",
+        type: "ticket.created",
+        body: "duplicate",
+        dedupeKey: "jira:platform-123",
+      },
+    });
+    const listed = await jsonFetch(`${baseUrl}/api/sensor-events`);
+    const workItems = await jsonFetch(`${baseUrl}/api/work-items`);
+
+    assert.equal(created.event.status, "pending");
+    assert.equal(duplicate.event.id, created.event.id);
+    assert.equal(listed.events.length, 1);
+    assert.deepEqual(workItems.workItems, []);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center UI exposes chat-style messaging affordances", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -226,9 +267,15 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /deriveAgentId/);
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
+    assert.match(html, /<option value="router">Router<\/option>/);
+    assert.match(html, /body\.metadata = \{ role: body\.role \}/);
     assert.match(html, /approval-card/);
     assert.match(html, /resolveApproval/);
     assert.match(html, /data-approval-action="approved"/);
+    assert.match(html, /Event Inbox/);
+    assert.match(html, /Work Queue/);
+    assert.match(html, /sensor-events/);
+    assert.match(html, /work-items/);
     assert.match(html, /hasActiveTurnPending/);
     assert.match(html, /turnStartedAt > turnFinishedAt/);
     assert.match(html, /event\.startedAt >= item\.createdAt/);

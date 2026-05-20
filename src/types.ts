@@ -5,6 +5,13 @@ export type AgentEventType =
   | "agent_started"
   | "approval_requested"
   | "approval_resolved"
+  | "sensor_event_ingested"
+  | "sensor_event_routed"
+  | "sensor_event_failed"
+  | "work_item_created"
+  | "work_item_started"
+  | "work_item_completed"
+  | "work_item_failed"
   | "turn_started"
   | "turn_completed"
   | "turn_failed"
@@ -84,6 +91,54 @@ export type SendResult = {
   turn: Record<string, unknown>;
 };
 
+export type SensorEventStatus = "pending" | "routing" | "routed" | "failed" | "ignored";
+
+export type SensorEventInput = {
+  source: string;
+  type: string;
+  body: string;
+  title?: string;
+  url?: string;
+  dedupeKey?: string;
+  priority?: "low" | "normal" | "high";
+  metadata?: Record<string, unknown>;
+};
+
+export type SensorEvent = SensorEventInput & {
+  id: string;
+  status: SensorEventStatus;
+  workItemId: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkItemStatus = "queued" | "running" | "done" | "failed";
+
+export type WorkItem = {
+  id: string;
+  eventId: string | null;
+  targetAgentId: string;
+  prompt: string;
+  status: WorkItemStatus;
+  routerAgentId: string | null;
+  reason: string | null;
+  result: string | null;
+  failureReason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type RoutingDecision = {
+  targetAgentId: string;
+  prompt: string;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type PersistedAgentState = {
   definition?: AgentDefinition;
   threadId?: string;
@@ -97,6 +152,8 @@ export type PersistedAgentManagerState = {
   version?: 1;
   agents?: Record<string, PersistedAgentState>;
   events?: AgentEvent[];
+  sensorEvents?: SensorEvent[];
+  workItems?: WorkItem[];
 };
 
 export interface AgentStateStore {

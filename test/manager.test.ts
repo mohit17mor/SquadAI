@@ -350,3 +350,68 @@ test("surfaces approval requests and resolves them through the manager", async (
   clients[0]?.session("thread-1").complete("tests passed");
   assert.equal((await send).finalText, "tests passed");
 });
+
+test("ingests sensor events, routes them through a router agent, and dispatches work", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "storage",
+        name: "storage Debugger",
+        instructions: "You specialize in storage incidents.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const event = await manager.ingestSensorEvent({
+    source: "jira",
+    type: "ticket.created",
+    title: "storage backup stuck",
+    body: "platform-123 reports an storage backup stuck in region-a.",
+    dedupeKey: "jira:platform-123",
+    url: "https://jira.example/browse/platform-123",
+  });
+  const duplicate = await manager.ingestSensorEvent({
+    source: "jira",
+    type: "ticket.created",
+    body: "same ticket",
+    dedupeKey: "jira:platform-123",
+  });
+
+  assert.equal(event.status, "pending");
+  assert.equal(duplicate.id, event.id);
+  assert.equal(manager.listSensorEvents().length, 1);
+
+  const route = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 1, "router client");
+  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /platform-123/);
+  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /storage/);
+  clients[0]?.session("thread-1").complete(
+    JSON.stringify({
+      targetAgentId: "storage",
+      prompt: "Investigate platform-123. Customer reports an storage backup stuck in region-a.",
+      reason: "storage backup issue.",
+    }),
+  );
+
+  const work = await route;
+  assert.equal(work.status, "queued");
+  assert.equal(work.targetAgentId, "storage");
+  assert.equal(manager.getSensorEvent(event.id).status, "routed");
+
+  await manager.dispatchQueuedWork();
+  await waitFor(() => clients.length === 2, "worker client");
+  assert.equal(manager.getWorkItem(work.id).status, "running");
+  assert.match(clients[1]?.session("thread-1").pending?.input ?? "", /Investigate platform-123/);
+
+  clients[1]?.session("thread-1").complete("storage investigation complete");
+  await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
+  assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
+});

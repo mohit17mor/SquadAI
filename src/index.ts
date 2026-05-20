@@ -21,6 +21,12 @@ export type {
   CodexSessionLike,
   PersistedAgentManagerState,
   PersistedAgentState,
+  RoutingDecision,
+  SensorEvent,
+  SensorEventInput,
+  SensorEventStatus,
   SendResult,
+  WorkItem,
+  WorkItemStatus,
 } from "./types.js";
 export { CodexAgentManagerError } from "./types.js";

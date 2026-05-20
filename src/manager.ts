@@ -17,7 +17,11 @@ import type {
   CodexControlClientLike,
   CodexSessionLike,
   PersistedAgentManagerState,
+  RoutingDecision,
+  SensorEvent,
+  SensorEventInput,
   SendResult,
+  WorkItem,
 } from "./types.js";
 import { CodexAgentManagerError } from "./types.js";
 
@@ -48,9 +52,13 @@ export class CodexAgentManager extends EventEmitter {
   private readonly clientFactory: CodexControlClientFactory;
   private readonly clock: () => Date;
   private events: AgentEvent[] = [];
+  private sensorEvents: SensorEvent[] = [];
+  private workItems: WorkItem[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
   private nextEventId = 1;
   private nextApprovalId = 1;
+  private nextSensorEventId = 1;
+  private nextWorkItemId = 1;
   private started: Promise<void> | null = null;
   private closed = false;
 
@@ -153,6 +161,153 @@ export class CodexAgentManager extends EventEmitter {
         method: pending.request.method,
       },
     );
+  }
+
+  listSensorEvents(): SensorEvent[] {
+    return this.sensorEvents.map(cloneSensorEvent);
+  }
+
+  getSensorEvent(eventId: string): SensorEvent {
+    const event = this.sensorEvents.find((item) => item.id === eventId);
+    if (!event) {
+      throw new CodexAgentManagerError(`Unknown sensor event: ${eventId}`);
+    }
+    return cloneSensorEvent(event);
+  }
+
+  listWorkItems(): WorkItem[] {
+    return this.workItems.map(cloneWorkItem);
+  }
+
+  getWorkItem(workItemId: string): WorkItem {
+    const workItem = this.workItems.find((item) => item.id === workItemId);
+    if (!workItem) {
+      throw new CodexAgentManagerError(`Unknown work item: ${workItemId}`);
+    }
+    return cloneWorkItem(workItem);
+  }
+
+  async ingestSensorEvent(input: SensorEventInput): Promise<SensorEvent> {
+    this.assertOpen();
+    await this.start();
+    const normalized = normalizeSensorEventInput(input);
+    if (normalized.dedupeKey) {
+      const existing = this.sensorEvents.find(
+        (event) => event.source === normalized.source && event.dedupeKey === normalized.dedupeKey,
+      );
+      if (existing) {
+        return cloneSensorEvent(existing);
+      }
+    }
+
+    const now = this.now();
+    const event: SensorEvent = {
+      id: `sensor-${this.nextSensorEventId++}`,
+      ...normalized,
+      status: "pending",
+      workItemId: null,
+      failureReason: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.sensorEvents.push(event);
+    await this.recordEvent("system", "sensor_event_ingested", "Sensor event ingested.", {
+      sensorEventId: event.id,
+      source: event.source,
+      type: event.type,
+      dedupeKey: event.dedupeKey,
+    });
+    await this.persist();
+    return cloneSensorEvent(event);
+  }
+
+  async processNextSensorEvent(routerAgentId?: string): Promise<WorkItem> {
+    this.assertOpen();
+    await this.start();
+    const event = this.sensorEvents.find((item) => item.status === "pending");
+    if (!event) {
+      throw new CodexAgentManagerError("No pending sensor events.");
+    }
+    const router = routerAgentId ? this.requireRecord(routerAgentId) : this.findRouterRecord();
+    event.status = "routing";
+    event.updatedAt = this.now();
+    await this.persist();
+
+    try {
+      const result = await this.sendToAgent(
+        router.definition.id,
+        this.routerPrompt(event, router.definition.id),
+        { timeoutMs: 600_000 },
+      );
+      const decision = parseRoutingDecision(result.finalText);
+      this.validateRoutingDecision(decision, router.definition.id);
+      const workItem = await this.createWorkItemFromDecision(event, router.definition.id, decision);
+      event.status = "routed";
+      event.workItemId = workItem.id;
+      event.failureReason = null;
+      event.updatedAt = this.now();
+      await this.recordEvent(router.definition.id, "sensor_event_routed", "Sensor event routed.", {
+        sensorEventId: event.id,
+        workItemId: workItem.id,
+        targetAgentId: workItem.targetAgentId,
+      });
+      await this.persist();
+      return cloneWorkItem(workItem);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      event.status = "failed";
+      event.failureReason = message;
+      event.updatedAt = this.now();
+      await this.recordEvent(router.definition.id, "sensor_event_failed", message, {
+        sensorEventId: event.id,
+      });
+      await this.persist();
+      throw error;
+    }
+  }
+
+  async dispatchQueuedWork(): Promise<WorkItem[]> {
+    this.assertOpen();
+    await this.start();
+    const started: WorkItem[] = [];
+    for (const workItem of this.workItems.filter((item) => item.status === "queued")) {
+      const record = this.records.get(workItem.targetAgentId);
+      if (!record || !this.isAgentAvailable(record)) {
+        continue;
+      }
+      workItem.status = "running";
+      workItem.startedAt = this.now();
+      workItem.updatedAt = workItem.startedAt;
+      await this.recordEvent(workItem.targetAgentId, "work_item_started", "Work item started.", {
+        workItemId: workItem.id,
+        sensorEventId: workItem.eventId,
+      });
+      void this.runWorkItem(workItem);
+      started.push(cloneWorkItem(workItem));
+    }
+    await this.persist();
+    return started;
+  }
+
+  async runAutomationCycle(routerAgentId?: string): Promise<{
+    routedWorkItem: WorkItem | null;
+    dispatchedWorkItems: WorkItem[];
+  }> {
+    this.assertOpen();
+    await this.start();
+    let routedWorkItem: WorkItem | null = null;
+    const router = routerAgentId
+      ? this.records.get(routerAgentId) ?? null
+      : this.findRouterRecordOrNull();
+    if (
+      router &&
+      this.isAgentAvailable(router) &&
+      this.sensorEvents.some((event) => event.status === "pending")
+    ) {
+      routedWorkItem = await this.processNextSensorEvent(routerAgentId);
+    }
+    const dispatchedWorkItems = await this.dispatchQueuedWork();
+    return { routedWorkItem, dispatchedWorkItems };
   }
 
   async close(): Promise<void> {
@@ -258,8 +413,12 @@ export class CodexAgentManager extends EventEmitter {
       ...event,
       payload: { ...event.payload },
     }));
+    this.sensorEvents = (state.sensorEvents ?? []).map(cloneSensorEvent);
+    this.workItems = (state.workItems ?? []).map(cloneWorkItem);
     this.nextEventId =
       this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
+    this.nextSensorEventId = nextNumericId(this.sensorEvents, "sensor");
+    this.nextWorkItemId = nextNumericId(this.workItems, "work");
 
     for (const [agentId, persisted] of Object.entries(state.agents ?? {})) {
       let record = this.records.get(agentId);
@@ -367,6 +526,130 @@ export class CodexAgentManager extends EventEmitter {
     }
   }
 
+  private findRouterRecord(): RuntimeRecord {
+    const routers = this.routerRecords();
+    if (routers.length !== 1) {
+      throw new CodexAgentManagerError(
+        `Expected exactly one router agent, found ${routers.length}.`,
+      );
+    }
+    return routers[0] as RuntimeRecord;
+  }
+
+  private findRouterRecordOrNull(): RuntimeRecord | null {
+    const routers = this.routerRecords();
+    return routers.length === 1 ? routers[0] as RuntimeRecord : null;
+  }
+
+  private routerRecords(): RuntimeRecord[] {
+    return Array.from(this.records.values()).filter(
+      (record) => record.definition.metadata?.role === "router",
+    );
+  }
+
+  private routerPrompt(event: SensorEvent, routerAgentId: string): string {
+    const roster = Array.from(this.records.values())
+      .filter((record) => record.definition.id !== routerAgentId)
+      .map((record) => {
+        return {
+          id: record.definition.id,
+          name: record.definition.name,
+          status: record.status,
+          description: record.definition.instructions,
+          metadata: record.definition.metadata ?? {},
+        };
+      });
+
+    return [
+      "You are the routing agent for a multi-agent Codex command center.",
+      "Read the incoming sensor event and choose the best existing worker agent.",
+      "Return only a JSON object with targetAgentId, prompt, and reason.",
+      "Do not solve the task yourself. Do not assign work to yourself.",
+      "",
+      "Available worker agents:",
+      JSON.stringify(roster, null, 2),
+      "",
+      "Sensor event:",
+      JSON.stringify(event, null, 2),
+    ].join("\n");
+  }
+
+  private validateRoutingDecision(decision: RoutingDecision, routerAgentId: string): void {
+    if (decision.targetAgentId === routerAgentId) {
+      throw new CodexAgentManagerError("Router agent cannot assign work to itself.");
+    }
+    this.requireRecord(decision.targetAgentId);
+    if (!decision.prompt.trim()) {
+      throw new CodexAgentManagerError("Routing decision prompt cannot be empty.");
+    }
+  }
+
+  private async createWorkItemFromDecision(
+    event: SensorEvent,
+    routerAgentId: string,
+    decision: RoutingDecision,
+  ): Promise<WorkItem> {
+    const now = this.now();
+    const workItem: WorkItem = {
+      id: `work-${this.nextWorkItemId++}`,
+      eventId: event.id,
+      targetAgentId: decision.targetAgentId,
+      prompt: decision.prompt.trim(),
+      status: "queued",
+      routerAgentId,
+      reason: decision.reason?.trim() || null,
+      result: null,
+      failureReason: null,
+      metadata: { ...(decision.metadata ?? {}) },
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      completedAt: null,
+    };
+    this.workItems.push(workItem);
+    await this.recordEvent(decision.targetAgentId, "work_item_created", "Work item created.", {
+      workItemId: workItem.id,
+      sensorEventId: event.id,
+      routerAgentId,
+      reason: workItem.reason,
+    });
+    return workItem;
+  }
+
+  private async runWorkItem(workItem: WorkItem): Promise<void> {
+    try {
+      const result = await this.sendToAgent(workItem.targetAgentId, workItem.prompt, {
+        timeoutMs: 600_000,
+        network: "allow",
+      });
+      workItem.status = "done";
+      workItem.result = result.finalText;
+      workItem.failureReason = null;
+      workItem.completedAt = this.now();
+      workItem.updatedAt = workItem.completedAt;
+      await this.recordEvent(workItem.targetAgentId, "work_item_completed", "Work item completed.", {
+        workItemId: workItem.id,
+        sensorEventId: workItem.eventId,
+      });
+      await this.persist();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      workItem.status = "failed";
+      workItem.failureReason = message;
+      workItem.completedAt = this.now();
+      workItem.updatedAt = workItem.completedAt;
+      await this.recordEvent(workItem.targetAgentId, "work_item_failed", message, {
+        workItemId: workItem.id,
+        sensorEventId: workItem.eventId,
+      });
+      await this.persist();
+    }
+  }
+
+  private isAgentAvailable(record: RuntimeRecord): boolean {
+    return !record.activeTurn && record.status === "idle";
+  }
+
   private async persist(): Promise<void> {
     const agents: PersistedAgentManagerState["agents"] = {};
     for (const record of this.records.values()) {
@@ -386,6 +669,8 @@ export class CodexAgentManager extends EventEmitter {
       version: 1,
       agents,
       events: this.events,
+      sensorEvents: this.sensorEvents,
+      workItems: this.workItems,
     });
   }
 
@@ -451,4 +736,117 @@ function normalizeRecoveredStatus(status: AgentStatus | undefined): AgentStatus 
     return "failed";
   }
   return "idle";
+}
+
+function normalizeSensorEventInput(input: SensorEventInput): SensorEventInput {
+  const source = requiredTrimmed(input.source, "source");
+  const type = requiredTrimmed(input.type, "type");
+  const body = requiredTrimmed(input.body, "body");
+  const normalized: SensorEventInput = {
+    source,
+    type,
+    body,
+    priority: input.priority ?? "normal",
+    metadata: cloneRecord(input.metadata),
+  };
+  const title = optionalTrimmed(input.title);
+  const url = optionalTrimmed(input.url);
+  const dedupeKey = optionalTrimmed(input.dedupeKey);
+  if (title) {
+    normalized.title = title;
+  }
+  if (url) {
+    normalized.url = url;
+  }
+  if (dedupeKey) {
+    normalized.dedupeKey = dedupeKey;
+  }
+  return normalized;
+}
+
+function parseRoutingDecision(text: string): RoutingDecision {
+  const parsed = parseJsonObject(text);
+  const targetAgentId = requiredTrimmed(parsed.targetAgentId, "targetAgentId");
+  const prompt = requiredTrimmed(parsed.prompt, "prompt");
+  const decision: RoutingDecision = {
+    targetAgentId,
+    prompt,
+    metadata: cloneRecord(asOptionalRecord(parsed.metadata)),
+  };
+  const reason = optionalTrimmed(parsed.reason);
+  if (reason) {
+    decision.reason = reason;
+  }
+  return decision;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  const trimmed = text.trim();
+  const candidates = [trimmed];
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isRecord(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  throw new CodexAgentManagerError("Router response must be a JSON object.");
+}
+
+function requiredTrimmed(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new CodexAgentManagerError(`Field ${field} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function optionalTrimmed(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new CodexAgentManagerError("Expected metadata to be an object.");
+  }
+  return value;
+}
+
+function cloneRecord(value: Record<string, unknown> | undefined): Record<string, unknown> {
+  return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : {};
+}
+
+function cloneSensorEvent(event: SensorEvent): SensorEvent {
+  return {
+    ...event,
+    metadata: cloneRecord(event.metadata),
+  };
+}
+
+function cloneWorkItem(workItem: WorkItem): WorkItem {
+  return {
+    ...workItem,
+    metadata: cloneRecord(workItem.metadata),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nextNumericId(items: Array<{ id: string }>, prefix: string): number {
+  return items.reduce((max, item) => {
+    const match = item.id.match(new RegExp(`^${prefix}-(\\d+)$`));
+    return match?.[1] ? Math.max(max, Number(match[1])) : max;
+  }, 0) + 1;
 }
