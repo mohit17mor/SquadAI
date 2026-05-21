@@ -543,12 +543,13 @@ function renderHtml(title: string): string {
   <style>${css()}</style>
 </head>
 <body>
-  <main class="shell">
+  <main id="shell" class="shell">
     <nav class="command-rail">
       <div class="brand">
         <h1>${escapeHtml(title)}</h1>
       </div>
       <div class="rail-nav" aria-label="Command center sections">
+        <button type="button" class="rail-item" data-panel="jarvis">Jarvis</button>
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <button type="button" class="rail-item" data-panel="create">Create Agent</button>
         <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
@@ -618,27 +619,6 @@ function renderHtml(title: string): string {
           </form>
         </details>
       </section>
-      <section id="panel-notifications" class="panel-view queue-panel">
-        <div class="section-head">
-          <h2>Notifications</h2>
-          <span id="notification-panel-count">0</span>
-        </div>
-        <div id="notifications-list" class="queue-list"></div>
-      </section>
-      <section id="panel-events" class="panel-view queue-panel">
-        <div class="section-head">
-          <h2>Event Inbox</h2>
-          <span id="event-panel-count">0</span>
-        </div>
-        <div id="sensor-events" class="queue-list"></div>
-      </section>
-      <section id="panel-work" class="panel-view queue-panel">
-        <div class="section-head">
-          <h2>Work Queue</h2>
-          <span id="work-panel-count">0</span>
-        </div>
-        <div id="work-items" class="queue-list"></div>
-      </section>
     </aside>
     <section class="workspace chat-stream">
       <header class="topbar">
@@ -656,6 +636,23 @@ function renderHtml(title: string): string {
           <button type="submit">Send</button>
         </div>
       </form>
+    </section>
+    <section id="ops-workspace" class="ops-workspace" aria-live="polite">
+      <header class="ops-header">
+        <div>
+          <h2 id="ops-title">System Activity</h2>
+          <p id="ops-subtitle">Operational records from the command center.</p>
+        </div>
+        <div class="ops-controls">
+          <span id="ops-count">0 items</span>
+          <button id="ops-refresh" type="button" class="secondary">Refresh</button>
+        </div>
+      </header>
+      <div class="ops-body">
+        <div id="notifications-list" class="ops-log"></div>
+        <div id="sensor-events" class="ops-log"></div>
+        <div id="work-items" class="ops-log"></div>
+      </div>
     </section>
     <div id="toasts" class="toasts"></div>
   </main>
@@ -678,6 +675,9 @@ button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
 button.danger { background: #21262d; color: #f85149; }
 button.danger:hover { border-color: #f85149; background: #2d1517; }
 .shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
+.shell.jarvis-mode, .shell.ops-mode { grid-template-columns: 220px minmax(0, 1fr); }
+.shell.jarvis-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace { display: none; }
+.shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { grid-column: 2; }
 .command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 20px; border-bottom: 1px solid #30363d; }
 h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
@@ -723,18 +723,33 @@ textarea { resize: vertical; }
 .agent strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-list { display: grid; gap: 7px; }
-.queue-item { border: 1px solid #30363d; border-radius: 8px; padding: 9px; background: #0d1117; display: grid; gap: 4px; }
+.queue-item { border-bottom: 1px solid rgba(48,54,61,.72); padding: 9px 0; background: transparent; display: grid; grid-template-columns: 90px 160px minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .queue-item[role="button"] { cursor: pointer; text-align: left; }
-.queue-item[role="button"]:hover { border-color: #58a6ff; background: #111820; }
-.queue-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: #8b949e; font-size: 11px; }
+.queue-item[role="button"]:hover { background: rgba(88,166,255,.06); }
+.queue-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: #8b949e; font-size: 11px; }
 .queue-actions button { padding: 5px 8px; border-radius: 6px; font-size: 11px; }
 .queue-item strong { color: #e6edf3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item .sub { color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-message { grid-column: 3 / -1; }
+.queue-actions { grid-column: 3 / -1; }
+.queue-time { color: #6e7681; font-variant-numeric: tabular-nums; }
+.queue-state { color: #58a6ff; font-weight: 700; }
+.ops-workspace { display: none; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; background: #0d1117; }
+.ops-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 18px 28px; background: #161b22; border-bottom: 1px solid #30363d; }
+.ops-header h2 { text-transform: none; letter-spacing: 0; color: #e6edf3; font-size: 18px; margin: 0; }
+.ops-header p { margin: 4px 0 0; color: #8b949e; font-size: 13px; }
+.ops-controls { display: flex; align-items: center; gap: 12px; color: #8b949e; font-size: 12px; white-space: nowrap; }
+.ops-body { min-height: 0; overflow-y: auto; padding: 14px 28px 28px; font-family: "SF Mono", Monaco, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.7; }
+.ops-body::-webkit-scrollbar { width: 6px; }
+.ops-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.ops-log { display: none; }
+.ops-log.active { display: block; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
 .status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
 .status-pill.failed { background: rgba(248,81,73,.14); color: #f85149; }
 .workspace { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
+.ops-workspace { display: none; }
 .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 16px 22px; background: #161b22; border-bottom: 1px solid #30363d; }
 .topbar h2 { text-transform: none; letter-spacing: 0; color: #e6edf3; font-size: 18px; margin: 0; }
 .topbar p { margin: 4px 0 0; color: #8b949e; font-size: 13px; overflow-wrap: anywhere; }
@@ -783,7 +798,7 @@ textarea { resize: vertical; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
-@media (max-width: 980px) { body { overflow: auto; } .shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .message-row { max-width: 92%; } }
+@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
 `;
 }
 
@@ -799,7 +814,7 @@ let modelOptions = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
-let activePanel = "agents";
+let activePanel = "jarvis";
 let lastAgentListHtml = "";
 let lastMessagesHtml = "";
 const activityOpenState = new Map();
@@ -826,6 +841,7 @@ const defaultJarvisInstructions = [
   "If several notifications arrive together, group them into a short status update.",
 ].join("\\n");
 
+const shell = document.getElementById("shell");
 const agentList = document.getElementById("agents");
 const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
@@ -855,12 +871,17 @@ const editAgentStatus = document.getElementById("edit-agent-status");
 const deleteAgentButton = document.getElementById("delete-agent-button");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
+const opsTitle = document.getElementById("ops-title");
+const opsSubtitle = document.getElementById("ops-subtitle");
+const opsCount = document.getElementById("ops-count");
+const opsRefresh = document.getElementById("ops-refresh");
 let agentIdTouched = false;
 let createInstructionsTouched = false;
 let editAgentLoadedId = null;
 let editAgentDirty = false;
 
 document.getElementById("refresh").addEventListener("click", refresh);
+opsRefresh.addEventListener("click", refresh);
 for (const button of document.querySelectorAll("[data-panel]")) {
   button.addEventListener("click", () => {
     activePanel = button.dataset.panel || "agents";
@@ -945,9 +966,20 @@ async function refreshAgents() {
   const response = await fetch("/api/agents");
   const body = await response.json();
   agents = body.agents;
-  if (!selectedAgentId && agents.length) selectedAgentId = agents[0].id;
+  if (activePanel === "jarvis") {
+    selectedAgentId = jarvisAgent()?.id || null;
+  } else if (!selectedAgentId && agents.length) {
+    selectedAgentId = agents[0].id;
+  }
   agentCount.textContent = String(agents.length);
   agentPanelCount.textContent = String(agents.length);
+}
+
+function jarvisAgent() {
+  return agents.find((agent) => agent.metadata?.role === "jarvis")
+    || agents.find((agent) => agent.id.toLowerCase() === "jarvis")
+    || agents.find((agent) => agent.name.toLowerCase() === "jarvis")
+    || null;
 }
 
 function upsertAgent(agent) {
@@ -1081,7 +1113,7 @@ async function createAgent(event) {
   upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
   lastMessagesHtml = "";
-  activePanel = "agents";
+  activePanel = result.agent.metadata?.role === "jarvis" ? "jarvis" : "agents";
   editAgentDirty = false;
   editAgentLoadedId = null;
   event.currentTarget.reset();
@@ -1263,6 +1295,16 @@ async function sendMessage(event) {
 
 function render() {
   renderPanel();
+  if (activePanel === "jarvis") {
+    const jarvis = jarvisAgent();
+    if (selectedAgentId !== jarvis?.id) {
+      selectedAgentId = jarvis?.id || null;
+      lastMessagesHtml = "";
+    }
+  } else if (activePanel === "agents" && !agents.some((agent) => agent.id === selectedAgentId)) {
+    selectedAgentId = agents[0]?.id || null;
+    lastMessagesHtml = "";
+  }
   const agentListHtml = agents.map((agent) => \`
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
@@ -1285,6 +1327,7 @@ function render() {
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
+  messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   cancelAgentButton.hidden = !(selected && selected.status === "running");
   cancelAgentButton.disabled = cancelInFlight;
   cancelAgentButton.textContent = cancelInFlight ? "Cancelling" : "Cancel";
@@ -1363,6 +1406,7 @@ function renderAgentEditor(selected) {
 
 function renderPanel() {
   const titles = {
+    jarvis: ["Jarvis", "Talk to the command center as a whole."],
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
     notifications: ["Notifications", "Human-attention items from active agents."],
@@ -1370,44 +1414,63 @@ function renderPanel() {
     work: ["Work Queue", "Worker-owned items created by the router."],
   };
   const [title, subtitle] = titles[activePanel] || titles.agents;
-  panelTitle.textContent = title;
-  panelSubtitle.textContent = subtitle;
+  const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
+  shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
+  shell.classList.toggle("ops-mode", opsMode);
+  if (opsMode) {
+    opsTitle.textContent = title;
+    opsSubtitle.textContent = subtitle;
+  } else {
+    panelTitle.textContent = title;
+    panelSubtitle.textContent = subtitle;
+  }
   for (const button of document.querySelectorAll("[data-panel]")) {
     button.classList.toggle("active", button.dataset.panel === activePanel);
   }
   for (const view of document.querySelectorAll(".panel-view")) {
     view.classList.toggle("active", view.id === "panel-" + activePanel);
   }
+  for (const log of document.querySelectorAll(".ops-log")) {
+    log.classList.toggle("active", (
+      (activePanel === "notifications" && log.id === "notifications-list") ||
+      (activePanel === "events" && log.id === "sensor-events") ||
+      (activePanel === "work" && log.id === "work-items")
+    ));
+  }
 }
 
 function renderQueues() {
   const visibleSensorEvents = sensorEvents.filter((event) => event.status !== "routed");
   eventCount.textContent = String(visibleSensorEvents.length);
-  eventPanelCount.textContent = String(visibleSensorEvents.length);
+  if (eventPanelCount) eventPanelCount.textContent = String(visibleSensorEvents.length);
   workCount.textContent = String(workItems.length);
-  workPanelCount.textContent = String(workItems.length);
-  sensorEventList.innerHTML = visibleSensorEvents.slice(-5).reverse().map((event) => \`
+  if (workPanelCount) workPanelCount.textContent = String(workItems.length);
+  sensorEventList.innerHTML = [...visibleSensorEvents].reverse().map((event) => \`
     <div class="queue-item">
-      <strong>\${escapeHtml(event.title || event.type)}</strong>
-      <span class="sub">\${escapeHtml(event.source)} - \${escapeHtml(event.status)} - \${escapeHtml(event.id)}</span>
-      <span class="sub">\${escapeHtml(event.body)}</span>
+      <span class="queue-time">\${escapeHtml(formatShortTime(event.updatedAt || event.createdAt))}</span>
+      <strong>\${escapeHtml(event.source)}</strong>
+      <span class="queue-state">\${escapeHtml(event.status)} · \${escapeHtml(event.id)}</span>
+      <span class="sub queue-message">\${escapeHtml(event.title || event.type)} — \${escapeHtml(event.body)}</span>
     </div>
   \`).join("") || '<div class="empty">No pending or failed sensor events.</div>';
-  workItemList.innerHTML = workItems.slice(-5).reverse().map((item) => \`
+  workItemList.innerHTML = [...workItems].reverse().map((item) => \`
     <div class="queue-item">
-      <strong>\${escapeHtml(item.targetAgentId)} - \${escapeHtml(item.status)}</strong>
-      <span class="sub">\${escapeHtml(item.id)}\${item.eventId ? " from " + escapeHtml(item.eventId) : ""}</span>
-      <span class="sub">\${escapeHtml(item.prompt)}</span>
+      <span class="queue-time">\${escapeHtml(formatShortTime(item.updatedAt || item.createdAt))}</span>
+      <strong>\${escapeHtml(item.targetAgentId)}</strong>
+      <span class="queue-state">\${escapeHtml(item.status)} · \${escapeHtml(item.id)}</span>
+      <span class="sub queue-message">\${item.eventId ? escapeHtml(item.eventId) + " — " : ""}\${escapeHtml(item.prompt)}</span>
     </div>
   \`).join("") || '<div class="empty">No work queued yet.</div>';
+  updateOpsCount();
   renderNotifications();
 }
 
 function renderNotifications() {
   const pending = notifications.filter((item) => item.status === "pending");
   notificationCount.textContent = String(pending.length);
-  notificationPanelCount.textContent = String(pending.length);
+  if (notificationPanelCount) notificationPanelCount.textContent = String(pending.length);
   notificationList.innerHTML = [...pending].reverse().map(renderNotificationItem).join("") || '<div class="empty">No notifications need attention.</div>';
+  updateOpsCount();
   bindNotificationActions();
 }
 
@@ -1417,15 +1480,38 @@ function renderNotificationItem(item) {
     : \`<button type="button" class="secondary" data-notification-dismiss-id="\${escapeAttr(item.id)}">Dismiss</button>\`;
   return \`
     <div class="queue-item notification-item" role="button" tabindex="0" data-notification-id="\${escapeAttr(item.id)}" data-notification-agent-id="\${escapeAttr(item.agentId)}">
-      <strong>\${escapeHtml(item.agentName)} - \${escapeHtml(notificationKindLabel(item.kind))}</strong>
-      <span class="sub">\${escapeHtml(item.summary)}</span>
-      <span class="sub">\${escapeHtml(item.id)} from event \${escapeHtml(item.sourceEventId)}</span>
+      <span class="queue-time">\${escapeHtml(formatShortTime(item.updatedAt || item.createdAt))}</span>
+      <strong>\${escapeHtml(item.agentName)}</strong>
+      <span class="queue-state">\${escapeHtml(notificationKindLabel(item.kind))} · \${escapeHtml(item.id)}</span>
+      <span class="sub queue-message">\${escapeHtml(item.summary)} · event \${escapeHtml(item.sourceEventId)}</span>
       <span class="queue-actions">
         <span>Open agent</span>
         \${dismissButton}
       </span>
     </div>
   \`;
+}
+
+function updateOpsCount() {
+  if (!opsCount) return;
+  if (activePanel === "notifications") {
+    const pending = notifications.filter((item) => item.status === "pending").length;
+    opsCount.textContent = pending + (pending === 1 ? " item" : " items");
+    return;
+  }
+  if (activePanel === "events") {
+    const visible = sensorEvents.filter((event) => event.status !== "routed").length;
+    opsCount.textContent = visible + (visible === 1 ? " item" : " items");
+    return;
+  }
+  if (activePanel === "work") {
+    opsCount.textContent = workItems.length + (workItems.length === 1 ? " item" : " items");
+  }
+}
+
+function formatShortTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
 }
 
 function bindNotificationActions() {
