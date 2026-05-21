@@ -578,7 +578,7 @@ function renderHtml(title: string): string {
           <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
           <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
-          <label>Model<input name="model" list="model-options" autocomplete="off" placeholder="Default Codex model"></label>
+          <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
           <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
           <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
@@ -586,7 +586,6 @@ function renderHtml(title: string): string {
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
-        <datalist id="model-options"></datalist>
       </section>
       <section id="panel-agents" class="panel-view active">
         <div class="section-head">
@@ -605,7 +604,7 @@ function renderHtml(title: string): string {
           <form id="edit-agent-form" class="agent-editor-form">
             <label>Name<input name="name" autocomplete="off"></label>
             <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
-            <label>Model<input name="model" list="model-options" autocomplete="off" placeholder="Default Codex model"></label>
+            <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
             <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
             <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
             <label>Working directory<input name="cwd" autocomplete="off"></label>
@@ -851,7 +850,6 @@ const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
 const agentIdHint = document.getElementById("agent-id-hint");
-const modelDatalist = document.getElementById("model-options");
 const editAgentForm = document.getElementById("edit-agent-form");
 const editAgentStatus = document.getElementById("edit-agent-status");
 const deleteAgentButton = document.getElementById("delete-agent-button");
@@ -880,12 +878,12 @@ agentForm.addEventListener("input", (event) => {
   }
 });
 createRoleSelect.addEventListener("change", applyCreateRoleDefaults);
-createModelInput.addEventListener("input", renderModelControls);
+createModelInput.addEventListener("change", renderModelControls);
 editAgentForm.addEventListener("submit", updateSelectedAgent);
 editAgentForm.addEventListener("input", () => {
   editAgentDirty = true;
 });
-editAgentForm.elements.model.addEventListener("input", renderModelControls);
+editAgentForm.elements.model.addEventListener("change", renderModelControls);
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
@@ -965,15 +963,20 @@ function upsertAgent(agent) {
 }
 
 function renderModelControls() {
-  if (modelDatalist) {
-    modelDatalist.innerHTML = modelOptions.map((model) => {
-      const value = model.model || model.id || "";
-      const label = model.displayName || value;
-      return \`<option value="\${escapeAttr(value)}" label="\${escapeAttr(label)}"></option>\`;
-    }).join("");
-  }
+  updateModelSelect(agentForm.elements.model);
+  updateModelSelect(editAgentForm.elements.model);
   updateModelDependentSelects(agentForm);
   updateModelDependentSelects(editAgentForm);
+}
+
+function updateModelSelect(select) {
+  const current = select.value;
+  select.innerHTML = '<option value="">Default Codex model</option>' + modelOptions.map((model) => {
+    const value = model.model || model.id || "";
+    const label = model.displayName || value;
+    return \`<option value="\${escapeAttr(value)}">\${escapeHtml(label)}</option>\`;
+  }).join("");
+  select.value = modelOptions.some((model) => model.model === current || model.id === current) ? current : "";
 }
 
 function updateModelDependentSelects(form) {

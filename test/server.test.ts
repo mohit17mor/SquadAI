@@ -506,7 +506,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
     assert.match(html, /\/api\/model-options/);
-    assert.match(html, /id="model-options"/);
+    assert.match(html, /data-model-select/);
+    assert.match(html, /Default Codex model/);
+    assert.match(html, /updateModelSelect/);
     assert.match(html, /name="reasoningEffort"/);
     assert.match(html, /data-reasoning-select/);
     assert.match(html, /name="serviceTier"/);
@@ -516,6 +518,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /serviceTierOptions/);
     assert.match(html, /selected\.reasoningEffort/);
     assert.match(html, /selected\.serviceTier/);
+    assert.doesNotMatch(html, /<datalist id="model-options"/);
+    assert.doesNotMatch(html, /list="model-options"/);
     assert.match(html, /<option value="router">Router<\/option>/);
     assert.match(html, /<option value="jarvis">Jarvis<\/option>/);
     assert.match(html, /Routing description/);
