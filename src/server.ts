@@ -110,6 +110,13 @@ export class CommandCenterServer {
         return;
       }
 
+      const cancelMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && cancelMatch?.[1]) {
+        const event = await this.options.manager.interruptAgentTurn(decodeURIComponent(cancelMatch[1]));
+        this.json(response, { event });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/sensor-events") {
         this.json(response, { events: this.options.manager.listSensorEvents() });
         return;
@@ -586,6 +593,7 @@ function renderHtml(title: string): string {
           <h2 id="selected-title">No agent selected</h2>
           <p id="selected-meta">Create or select an agent to begin.</p>
         </div>
+        <button id="cancel-agent-button" type="button" class="danger" hidden>Cancel</button>
       </header>
       <section class="message-list" id="messages"></section>
       <form id="message-form" class="composer">
@@ -700,7 +708,9 @@ textarea { resize: vertical; }
 .activity-toggle::-webkit-details-marker { display: none; }
 .activity-toggle strong { color: #c9d1d9; font-weight: 600; }
 .activity-count { color: #8b949e; font-size: 11px; }
-.activity-detail-list { border-top: 1px solid #30363d; padding: 8px 10px 10px; display: grid; gap: 6px; }
+.activity-detail-list { border-top: 1px solid #30363d; padding: 8px 10px 10px; display: grid; gap: 6px; max-height: 260px; overflow-y: auto; }
+.activity-detail-list::-webkit-scrollbar { width: 6px; }
+.activity-detail-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 .activity-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 12px; }
 .activity-row strong { color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row span { color: #c9d1d9; overflow-wrap: anywhere; }
@@ -729,9 +739,11 @@ let sensorEvents = [];
 let workItems = [];
 let pendingMessages = [];
 let sendInFlight = false;
+let cancelInFlight = false;
 let activePanel = "agents";
 let lastAgentListHtml = "";
 let lastMessagesHtml = "";
+const activityOpenState = new Map();
 const defaultRouterInstructions = [
   "You are the router agent for the multi-agent Codex command center.",
   "Your job is to inspect incoming sensor events and choose the best worker agent.",
@@ -747,6 +759,7 @@ const agentList = document.getElementById("agents");
 const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
 const selectedMeta = document.getElementById("selected-meta");
+const cancelAgentButton = document.getElementById("cancel-agent-button");
 const connection = document.getElementById("connection");
 const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
@@ -795,6 +808,7 @@ editAgentForm.addEventListener("input", () => {
   editAgentDirty = true;
 });
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
+cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
 agentNameInput.addEventListener("input", updateDerivedAgentId);
 agentIdInput.addEventListener("input", () => {
@@ -992,6 +1006,28 @@ async function deleteSelectedAgent() {
   toast("Agent deleted");
 }
 
+async function cancelSelectedAgent() {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || selected.status !== "running" || cancelInFlight) return;
+  cancelInFlight = true;
+  render();
+  try {
+    const response = await fetch("/api/agents/" + encodeURIComponent(selected.id) + "/cancel", {
+      method: "POST",
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      toast(result.error || "Cancel failed", "error");
+      return;
+    }
+    toast("Interrupt requested");
+    await refresh();
+  } finally {
+    cancelInFlight = false;
+    render();
+  }
+}
+
 function deriveAgentId(name) {
   return String(name)
     .toLowerCase()
@@ -1068,6 +1104,9 @@ function render() {
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
+  cancelAgentButton.hidden = !(selected && selected.status === "running");
+  cancelAgentButton.disabled = cancelInFlight;
+  cancelAgentButton.textContent = cancelInFlight ? "Cancelling" : "Cancel";
   renderAgentEditor(selected);
   const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : [];
   dedupePendingMessages(visibleEvents);
@@ -1307,6 +1346,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
         createdAt: event.createdAt,
         updatedAt: event.createdAt,
       };
+      current.eventIds.push(event.id);
       continue;
     }
     if (event.type === "codex_item_completed") {
@@ -1397,14 +1437,15 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
 function activitySummaryToTimelineMessage(summary) {
   return {
     kind: "timeline",
+    activityId: "activity-" + String(summary.eventIds[0] || summary.createdAt),
     meta: "Codex activity",
     title: summary.hasCompaction ? "Thread compacted" : summary.status === "running" ? "Agent is working" : "Activity",
     status: summary.status,
-    entries: summary.entries.slice(-10).map((entry) => ({
+    entries: summary.entries.map((entry) => ({
       label: entry.itemType,
       text: entry.summary ? \`\${entry.title} - \${entry.summary}\` : entry.title,
     })),
-    hiddenCount: Math.max(0, summary.entries.length - 10),
+    hiddenCount: 0,
     hasApproval: summary.hasApproval,
     hasCompaction: summary.hasCompaction,
     time: summary.updatedAt,
@@ -1480,9 +1521,11 @@ function renderMessage(message) {
     const hidden = message.hiddenCount
       ? \`<div class="activity-muted">\${escapeHtml(message.hiddenCount)} earlier events hidden</div>\`
       : "";
+    const activityId = message.activityId || "activity-" + String(message.time || message.title || "");
+    const open = activityOpenState.get(activityId) ? " open" : "";
     return \`
       <article class="message-row system">
-        <details class="activity-sequence \${escapeAttr(message.status || "done")}">
+        <details class="activity-sequence \${escapeAttr(message.status || "done")}" data-activity-id="\${escapeAttr(activityId)}"\${open}>
           <summary class="activity-toggle">
             <strong>\${escapeHtml(message.title || message.meta)}</strong>
             <span class="activity-count">\${escapeHtml(message.status || "done")} · \${escapeHtml(message.entries.length)} steps</span>
@@ -1637,8 +1680,17 @@ function renderMessagesIfChanged(nextHtml) {
   messages.innerHTML = nextHtml;
   lastMessagesHtml = nextHtml;
   bindApprovalButtons();
+  bindActivityToggles();
   if (shouldStickToBottom) {
     scrollDown();
+  }
+}
+
+function bindActivityToggles() {
+  for (const details of messages.querySelectorAll("[data-activity-id]")) {
+    details.addEventListener("toggle", () => {
+      activityOpenState.set(details.dataset.activityId, details.open);
+    });
   }
 }
 

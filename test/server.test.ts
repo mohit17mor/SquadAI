@@ -55,6 +55,8 @@ class PendingCodexClient {
 }
 
 class PendingCodexSession {
+  interruptCalls = 0;
+
   constructor(readonly threadId: string) {}
 
   async ask(): Promise<{
@@ -63,6 +65,10 @@ class PendingCodexSession {
     turn: Record<string, unknown>;
   }> {
     return new Promise(() => {});
+  }
+
+  async interrupt(): Promise<void> {
+    this.interruptCalls += 1;
   }
 }
 
@@ -251,6 +257,35 @@ test("command center API resolves pending approvals", async () => {
   }
 });
 
+test("command center API interrupts running agents", async () => {
+  const manager = new CodexAgentManager({
+    agents: [
+      {
+        id: "maintenance",
+        name: "Maintenance Debugger",
+        cwd: "/tmp/ops-poc",
+        instructions: "You specialize in maintenance debugging.",
+      },
+    ],
+    clientFactory: () => new PendingCodexClient(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    void manager.sendToAgent("maintenance", "stop this risky work").catch(() => {});
+    await waitFor(() => manager.getAgent("maintenance").status === "running", "running agent");
+
+    const cancelled = await jsonFetch(`http://127.0.0.1:${server.port}/api/agents/maintenance/cancel`, {
+      method: "POST",
+    });
+    assert.equal(cancelled.event.type, "turn_interrupt_requested");
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center API ingests sensor events and exposes work queues", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -342,11 +377,19 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /Developer instructions/);
     assert.match(html, /updateSelectedAgent/);
     assert.match(html, /deleteSelectedAgent/);
+    assert.match(html, /cancel-agent-button/);
+    assert.match(html, /cancelSelectedAgent/);
+    assert.match(html, /\/cancel/);
     assert.match(html, /method: "PATCH"/);
     assert.match(html, /method: "DELETE"/);
     assert.match(html, /approval-card/);
     assert.match(html, /activity-sequence/);
     assert.match(html, /activity-toggle/);
+    assert.match(html, /activityOpenState/);
+    assert.match(html, /bindActivityToggles/);
+    assert.match(html, /data-activity-id/);
+    assert.match(html, /max-height: 260px/);
+    assert.doesNotMatch(html, /summary\.entries\.slice\(-10\)/);
     assert.match(html, /shouldShowTimelineInChat/);
     assert.match(html, /summary\.status === "running" \|\| summary\.status === "failed" \|\| summary\.hasApproval \|\| summary\.hasCompaction/);
     assert.match(html, /hasCompaction/);

@@ -223,6 +223,22 @@ export class CodexAgentManager extends EventEmitter {
     return turn;
   }
 
+  async interruptAgentTurn(agentId: string): Promise<AgentEvent> {
+    this.assertOpen();
+    await this.start();
+    const record = this.requireRecord(agentId);
+    if (!record.activeTurn || record.status !== "running") {
+      throw new CodexAgentManagerError(`Agent ${agentId} does not have a running turn.`);
+    }
+    if (!record.session?.interrupt) {
+      throw new CodexAgentManagerError(`Agent ${agentId} does not support turn interruption.`);
+    }
+    await record.session.interrupt();
+    return this.recordEvent(agentId, "turn_interrupt_requested", "Turn interrupt requested.", {
+      threadId: record.threadId,
+    });
+  }
+
   async resolveApproval(
     approvalId: string,
     decision: ApprovalResponse["decision"],

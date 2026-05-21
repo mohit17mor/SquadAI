@@ -17,6 +17,7 @@ export type AgentEventType =
   | "work_item_failed"
   | "work_item_requeued"
   | "turn_started"
+  | "turn_interrupt_requested"
   | "turn_completed"
   | "turn_failed"
   | "agent_updated"
@@ -183,6 +184,7 @@ export type CodexControlClientLike = {
 export type CodexSessionLike = {
   threadId: string;
   on?(event: string, handler: (...args: unknown[]) => void): unknown;
+  interrupt?(): Promise<void>;
   ask(
     input: string,
     options: Record<string, unknown>,

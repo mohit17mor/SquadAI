@@ -43,6 +43,7 @@ class FakeCodexClient {
 
 class FakeCodexSession {
   readonly asks: Array<{ input: string; options: Record<string, unknown> }> = [];
+  interruptCalls = 0;
   private readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   pending:
     | {
@@ -79,6 +80,10 @@ class FakeCodexSession {
     return new Promise((resolve, reject) => {
       this.pending = { input, resolve, reject };
     });
+  }
+
+  async interrupt(): Promise<void> {
+    this.interruptCalls += 1;
   }
 
   complete(finalText = "done"): void {
@@ -262,6 +267,24 @@ test("rejects concurrent sends to the same agent while allowing another agent to
 
   assert.equal((await first).finalText, "first done");
   assert.equal((await secondAgent).finalText, "parallel done");
+});
+
+test("interrupts a running agent turn through the active session", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const turn = manager.sendToAgent("maintenance", "risky work");
+  await waitFor(() => clients.length === 1, "maintenance client");
+
+  const event = await manager.interruptAgentTurn("maintenance");
+  assert.equal(event.type, "turn_interrupt_requested");
+  assert.equal(clients[0]?.session("thread-1").interruptCalls, 1);
+
+  clients[0]?.session("thread-1").complete("interrupted");
+  await turn;
 });
 
 test("resumes persisted thread ids instead of starting new Codex threads", async () => {
