@@ -1111,9 +1111,35 @@ function summarizeCodexItem(item: unknown): {
   summary: string;
   serverName?: string;
   toolName?: string;
+  command?: string;
+  cwd?: string;
+  exitCode?: number | string;
+  durationMs?: number | string;
 } {
   const value = isRecord(item) ? item : {};
   const itemType = optionalTrimmed(value.type) ?? "item";
+  if (itemType === "commandExecution") {
+    const command = commandToText(value.command);
+    const status = firstTrimmed(value.status) ?? "command";
+    const cwd = optionalTrimmed(value.cwd);
+    const exitCode = primitiveStatusValue(value.exitCode);
+    const durationMs = primitiveStatusValue(value.durationMs);
+    const extra = [
+      command,
+      cwd ? `cwd: ${cwd}` : null,
+      exitCode !== undefined ? `exit: ${exitCode}` : null,
+      durationMs !== undefined ? `${durationMs}ms` : null,
+    ].filter(Boolean).join(" · ");
+    return {
+      itemType,
+      title: itemType,
+      summary: extra ? `${status} - ${extra}` : status,
+      ...(command ? { command } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    };
+  }
   const serverName = firstTrimmed(value.serverName, value.mcpServerName, value.server);
   const toolName = firstTrimmed(
     value.toolName,
@@ -1132,6 +1158,20 @@ function summarizeCodexItem(item: unknown): {
     ...(serverName ? { serverName } : {}),
     ...(toolName ? { toolName } : {}),
   };
+}
+
+function commandToText(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return value.map((part) => String(part)).join(" ").trim() || undefined;
+  }
+  return optionalTrimmed(value);
+}
+
+function primitiveStatusValue(value: unknown): number | string | undefined {
+  if (typeof value === "number" || typeof value === "string") {
+    return value;
+  }
+  return undefined;
 }
 
 function firstTrimmed(...values: unknown[]): string | undefined {

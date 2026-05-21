@@ -837,6 +837,44 @@ test("records Codex item and compaction events emitted by the session", async ()
   assert.equal((await send).finalText, "done");
 });
 
+test("records command execution details in Codex activity summaries", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "run tests");
+  await waitFor(() => clients.length === 1, "command activity client");
+  const session = clients[0]?.session("thread-1");
+  assert.ok(session);
+
+  session.emitItemCompleted({
+    type: "commandExecution",
+    command: ["npm", "test"],
+    cwd: "/tmp/ops-poc",
+    status: "completed",
+    exitCode: 0,
+    durationMs: 1234,
+  });
+
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "codex_item_completed"),
+    "command item event",
+  );
+  const itemEvent = manager
+    .listEvents("maintenance")
+    .find((event) => event.type === "codex_item_completed");
+  assert.equal(itemEvent?.payload.itemType, "commandExecution");
+  assert.equal(itemEvent?.payload.command, "npm test");
+  assert.match(String(itemEvent?.payload.summary), /completed - npm test/);
+  assert.match(String(itemEvent?.payload.summary), /cwd: \/tmp\/ops-poc/);
+  assert.equal(itemEvent?.payload.exitCode, 0);
+
+  session.complete("done");
+  assert.equal((await send).finalText, "done");
+});
+
 test("ingests sensor events, routes them through a router agent, and dispatches work", async () => {
   const clients: FakeCodexClient[] = [];
   const manager = new CodexAgentManager({
