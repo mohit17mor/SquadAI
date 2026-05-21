@@ -304,6 +304,8 @@ test("command center API resolves pending approvals", async () => {
   await server.listen(0);
 
   try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+
     void manager.sendToAgent("maintenance", "run tests").catch(() => {});
     await waitFor(() => contexts.length === 1, "approval context");
     const approval = contexts[0]?.approvalHandler({
@@ -323,19 +325,35 @@ test("command center API resolves pending approvals", async () => {
       .listEvents("maintenance")
       .find((item) => item.type === "approval_requested");
 
-    const resolved = await jsonFetch(
-      `http://127.0.0.1:${server.port}/api/approvals/${event?.payload.approvalId}`,
-      {
-        method: "POST",
-        body: { decision: "approved", reason: "confirmed from UI" },
-      },
+    const pendingNotifications = await jsonFetch(`${baseUrl}/api/notifications`);
+    const pendingNotification = pendingNotifications.notifications.find(
+      (item: { kind: string }) => item.kind === "approval_required",
     );
+    assert.equal(pendingNotification.status, "pending");
+    assert.equal(pendingNotification.agentId, "maintenance");
+    await expectJsonStatus(
+      `${baseUrl}/api/notifications/${pendingNotification.id}/dismiss`,
+      { method: "POST" },
+      400,
+      /Approval notifications resolve/,
+    );
+
+    const resolved = await jsonFetch(`${baseUrl}/api/approvals/${event?.payload.approvalId}`, {
+      method: "POST",
+      body: { decision: "approved", reason: "confirmed from UI" },
+    });
 
     assert.equal(resolved.approval.payload.decision, "approved");
     assert.deepEqual(await approval, {
       decision: "approved",
       reason: "confirmed from UI",
     });
+    const resolvedNotifications = await jsonFetch(`${baseUrl}/api/notifications`);
+    assert.equal(
+      resolvedNotifications.notifications.find((item: { id: string }) => item.id === pendingNotification.id)
+        ?.status,
+      "resolved",
+    );
   } finally {
     await server.close();
     await manager.close();
@@ -430,6 +448,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-panel="create"/);
     assert.match(html, /data-panel="events"/);
     assert.match(html, /data-panel="work"/);
+    assert.match(html, /data-panel="notifications"/);
+    assert.match(html, /notification-count/);
     assert.match(html, /activePanel = "agents"/);
     assert.match(html, /editAgentDirty = false/);
     assert.match(html, /editAgentLoadedId = null/);
@@ -508,6 +528,12 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /event\.status !== "routed"/);
     assert.match(html, /No pending or failed sensor events/);
     assert.match(html, /Work Queue/);
+    assert.match(html, /Notifications/);
+    assert.match(html, /notifications-list/);
+    assert.match(html, /renderNotifications/);
+    assert.match(html, /openNotification/);
+    assert.match(html, /dismissNotification/);
+    assert.match(html, /data-notification-agent-id/);
     assert.match(html, /sensor-events/);
     assert.match(html, /work-items/);
     assert.match(html, /hasActiveTurnPending/);

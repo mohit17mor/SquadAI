@@ -686,12 +686,19 @@ test("surfaces approval requests and resolves them through the manager", async (
     command: ["npm", "test"],
     cwd: "/tmp/ops-poc",
   });
+  const notification = manager.listNotifications().find((item) => item.kind === "approval_required");
+  assert.equal(notification?.agentId, "maintenance");
+  assert.equal(notification?.sourceEventId, requested?.id);
+  assert.equal(notification?.status, "pending");
+  assert.match(notification?.summary ?? "", /Maintenance Debugger needs approval/);
+  assert.match(notification?.summary ?? "", /npm test/);
 
   await manager.resolveApproval(String(requested?.payload.approvalId), "approved", "looks safe");
   assert.deepEqual(await approval, {
     decision: "approved",
     reason: "looks safe",
   });
+  assert.equal(manager.listNotifications().find((item) => item.id === notification?.id)?.status, "resolved");
   assert.ok(
     manager
       .listEvents("maintenance")
@@ -700,6 +707,32 @@ test("surfaces approval requests and resolves them through the manager", async (
 
   clients[0]?.session("thread-1").complete("tests passed");
   assert.equal((await send).finalText, "tests passed");
+});
+
+test("queues and dismisses failure notifications for human attention", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "fail this turn");
+  await waitFor(() => clients.length === 1, "failure notification client");
+  clients[0]?.session("thread-1").pending?.reject(new Error("tool crashed"));
+  if (clients[0]) {
+    clients[0].session("thread-1").pending = null;
+  }
+  await assert.rejects(send, /tool crashed/);
+
+  const notification = manager.listNotifications().find((item) => item.kind === "turn_failed");
+  assert.equal(notification?.agentId, "maintenance");
+  assert.equal(notification?.agentName, "Maintenance Debugger");
+  assert.equal(notification?.status, "pending");
+  assert.match(notification?.summary ?? "", /tool crashed/);
+
+  const dismissed = await manager.dismissNotification(String(notification?.id));
+  assert.equal(dismissed.status, "resolved");
+  assert.equal(manager.listNotifications().find((item) => item.id === notification?.id)?.status, "resolved");
 });
 
 test("continues approval ids from persisted approval events", async () => {

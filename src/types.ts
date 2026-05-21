@@ -144,6 +144,33 @@ export type WorkItem = {
   completedAt: string | null;
 };
 
+export type AgentNotificationKind =
+  | "approval_required"
+  | "agent_failed"
+  | "turn_failed"
+  | "work_item_failed"
+  | "sensor_event_failed";
+
+export type AgentNotificationStatus = "pending" | "resolved";
+
+export type AgentNotificationSeverity = "attention" | "warning";
+
+export type AgentNotification = {
+  id: string;
+  kind: AgentNotificationKind;
+  status: AgentNotificationStatus;
+  severity: AgentNotificationSeverity;
+  agentId: string;
+  agentName: string;
+  summary: string;
+  sourceEventId: number;
+  approvalId: string | null;
+  workItemId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
+
 export type RoutingDecision = {
   targetAgentId: string;
   prompt: string;
@@ -168,6 +195,7 @@ export type PersistedAgentManagerState = {
   events?: AgentEvent[];
   sensorEvents?: SensorEvent[];
   workItems?: WorkItem[];
+  notifications?: AgentNotification[];
 };
 
 export interface AgentStateStore {

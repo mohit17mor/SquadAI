@@ -8,6 +8,8 @@ import type {
   AgentDefinitionUpdate,
   AgentEvent,
   AgentEventType,
+  AgentNotification,
+  AgentNotificationKind,
   AgentSnapshot,
   AgentStateStore,
   AgentStatus,
@@ -81,12 +83,14 @@ export class CodexAgentManager extends EventEmitter {
   private events: AgentEvent[] = [];
   private sensorEvents: SensorEvent[] = [];
   private workItems: WorkItem[] = [];
+  private notifications: AgentNotification[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
   private approvalGrants: ApprovalGrant[] = [];
   private nextEventId = 1;
   private nextApprovalId = 1;
   private nextSensorEventId = 1;
   private nextWorkItemId = 1;
+  private nextNotificationId = 1;
   private routerRosterStates = new Map<string, RouterRosterState>();
   private started: Promise<void> | null = null;
   private closed = false;
@@ -202,6 +206,27 @@ export class CodexAgentManager extends EventEmitter {
       ? this.events.filter((event) => event.agentId === agentId)
       : this.events;
     return events.map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
+
+  listNotifications(): AgentNotification[] {
+    return this.notifications.map(cloneNotification);
+  }
+
+  async dismissNotification(notificationId: string): Promise<AgentNotification> {
+    this.assertOpen();
+    await this.start();
+    const notification = this.notifications.find((item) => item.id === notificationId);
+    if (!notification) {
+      throw new CodexAgentManagerError(`Unknown notification: ${notificationId}`);
+    }
+    if (notification.status === "pending" && notification.kind === "approval_required") {
+      throw new CodexAgentManagerError("Approval notifications resolve when the approval is answered");
+    }
+    if (notification.status !== "resolved") {
+      this.resolveNotification(notification, this.now());
+      await this.persist();
+    }
+    return cloneNotification(notification);
   }
 
   async sendToAgent(
@@ -619,11 +644,13 @@ export class CodexAgentManager extends EventEmitter {
     }));
     this.sensorEvents = (state.sensorEvents ?? []).map(cloneSensorEvent);
     this.workItems = (state.workItems ?? []).map(cloneWorkItem);
+    this.notifications = (state.notifications ?? []).map(cloneNotification);
     this.nextEventId =
       this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
     this.nextApprovalId = nextApprovalEventId(this.events);
     this.nextSensorEventId = nextNumericId(this.sensorEvents, "sensor");
     this.nextWorkItemId = nextNumericId(this.workItems, "work");
+    this.nextNotificationId = nextNumericId(this.notifications, "notif");
 
     for (const [agentId, persisted] of Object.entries(state.agents ?? {})) {
       let record = this.records.get(agentId);
@@ -706,6 +733,7 @@ export class CodexAgentManager extends EventEmitter {
       createdAt: this.now(),
     };
     this.events.push(event);
+    this.applyNotificationPolicy(event);
     this.emit("event", event);
     await this.persist();
     return event;
@@ -1006,7 +1034,92 @@ export class CodexAgentManager extends EventEmitter {
       events: this.events,
       sensorEvents: this.sensorEvents,
       workItems: this.workItems,
+      notifications: this.notifications,
     });
+  }
+
+  private applyNotificationPolicy(event: AgentEvent): void {
+    if (event.type === "approval_resolved" && typeof event.payload.approvalId === "string") {
+      this.resolveNotificationsByApproval(event.payload.approvalId, event.createdAt);
+      return;
+    }
+
+    const notification = this.notificationForEvent(event);
+    if (notification) {
+      this.notifications.push(notification);
+    }
+  }
+
+  private notificationForEvent(event: AgentEvent): AgentNotification | null {
+    const agentName = this.records.get(event.agentId)?.definition.name ?? event.agentId;
+    const base = {
+      id: `notif-${this.nextNotificationId++}`,
+      status: "pending" as const,
+      agentId: event.agentId,
+      agentName,
+      sourceEventId: event.id,
+      createdAt: event.createdAt,
+      updatedAt: event.createdAt,
+      resolvedAt: null,
+    };
+
+    if (event.type === "approval_requested") {
+      const approvalId = typeof event.payload.approvalId === "string" ? event.payload.approvalId : null;
+      return {
+        ...base,
+        kind: "approval_required",
+        severity: "attention",
+        summary: approvalNotificationSummary(agentName, event.payload),
+        approvalId,
+        workItemId: null,
+      };
+    }
+
+    if (event.type === "turn_failed") {
+      return this.failureNotification(base, "turn_failed", "Agent turn failed", event.message, event.payload);
+    }
+    if (event.type === "agent_failed") {
+      return this.failureNotification(base, "agent_failed", "Agent failed", event.message, event.payload);
+    }
+    if (event.type === "work_item_failed") {
+      return this.failureNotification(base, "work_item_failed", "Work item failed", event.message, event.payload);
+    }
+    if (event.type === "sensor_event_failed") {
+      return this.failureNotification(base, "sensor_event_failed", "Sensor event failed", event.message, event.payload);
+    }
+
+    return null;
+  }
+
+  private failureNotification(
+    base: Omit<AgentNotification, "kind" | "severity" | "summary" | "approvalId" | "workItemId">,
+    kind: AgentNotificationKind,
+    label: string,
+    message: string,
+    payload: Record<string, unknown>,
+  ): AgentNotification {
+    return {
+      ...base,
+      kind,
+      severity: "warning",
+      summary: `${base.agentName}: ${label}${message ? ` - ${message}` : ""}`,
+      approvalId: null,
+      workItemId: typeof payload.workItemId === "string" ? payload.workItemId : null,
+    };
+  }
+
+  private resolveNotificationsByApproval(approvalId: string, resolvedAt: string): void {
+    for (const notification of this.notifications) {
+      if (notification.approvalId === approvalId && notification.status !== "resolved") {
+        this.resolveNotification(notification, resolvedAt);
+      }
+    }
+  }
+
+  private resolveNotification(notification: AgentNotification, resolvedAt: string): void {
+    notification.status = "resolved";
+    notification.updatedAt = resolvedAt;
+    notification.resolvedAt = resolvedAt;
   }
 
   private requireRecord(agentId: string): RuntimeRecord {
@@ -1340,6 +1453,30 @@ function cloneWorkItem(workItem: WorkItem): WorkItem {
     ...workItem,
     metadata: cloneRecord(workItem.metadata),
   };
+}
+
+function cloneNotification(notification: AgentNotification): AgentNotification {
+  return { ...notification };
+}
+
+function approvalNotificationSummary(agentName: string, payload: Record<string, unknown>): string {
+  const params = isRecord(payload.params) ? payload.params : {};
+  const tool = approvalToolLabel(params);
+  if (tool) {
+    return `${agentName} needs approval to use ${tool}.`;
+  }
+  if (Array.isArray(params.command)) {
+    return `${agentName} needs approval to run ${params.command.map((part) => String(part)).join(" ")}.`;
+  }
+  const kind = optionalTrimmed(payload.kind) ?? "approval";
+  return `${agentName} needs ${kind} approval.`;
+}
+
+function approvalToolLabel(params: Record<string, unknown>): string {
+  const metadata = isRecord(params._meta) ? params._meta : {};
+  const serverName = optionalTrimmed(params.serverName);
+  const toolName = optionalTrimmed(metadata.tool_title) ?? toolNameFromApprovalMessage(params.message);
+  return serverName && toolName ? `${serverName}/${toolName}` : "";
 }
 
 function isMissingRolloutError(error: unknown): boolean {

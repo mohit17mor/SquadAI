@@ -135,6 +135,20 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/notifications") {
+        this.json(response, { notifications: this.options.manager.listNotifications() });
+        return;
+      }
+
+      const notificationDismissMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/dismiss$/);
+      if (request.method === "POST" && notificationDismissMatch?.[1]) {
+        const notification = await this.options.manager.dismissNotification(
+          decodeURIComponent(notificationDismissMatch[1]),
+        );
+        this.json(response, { notification });
+        return;
+      }
+
       const workItemRetryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/retry$/);
       if (request.method === "POST" && workItemRetryMatch?.[1]) {
         const workItem = await this.options.manager.retryWorkItem(
@@ -512,6 +526,7 @@ function renderHtml(title: string): string {
       <div class="rail-nav" aria-label="Command center sections">
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <button type="button" class="rail-item" data-panel="create">Create Agent</button>
+        <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
         <button type="button" class="rail-item" data-panel="events">Event Inbox <span id="event-count">0</span></button>
         <button type="button" class="rail-item" data-panel="work">Work Queue <span id="work-count">0</span></button>
       </div>
@@ -571,6 +586,13 @@ function renderHtml(title: string): string {
             </div>
           </form>
         </details>
+      </section>
+      <section id="panel-notifications" class="panel-view queue-panel">
+        <div class="section-head">
+          <h2>Notifications</h2>
+          <span id="notification-panel-count">0</span>
+        </div>
+        <div id="notifications-list" class="queue-list"></div>
       </section>
       <section id="panel-events" class="panel-view queue-panel">
         <div class="section-head">
@@ -671,6 +693,10 @@ textarea { resize: vertical; }
 .agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-list { display: grid; gap: 7px; }
 .queue-item { border: 1px solid #30363d; border-radius: 8px; padding: 9px; background: #0d1117; display: grid; gap: 4px; }
+.queue-item[role="button"] { cursor: pointer; text-align: left; }
+.queue-item[role="button"]:hover { border-color: #58a6ff; background: #111820; }
+.queue-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: #8b949e; font-size: 11px; }
+.queue-actions button { padding: 5px 8px; border-radius: 6px; font-size: 11px; }
 .queue-item strong { color: #e6edf3; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item .sub { color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
@@ -737,6 +763,7 @@ let selectedAgentId = null;
 let events = [];
 let sensorEvents = [];
 let workItems = [];
+let notifications = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
@@ -767,11 +794,14 @@ const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message");
 const agentCount = document.getElementById("agent-count");
+const notificationCount = document.getElementById("notification-count");
 const eventCount = document.getElementById("event-count");
 const workCount = document.getElementById("work-count");
 const agentPanelCount = document.getElementById("agent-panel-count");
+const notificationPanelCount = document.getElementById("notification-panel-count");
 const eventPanelCount = document.getElementById("event-panel-count");
 const workPanelCount = document.getElementById("work-panel-count");
+const notificationList = document.getElementById("notifications-list");
 const sensorEventList = document.getElementById("sensor-events");
 const workItemList = document.getElementById("work-items");
 const toasts = document.getElementById("toasts");
@@ -841,11 +871,12 @@ stream.addEventListener("agent-event", (message) => {
   events.push(JSON.parse(message.data));
   void refreshAgents();
   void refreshQueues();
+  void refreshNotifications();
   render();
 });
 
 async function refresh() {
-  await Promise.all([refreshAgents(), refreshEvents(), refreshQueues()]);
+  await Promise.all([refreshAgents(), refreshEvents(), refreshQueues(), refreshNotifications()]);
   render();
 }
 
@@ -888,6 +919,13 @@ async function refreshQueues() {
   workCount.textContent = String(workItems.length);
   workPanelCount.textContent = String(workItems.length);
   renderQueues();
+}
+
+async function refreshNotifications() {
+  const response = await fetch("/api/notifications");
+  const body = await response.json();
+  notifications = body.notifications;
+  renderNotifications();
 }
 
 async function createAgent(event) {
@@ -1180,6 +1218,7 @@ function renderPanel() {
   const titles = {
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
+    notifications: ["Notifications", "Human-attention items from active agents."],
     events: ["Event Inbox", "Sensor events waiting to be routed or already routed."],
     work: ["Work Queue", "Worker-owned items created by the router."],
   };
@@ -1214,6 +1253,88 @@ function renderQueues() {
       <span class="sub">\${escapeHtml(item.prompt)}</span>
     </div>
   \`).join("") || '<div class="empty">No work queued yet.</div>';
+  renderNotifications();
+}
+
+function renderNotifications() {
+  const pending = notifications.filter((item) => item.status === "pending");
+  notificationCount.textContent = String(pending.length);
+  notificationPanelCount.textContent = String(pending.length);
+  notificationList.innerHTML = [...pending].reverse().map(renderNotificationItem).join("") || '<div class="empty">No notifications need attention.</div>';
+  bindNotificationActions();
+}
+
+function renderNotificationItem(item) {
+  const dismissButton = item.kind === "approval_required"
+    ? ""
+    : \`<button type="button" class="secondary" data-notification-dismiss-id="\${escapeAttr(item.id)}">Dismiss</button>\`;
+  return \`
+    <div class="queue-item notification-item" role="button" tabindex="0" data-notification-id="\${escapeAttr(item.id)}" data-notification-agent-id="\${escapeAttr(item.agentId)}">
+      <strong>\${escapeHtml(item.agentName)} - \${escapeHtml(notificationKindLabel(item.kind))}</strong>
+      <span class="sub">\${escapeHtml(item.summary)}</span>
+      <span class="sub">\${escapeHtml(item.id)} from event \${escapeHtml(item.sourceEventId)}</span>
+      <span class="queue-actions">
+        <span>Open agent</span>
+        \${dismissButton}
+      </span>
+    </div>
+  \`;
+}
+
+function bindNotificationActions() {
+  for (const item of notificationList.querySelectorAll("[data-notification-agent-id]")) {
+    item.addEventListener("click", () => {
+      openNotification(item.dataset.notificationId, item.dataset.notificationAgentId);
+    });
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openNotification(item.dataset.notificationId, item.dataset.notificationAgentId);
+      }
+    });
+  }
+  for (const button of notificationList.querySelectorAll("[data-notification-dismiss-id]")) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void dismissNotification(button.dataset.notificationDismissId);
+    });
+  }
+}
+
+function openNotification(notificationId, agentId) {
+  if (!agentId) return;
+  selectedAgentId = agentId;
+  activePanel = "agents";
+  lastMessagesHtml = "";
+  editAgentDirty = false;
+  render();
+  scrollDown();
+  toast("Opened notification " + notificationId);
+}
+
+async function dismissNotification(notificationId) {
+  if (!notificationId) return;
+  const response = await fetch("/api/notifications/" + encodeURIComponent(notificationId) + "/dismiss", {
+    method: "POST",
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    toast(body.error || "Dismiss failed", "error");
+    return;
+  }
+  await refreshNotifications();
+  toast("Notification dismissed");
+}
+
+function notificationKindLabel(kind) {
+  const labels = {
+    approval_required: "Approval",
+    agent_failed: "Agent failed",
+    turn_failed: "Turn failed",
+    work_item_failed: "Work failed",
+    sensor_event_failed: "Sensor failed",
+  };
+  return labels[kind] || kind;
 }
 
 function approvalResolutionMap(visibleEvents) {
