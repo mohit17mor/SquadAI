@@ -8,6 +8,7 @@ import type {
   AgentDefinitionUpdate,
   AgentEvent,
   AgentEventType,
+  AgentModelCatalog,
   AgentNotification,
   AgentNotificationKind,
   AgentSnapshot,
@@ -127,6 +128,19 @@ export class CodexAgentManager extends EventEmitter {
     return this.snapshot(this.requireRecord(agentId));
   }
 
+  async listModelOptions(options: { includeHidden?: boolean } = {}): Promise<AgentModelCatalog> {
+    this.assertOpen();
+    const client = this.clientFactory();
+    try {
+      if (!client.listModels) {
+        return { models: [] };
+      }
+      return await client.listModels(options);
+    } finally {
+      await client.close();
+    }
+  }
+
   async createAgent(definition: AgentDefinition): Promise<AgentSnapshot> {
     this.assertOpen();
     await this.start();
@@ -148,9 +162,19 @@ export class CodexAgentManager extends EventEmitter {
       throw new CodexAgentManagerError(`Agent ${agentId} is running and cannot be edited.`);
     }
     const nextDefinition: AgentDefinition = {
-      ...record.definition,
-      ...update,
       id: record.definition.id,
+      name: update.name ?? record.definition.name,
+      cwd: update.cwd ?? record.definition.cwd,
+      instructions: update.instructions ?? record.definition.instructions,
+      model: "model" in update ? update.model : record.definition.model,
+      reasoningEffort: "reasoningEffort" in update
+        ? update.reasoningEffort
+        : record.definition.reasoningEffort,
+      serviceTier: "serviceTier" in update ? update.serviceTier : record.definition.serviceTier,
+      approvalPolicy: update.approvalPolicy ?? record.definition.approvalPolicy,
+      sandbox: update.sandbox ?? record.definition.sandbox,
+      defaultAskOptions: update.defaultAskOptions ?? record.definition.defaultAskOptions,
+      dynamicTools: update.dynamicTools ?? record.definition.dynamicTools,
     };
     if (update.metadata !== undefined) {
       nextDefinition.metadata = cloneRecord(update.metadata);
@@ -670,6 +694,8 @@ export class CodexAgentManager extends EventEmitter {
       record.session = await record.client.startSession({
         cwd: record.definition.cwd,
         model: record.definition.model,
+        reasoningEffort: record.definition.reasoningEffort,
+        serviceTier: record.definition.serviceTier,
         approvalPolicy: record.definition.approvalPolicy ?? "on-request",
         sandbox: record.definition.sandbox ?? "workspace-write",
         developerInstructions: record.definition.instructions,
@@ -757,6 +783,8 @@ export class CodexAgentManager extends EventEmitter {
       status: record.status,
       threadId: record.threadId,
       model: record.definition.model ?? null,
+      reasoningEffort: record.definition.reasoningEffort ?? null,
+      serviceTier: record.definition.serviceTier ?? null,
       metadata: { ...(record.definition.metadata ?? {}) },
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -1259,6 +1287,8 @@ function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition):
   return previous.cwd !== next.cwd ||
     previous.instructions !== next.instructions ||
     previous.model !== next.model ||
+    previous.reasoningEffort !== next.reasoningEffort ||
+    previous.serviceTier !== next.serviceTier ||
     previous.approvalPolicy !== next.approvalPolicy ||
     previous.sandbox !== next.sandbox ||
     JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);

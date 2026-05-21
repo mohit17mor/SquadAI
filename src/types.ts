@@ -1,4 +1,5 @@
 export type AgentStatus = "idle" | "starting" | "running" | "failed" | "stopped";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type AgentEventType =
   | "agent_starting"
@@ -30,15 +31,19 @@ export type AgentDefinition = {
   name: string;
   cwd: string;
   instructions: string;
-  model?: string;
-  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never";
-  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  defaultAskOptions?: AskOptions;
-  dynamicTools?: unknown[];
-  metadata?: Record<string, unknown>;
+  model?: string | undefined;
+  reasoningEffort?: ReasoningEffort | undefined;
+  serviceTier?: string | undefined;
+  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | undefined;
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | undefined;
+  defaultAskOptions?: AskOptions | undefined;
+  dynamicTools?: unknown[] | undefined;
+  metadata?: Record<string, unknown> | undefined;
 };
 
-export type AgentDefinitionUpdate = Partial<Omit<AgentDefinition, "id">>;
+export type AgentDefinitionUpdate = {
+  [Key in keyof Omit<AgentDefinition, "id">]?: Omit<AgentDefinition, "id">[Key] | undefined;
+};
 
 export type AskOptions = {
   timeoutMs?: number;
@@ -85,6 +90,8 @@ export type AgentSnapshot = {
   status: AgentStatus;
   threadId: string | null;
   model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  serviceTier: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -185,6 +192,34 @@ export type JarvisNotificationDelivery = {
   finalText: string;
 };
 
+export type ModelServiceTier = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+export type ReasoningEffortOption = {
+  reasoningEffort: ReasoningEffort;
+  description: string;
+};
+
+export type AgentModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  supportedReasoningEfforts: ReasoningEffortOption[];
+  defaultReasoningEffort: ReasoningEffort;
+  additionalSpeedTiers?: string[];
+  serviceTiers: ModelServiceTier[];
+  isDefault: boolean;
+};
+
+export type AgentModelCatalog = {
+  models: AgentModelOption[];
+};
+
 export type RoutingDecision = {
   targetAgentId: string;
   prompt: string;
@@ -220,6 +255,7 @@ export interface AgentStateStore {
 export type CodexControlClientLike = {
   startSession(options: Record<string, unknown>): Promise<CodexSessionLike>;
   resumeSession(threadId: string): Promise<CodexSessionLike>;
+  listModels?(options?: { includeHidden?: boolean }): Promise<AgentModelCatalog>;
   close(): Promise<void>;
 };
 

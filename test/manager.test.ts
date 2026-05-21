@@ -5,6 +5,7 @@ import {
   CodexAgentManager,
   MemoryAgentStateStore,
   type AgentDefinition,
+  type AgentModelCatalog,
   type CodexControlClientContext,
   type CodexControlClientFactory,
 } from "../src/index.js";
@@ -13,6 +14,7 @@ class FakeCodexClient {
   readonly startCalls: Array<Record<string, unknown>> = [];
   readonly resumeCalls: string[] = [];
   readonly closeCalls: number[] = [];
+  modelCatalog: AgentModelCatalog = { models: [] };
   private nextThread = 1;
   private readonly sessions = new Map<string, FakeCodexSession>();
 
@@ -32,6 +34,10 @@ class FakeCodexClient {
 
   async close(): Promise<void> {
     this.closeCalls.push(Date.now());
+  }
+
+  async listModels(): Promise<AgentModelCatalog> {
+    return this.modelCatalog;
   }
 
   session(threadId: string): FakeCodexSession {
@@ -221,6 +227,8 @@ test("starts named agents lazily and sends plain text to the matching session", 
   assert.deepEqual(clients[0]?.startCalls[0], {
     cwd: "/tmp/ops-poc",
     model: undefined,
+    reasoningEffort: undefined,
+    serviceTier: undefined,
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
     developerInstructions: "You specialize in read-only maintenance debugging.",
@@ -238,6 +246,75 @@ test("starts named agents lazily and sends plain text to the matching session", 
     input: "Please inspect this incident.",
     options: { timeoutMs: 1234, network: "allow" },
   });
+});
+
+test("passes model, reasoning, and speed settings to new Codex sessions", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        model: "gpt-test",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "Use the configured runtime.");
+  await waitFor(() => clients.length === 1, "maintenance client");
+
+  assert.equal(manager.getAgent("maintenance").model, "gpt-test");
+  assert.equal(manager.getAgent("maintenance").reasoningEffort, "high");
+  assert.equal(manager.getAgent("maintenance").serviceTier, "fast");
+  assert.deepEqual(clients[0]?.startCalls[0], {
+    cwd: "/tmp/ops-poc",
+    model: "gpt-test",
+    reasoningEffort: "high",
+    serviceTier: "fast",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    developerInstructions: "You specialize in read-only maintenance debugging.",
+    dynamicTools: undefined,
+  });
+
+  clients[0]?.session("thread-1").complete("done");
+  await send;
+});
+
+test("lists model options through a short-lived codex-control client", async () => {
+  const clients: FakeCodexClient[] = [];
+  const modelCatalog: AgentModelCatalog = {
+    models: [
+      {
+        id: "gpt-test",
+        model: "gpt-test",
+        displayName: "GPT Test",
+        description: "Test model",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Thorough" }],
+        defaultReasoningEffort: "high",
+        serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],
+        isDefault: true,
+      },
+    ],
+  };
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: () => {
+      const client = new FakeCodexClient();
+      client.modelCatalog = modelCatalog;
+      clients.push(client);
+      return client;
+    },
+  });
+
+  const catalog = await manager.listModelOptions();
+
+  assert.equal(catalog.models[0]?.model, "gpt-test");
+  assert.equal(catalog.models[0]?.supportedReasoningEfforts[0]?.reasoningEffort, "high");
+  assert.equal(catalog.models[0]?.serviceTiers[0]?.id, "fast");
+  assert.equal(clients[0]?.closeCalls.length, 1);
 });
 
 test("uses a long default timeout for agent turns unless caller overrides it", async () => {
@@ -542,6 +619,8 @@ test("updates agent instructions by clearing the existing Codex session", async 
   assert.deepEqual(clients[1]?.startCalls[0], {
     cwd: "/tmp/ops-poc",
     model: undefined,
+    reasoningEffort: undefined,
+    serviceTier: undefined,
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
     developerInstructions: "You now specialize in postmortem drafting.",

@@ -8,8 +8,11 @@ import type {
   AgentEvent,
   ApprovalScope,
   AskOptions,
+  ReasoningEffort,
   SensorEventInput,
 } from "./types.js";
+
+const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
@@ -83,6 +86,12 @@ export class CommandCenterServer {
 
       if (request.method === "GET" && url.pathname === "/api/agents") {
         this.json(response, { agents: this.options.manager.listAgents() });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/model-options") {
+        const includeHidden = url.searchParams.get("includeHidden") === "true";
+        this.json(response, await this.options.manager.listModelOptions({ includeHidden }));
         return;
       }
 
@@ -314,8 +323,16 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
     "danger-full-access",
   ]);
   const metadata = asOptionalRecord(value.metadata);
+  const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
+  const serviceTier = optionalString(value.serviceTier);
   if (model) {
     definition.model = model;
+  }
+  if (reasoningEffort) {
+    definition.reasoningEffort = reasoningEffort;
+  }
+  if (serviceTier) {
+    definition.serviceTier = serviceTier;
   }
   if (approvalPolicy) {
     definition.approvalPolicy = approvalPolicy;
@@ -348,6 +365,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
     "danger-full-access",
   ]);
   const metadata = asOptionalRecord(value.metadata);
+  const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
+  const serviceTier = optionalString(value.serviceTier);
   if (name) {
     update.name = name;
   }
@@ -357,8 +376,14 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   if (instructions) {
     update.instructions = instructions;
   }
-  if (model !== undefined) {
+  if ("model" in value) {
     update.model = model;
+  }
+  if ("reasoningEffort" in value) {
+    update.reasoningEffort = reasoningEffort;
+  }
+  if ("serviceTier" in value) {
+    update.serviceTier = serviceTier;
   }
   if (approvalPolicy) {
     update.approvalPolicy = approvalPolicy;
@@ -553,11 +578,15 @@ function renderHtml(title: string): string {
           <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
           <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+          <label>Model<input name="model" list="model-options" autocomplete="off" placeholder="Default Codex model"></label>
+          <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
+          <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
           <label>Routing description<textarea name="routingDescription" rows="2" placeholder="Short capability summary for the router"></textarea></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
+        <datalist id="model-options"></datalist>
       </section>
       <section id="panel-agents" class="panel-view active">
         <div class="section-head">
@@ -576,6 +605,9 @@ function renderHtml(title: string): string {
           <form id="edit-agent-form" class="agent-editor-form">
             <label>Name<input name="name" autocomplete="off"></label>
             <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+            <label>Model<input name="model" list="model-options" autocomplete="off" placeholder="Default Codex model"></label>
+            <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
+            <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
             <label>Working directory<input name="cwd" autocomplete="off"></label>
             <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
             <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
@@ -764,6 +796,7 @@ let events = [];
 let sensorEvents = [];
 let workItems = [];
 let notifications = [];
+let modelOptions = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
@@ -818,6 +851,7 @@ const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
 const agentIdHint = document.getElementById("agent-id-hint");
+const modelDatalist = document.getElementById("model-options");
 const editAgentForm = document.getElementById("edit-agent-form");
 const editAgentStatus = document.getElementById("edit-agent-status");
 const deleteAgentButton = document.getElementById("delete-agent-button");
@@ -838,6 +872,7 @@ for (const button of document.querySelectorAll("[data-panel]")) {
 const agentForm = document.getElementById("agent-form");
 const createRoleSelect = agentForm.elements.role;
 const createInstructionsInput = agentForm.elements.instructions;
+const createModelInput = agentForm.elements.model;
 agentForm.addEventListener("submit", createAgent);
 agentForm.addEventListener("input", (event) => {
   if (event.target === createInstructionsInput) {
@@ -845,10 +880,12 @@ agentForm.addEventListener("input", (event) => {
   }
 });
 createRoleSelect.addEventListener("change", applyCreateRoleDefaults);
+createModelInput.addEventListener("input", renderModelControls);
 editAgentForm.addEventListener("submit", updateSelectedAgent);
 editAgentForm.addEventListener("input", () => {
   editAgentDirty = true;
 });
+editAgentForm.elements.model.addEventListener("input", renderModelControls);
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
@@ -886,8 +923,24 @@ stream.addEventListener("agent-event", (message) => {
 });
 
 async function refresh() {
-  await Promise.all([refreshAgents(), refreshEvents(), refreshQueues(), refreshNotifications()]);
+  await Promise.all([
+    refreshAgents(),
+    refreshEvents(),
+    refreshQueues(),
+    refreshNotifications(),
+    refreshModelOptions(),
+  ]);
   render();
+}
+
+async function refreshModelOptions() {
+  const response = await fetch("/api/model-options");
+  if (!response.ok) {
+    return;
+  }
+  const body = await response.json();
+  modelOptions = Array.isArray(body.models) ? body.models : [];
+  renderModelControls();
 }
 
 async function refreshAgents() {
@@ -909,6 +962,70 @@ function upsertAgent(agent) {
   lastAgentListHtml = "";
   agentCount.textContent = String(agents.length);
   agentPanelCount.textContent = String(agents.length);
+}
+
+function renderModelControls() {
+  if (modelDatalist) {
+    modelDatalist.innerHTML = modelOptions.map((model) => {
+      const value = model.model || model.id || "";
+      const label = model.displayName || value;
+      return \`<option value="\${escapeAttr(value)}" label="\${escapeAttr(label)}"></option>\`;
+    }).join("");
+  }
+  updateModelDependentSelects(agentForm);
+  updateModelDependentSelects(editAgentForm);
+}
+
+function updateModelDependentSelects(form) {
+  const selectedModel = selectedModelForForm(form);
+  updateReasoningSelect(form.elements.reasoningEffort, selectedModel);
+  updateServiceTierSelect(form.elements.serviceTier, selectedModel);
+}
+
+function selectedModelForForm(form) {
+  const requested = String(form.elements.model.value || "").trim();
+  if (!requested) {
+    return modelOptions.find((model) => model.isDefault) || null;
+  }
+  return modelOptions.find((model) => model.model === requested || model.id === requested) || null;
+}
+
+function updateReasoningSelect(select, model) {
+  const current = select.value;
+  const efforts = Array.isArray(model?.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+    : [];
+  select.innerHTML = '<option value="">Default</option>' + efforts.map((effort) => {
+    const value = effort.reasoningEffort || "";
+    const description = effort.description ? " - " + effort.description : "";
+    return \`<option value="\${escapeAttr(value)}">\${escapeHtml(value + description)}</option>\`;
+  }).join("");
+  select.value = efforts.some((effort) => effort.reasoningEffort === current) ? current : "";
+}
+
+function updateServiceTierSelect(select, model) {
+  const current = select.value;
+  const serviceTiers = serviceTierOptions(model);
+  select.innerHTML = '<option value="">Default</option>' + serviceTiers.map((tier) => {
+    const label = tier.description ? \`\${tier.name || tier.id} - \${tier.description}\` : (tier.name || tier.id);
+    return \`<option value="\${escapeAttr(tier.id)}">\${escapeHtml(label)}</option>\`;
+  }).join("");
+  select.value = serviceTiers.some((tier) => tier.id === current) ? current : "";
+}
+
+function serviceTierOptions(model) {
+  if (!model) return [];
+  if (Array.isArray(model.serviceTiers) && model.serviceTiers.length) {
+    return model.serviceTiers;
+  }
+  if (Array.isArray(model.additionalSpeedTiers)) {
+    return model.additionalSpeedTiers.map((tier) => ({
+      id: String(tier),
+      name: String(tier),
+      description: "",
+    }));
+  }
+  return [];
 }
 
 async function refreshEvents() {
@@ -969,6 +1086,7 @@ async function createAgent(event) {
   createInstructionsTouched = false;
   updateDerivedAgentId();
   applyCreateRoleDefaults();
+  renderModelControls();
   await refreshAgents();
   await refreshEvents();
   render();
@@ -1231,9 +1349,13 @@ function renderAgentEditor(selected) {
   editAgentForm.elements.role.value = selected.metadata?.role === "router" || selected.metadata?.role === "jarvis"
     ? selected.metadata.role
     : "";
+  editAgentForm.elements.model.value = selected.model || "";
+  editAgentForm.elements.reasoningEffort.value = selected.reasoningEffort || "";
+  editAgentForm.elements.serviceTier.value = selected.serviceTier || "";
   editAgentForm.elements.cwd.value = selected.cwd || "";
   editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
   editAgentForm.elements.instructions.value = selected.instructions || "";
+  renderModelControls();
 }
 
 function renderPanel() {

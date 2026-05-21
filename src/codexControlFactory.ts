@@ -23,6 +23,13 @@ export function createDefaultClientFactory(
       async resumeSession(threadId: string) {
         return (await client()).resumeSession(threadId);
       },
+      async listModels(options?: { includeHidden?: boolean }) {
+        const loaded = await client();
+        if (!loaded.listModels) {
+          return { models: [] };
+        }
+        return loaded.listModels(options);
+      },
       async close() {
         if (clientPromise) {
           await (await clientPromise).close();

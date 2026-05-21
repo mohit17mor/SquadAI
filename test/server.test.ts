@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   CodexAgentManager,
+  type AgentModelCatalog,
   type CodexControlClientContext,
   createCommandCenterServer,
   type CodexControlClientFactory,
@@ -21,6 +22,27 @@ class ImmediateCodexClient {
 
   async resumeSession(threadId: string): Promise<ImmediateCodexSession> {
     return new ImmediateCodexSession(threadId);
+  }
+
+  async listModels(): Promise<AgentModelCatalog> {
+    return {
+      models: [
+        {
+          id: "gpt-test",
+          model: "gpt-test",
+          displayName: "GPT Test",
+          description: "Test model",
+          hidden: false,
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low", description: "Fast" },
+            { reasoningEffort: "high", description: "Thorough" },
+          ],
+          defaultReasoningEffort: "low",
+          serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],
+          isDefault: true,
+        },
+      ],
+    };
   }
 
   async close(): Promise<void> {}
@@ -105,6 +127,8 @@ test("command center API creates agents, lists them, sends messages, and exposes
         cwd: "/tmp/ops-poc",
         instructions: "You specialize in maintenance debugging.",
         model: "gpt-test",
+        reasoningEffort: "high",
+        serviceTier: "fast",
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
         metadata: { routingDescription: "Debugs maintenance tickets." },
@@ -112,7 +136,15 @@ test("command center API creates agents, lists them, sends messages, and exposes
     });
     assert.equal(created.agent.id, "maintenance");
     assert.equal(created.agent.model, "gpt-test");
+    assert.equal(created.agent.reasoningEffort, "high");
+    assert.equal(created.agent.serviceTier, "fast");
     assert.equal(created.agent.metadata.routingDescription, "Debugs maintenance tickets.");
+
+    const modelOptions = await jsonFetch(`${baseUrl}/api/model-options`);
+    assert.equal(modelOptions.models.length, 1);
+    assert.equal(modelOptions.models[0].model, "gpt-test");
+    assert.equal(modelOptions.models[0].supportedReasoningEfforts[1].reasoningEffort, "high");
+    assert.equal(modelOptions.models[0].serviceTiers[0].id, "fast");
 
     const listed = await jsonFetch(`${baseUrl}/api/agents`);
     assert.equal(listed.agents.length, 1);
@@ -473,6 +505,17 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /deriveAgentId/);
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
+    assert.match(html, /\/api\/model-options/);
+    assert.match(html, /id="model-options"/);
+    assert.match(html, /name="reasoningEffort"/);
+    assert.match(html, /data-reasoning-select/);
+    assert.match(html, /name="serviceTier"/);
+    assert.match(html, /data-service-tier-select/);
+    assert.match(html, /refreshModelOptions/);
+    assert.match(html, /renderModelControls/);
+    assert.match(html, /serviceTierOptions/);
+    assert.match(html, /selected\.reasoningEffort/);
+    assert.match(html, /selected\.serviceTier/);
     assert.match(html, /<option value="router">Router<\/option>/);
     assert.match(html, /<option value="jarvis">Jarvis<\/option>/);
     assert.match(html, /Routing description/);

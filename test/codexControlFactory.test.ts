@@ -32,6 +32,11 @@ export class CodexControlClient {
     return { threadId };
   }
 
+  async listModels(options) {
+    events.push({ type: "listModels", options });
+    return { models: [{ id: "gpt-test", model: "gpt-test" }] };
+  }
+
   async close() {
     events.push({ type: "close" });
   }
@@ -49,12 +54,16 @@ export class CodexControlClient {
   assert.deepEqual(events, []);
   assert.equal((await client.startSession({ cwd: "/tmp/ops-poc" })).threadId, "started-thread");
   assert.equal((await client.resumeSession("existing-thread")).threadId, "existing-thread");
+  assert.deepEqual(await client.listModels?.({ includeHidden: true }), {
+    models: [{ id: "gpt-test", model: "gpt-test" }],
+  });
   await client.close();
 
   assert.deepEqual(events, [
     { type: "construct", hasApprovalHandler: true },
     { type: "start", options: { cwd: "/tmp/ops-poc" } },
     { type: "resume", threadId: "existing-thread" },
+    { type: "listModels", options: { includeHidden: true } },
     { type: "close" },
   ]);
 });
