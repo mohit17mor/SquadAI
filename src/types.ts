@@ -169,6 +169,16 @@ export type AgentNotification = {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+  jarvisDeliveredAt: string | null;
+  jarvisDeliveryThreadId: string | null;
+};
+
+export type JarvisNotificationDelivery = {
+  jarvisAgentId: string;
+  threadId: string;
+  notificationIds: string[];
+  deliveredAt: string;
+  finalText: string;
 };
 
 export type RoutingDecision = {

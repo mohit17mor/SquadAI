@@ -208,7 +208,11 @@ test("command center API returns useful errors for invalid requests", async () =
       method: "POST",
       body: {},
     });
-    assert.deepEqual(automation.result, { routedWorkItem: null, dispatchedWorkItems: [] });
+    assert.deepEqual(automation.result, {
+      routedWorkItem: null,
+      dispatchedWorkItems: [],
+      jarvisNotificationDelivery: null,
+    });
   } finally {
     await server.close();
     await manager.close();
@@ -470,11 +474,14 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /upsertAgent/);
     assert.match(html, /ID \(optional\)/);
     assert.match(html, /<option value="router">Router<\/option>/);
+    assert.match(html, /<option value="jarvis">Jarvis<\/option>/);
     assert.match(html, /Routing description/);
     assert.match(html, /metadata\.routingDescription = body\.routingDescription/);
     assert.match(html, /defaultRouterInstructions/);
+    assert.match(html, /defaultJarvisInstructions/);
     assert.match(html, /applyCreateRoleDefaults/);
     assert.match(html, /You are the router agent for the multi-agent Codex command center/);
+    assert.match(html, /You are Jarvis, the human-facing agent for the multi-agent Codex command center/);
     assert.match(html, /edit-agent-form/);
     assert.match(html, /<details id="agent-settings" class="agent-editor">/);
     assert.match(html, /class="settings-summary"/);

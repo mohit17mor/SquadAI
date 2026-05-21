@@ -735,6 +735,96 @@ test("queues and dismisses failure notifications for human attention", async () 
   assert.equal(manager.listNotifications().find((item) => item.id === notification?.id)?.status, "resolved");
 });
 
+test("automation delivers pending notifications to an idle Jarvis agent", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "jarvis",
+        name: "Jarvis",
+        instructions: "Tell the human what needs attention.",
+        metadata: { role: "jarvis" },
+      }),
+      agent({
+        id: "maintenance",
+        name: "Maintenance Debugger",
+        instructions: "You specialize in read-only maintenance debugging.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const failedTurn = manager.sendToAgent("maintenance", "fail while investigating");
+  await waitFor(() => clients.length === 1, "worker client");
+  clients[0]?.session("thread-1").pending?.reject(new Error("tool crashed"));
+  if (clients[0]) {
+    clients[0].session("thread-1").pending = null;
+  }
+  await assert.rejects(failedTurn, /tool crashed/);
+
+  const notification = manager.listNotifications().find((item) => item.kind === "turn_failed");
+  assert.equal(notification?.jarvisDeliveredAt, null);
+
+  const automation = manager.runAutomationCycle();
+  await waitFor(() => clients.length === 2, "jarvis client");
+  const jarvisPrompt = clients[1]?.session("thread-1").pending?.input ?? "";
+  assert.match(jarvisPrompt, /Command center notifications/);
+  assert.match(jarvisPrompt, /notif-/);
+  assert.match(jarvisPrompt, /Maintenance Debugger/);
+  assert.match(jarvisPrompt, /tool crashed/);
+  assert.match(jarvisPrompt, /Do not take action/);
+
+  assert.equal(
+    manager.listNotifications().find((item) => item.id === notification?.id)?.jarvisDeliveredAt,
+    null,
+  );
+
+  clients[1]?.session("thread-1").complete("I told the human.");
+  const result = await automation;
+  assert.deepEqual(result.jarvisNotificationDelivery?.notificationIds, [notification?.id]);
+  assert.equal(result.jarvisNotificationDelivery?.jarvisAgentId, "jarvis");
+  assert.equal(
+    manager.listNotifications().find((item) => item.id === notification?.id)?.jarvisDeliveryThreadId,
+    "thread-1",
+  );
+  assert.ok(manager.listNotifications().find((item) => item.id === notification?.id)?.jarvisDeliveredAt);
+});
+
+test("automation leaves notifications queued while Jarvis is busy", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "jarvis",
+        name: "Jarvis",
+        instructions: "Tell the human what needs attention.",
+        metadata: { role: "jarvis" },
+      }),
+      agent(),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const jarvisTurn = manager.sendToAgent("jarvis", "hello jarvis");
+  await waitFor(() => clients.length === 1, "busy jarvis client");
+
+  const failedTurn = manager.sendToAgent("maintenance", "fail while jarvis is busy");
+  await waitFor(() => clients.length === 2, "worker client while jarvis busy");
+  clients[1]?.session("thread-1").pending?.reject(new Error("still needs attention"));
+  if (clients[1]) {
+    clients[1].session("thread-1").pending = null;
+  }
+  await assert.rejects(failedTurn, /still needs attention/);
+
+  const result = await manager.runAutomationCycle();
+  assert.equal(result.jarvisNotificationDelivery, null);
+  const notification = manager.listNotifications().find((item) => item.kind === "turn_failed");
+  assert.equal(notification?.jarvisDeliveredAt, null);
+
+  clients[0]?.session("thread-1").complete("ready");
+  assert.equal((await jarvisTurn).finalText, "ready");
+});
+
 test("continues approval ids from persisted approval events", async () => {
   const clients: FakeCodexClient[] = [];
   const contexts: CodexControlClientContext[] = [];
@@ -1201,6 +1291,12 @@ test("sends compact router roster once and omits long worker instructions from e
           routingDescription: "Classifies issue tracker tickets for instance-maintenance candidates.",
         },
       }),
+      agent({
+        id: "jarvis",
+        name: "Jarvis",
+        instructions: "Tell the human what needs attention.",
+        metadata: { role: "jarvis" },
+      }),
     ],
     clientFactory: fakeFactory(clients),
   });
@@ -1216,6 +1312,7 @@ test("sends compact router roster once and omits long worker instructions from e
   const rosterPrompt = clients[0]?.session("thread-1").pending?.input ?? "";
   assert.match(rosterPrompt, /Worker roster update/);
   assert.match(rosterPrompt, /Classifies issue tracker tickets for instance-maintenance candidates/);
+  assert.doesNotMatch(rosterPrompt, /Jarvis/);
   assert.doesNotMatch(rosterPrompt, /For this POC, do not investigate/);
 
   clients[0]?.session("thread-1").complete("roster updated");

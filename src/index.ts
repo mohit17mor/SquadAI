@@ -25,6 +25,7 @@ export type {
   CodexControlClientFactory,
   CodexControlClientLike,
   CodexSessionLike,
+  JarvisNotificationDelivery,
   PersistedAgentManagerState,
   PersistedAgentState,
   RoutingDecision,

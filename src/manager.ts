@@ -21,6 +21,7 @@ import type {
   CodexControlClientFactory,
   CodexControlClientLike,
   CodexSessionLike,
+  JarvisNotificationDelivery,
   PersistedAgentManagerState,
   RoutingDecision,
   SensorEvent,
@@ -470,9 +471,53 @@ export class CodexAgentManager extends EventEmitter {
     return started;
   }
 
+  async deliverPendingNotificationsToJarvis(jarvisAgentId?: string): Promise<JarvisNotificationDelivery | null> {
+    this.assertOpen();
+    await this.start();
+    const jarvis = jarvisAgentId ? this.records.get(jarvisAgentId) ?? null : this.findJarvisRecordOrNull();
+    if (!jarvis || !this.isAgentAvailable(jarvis)) {
+      return null;
+    }
+
+    const batch = this.notifications
+      .filter((notification) => notification.status === "pending")
+      .filter((notification) => !notification.jarvisDeliveredAt)
+      .filter((notification) => notification.agentId !== jarvis.definition.id)
+      .slice(0, 5);
+    if (!batch.length) {
+      return null;
+    }
+
+    try {
+      const result = await this.sendToAgent(jarvis.definition.id, this.jarvisNotificationPrompt(batch), {
+        timeoutMs: 600_000,
+      });
+      const deliveredAt = this.now();
+      const deliveredIds = new Set(batch.map((notification) => notification.id));
+      for (const notification of this.notifications) {
+        if (deliveredIds.has(notification.id) && !notification.jarvisDeliveredAt) {
+          notification.jarvisDeliveredAt = deliveredAt;
+          notification.jarvisDeliveryThreadId = result.threadId;
+          notification.updatedAt = deliveredAt;
+        }
+      }
+      await this.persist();
+      return {
+        jarvisAgentId: jarvis.definition.id,
+        threadId: result.threadId,
+        notificationIds: batch.map((notification) => notification.id),
+        deliveredAt,
+        finalText: result.finalText,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async runAutomationCycle(routerAgentId?: string): Promise<{
     routedWorkItem: WorkItem | null;
     dispatchedWorkItems: WorkItem[];
+    jarvisNotificationDelivery: JarvisNotificationDelivery | null;
   }> {
     this.assertOpen();
     await this.start();
@@ -488,7 +533,8 @@ export class CodexAgentManager extends EventEmitter {
       routedWorkItem = await this.processNextSensorEvent(routerAgentId);
     }
     const dispatchedWorkItems = await this.dispatchQueuedWork();
-    return { routedWorkItem, dispatchedWorkItems };
+    const jarvisNotificationDelivery = await this.deliverPendingNotificationsToJarvis();
+    return { routedWorkItem, dispatchedWorkItems, jarvisNotificationDelivery };
   }
 
   async close(): Promise<void> {
@@ -644,7 +690,7 @@ export class CodexAgentManager extends EventEmitter {
     }));
     this.sensorEvents = (state.sensorEvents ?? []).map(cloneSensorEvent);
     this.workItems = (state.workItems ?? []).map(cloneWorkItem);
-    this.notifications = (state.notifications ?? []).map(cloneNotification);
+    this.notifications = (state.notifications ?? []).map(normalizeNotification);
     this.nextEventId =
       this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
     this.nextApprovalId = nextApprovalEventId(this.events);
@@ -854,6 +900,13 @@ export class CodexAgentManager extends EventEmitter {
     return routers.length === 1 ? routers[0] as RuntimeRecord : null;
   }
 
+  private findJarvisRecordOrNull(): RuntimeRecord | null {
+    const jarvisRecords = Array.from(this.records.values()).filter(
+      (record) => record.definition.metadata?.role === "jarvis",
+    );
+    return jarvisRecords.length === 1 ? jarvisRecords[0] as RuntimeRecord : null;
+  }
+
   private routerRecords(): RuntimeRecord[] {
     return Array.from(this.records.values()).filter(
       (record) => record.definition.metadata?.role === "router",
@@ -916,6 +969,7 @@ export class CodexAgentManager extends EventEmitter {
     const roster = Array.from(this.records.values())
       .filter((record) => record.definition.id !== routerAgentId)
       .filter((record) => record.definition.metadata?.role !== "router")
+      .filter((record) => record.definition.metadata?.role !== "jarvis")
       .map((record) => ({
         id: record.definition.id,
         name: record.definition.name,
@@ -926,6 +980,32 @@ export class CodexAgentManager extends EventEmitter {
     const serialized = JSON.stringify(roster);
     const digest = createHash("sha256").update(serialized).digest("hex").slice(0, 16);
     return { digest, roster };
+  }
+
+  private jarvisNotificationPrompt(notifications: AgentNotification[]): string {
+    const lines = notifications.map((notification) => {
+      const parts = [
+        `- ${notification.id}`,
+        `${notification.agentName}: ${notification.summary}`,
+        `kind=${notification.kind}`,
+      ];
+      if (notification.approvalId) {
+        parts.push(`approval=${notification.approvalId}`);
+      }
+      if (notification.workItemId) {
+        parts.push(`workItem=${notification.workItemId}`);
+      }
+      return parts.join(" | ");
+    });
+    return [
+      "Command center notifications need the human's attention.",
+      "Briefly tell the human what needs attention in plain English.",
+      "Do not take action, do not investigate, do not approve or decline anything, and do not assign work.",
+      "The user can click each notification in the command center to open the source agent.",
+      "",
+      "Notifications:",
+      ...lines,
+    ].join("\n");
   }
 
   private invalidateRouterRosters(): void {
@@ -1061,6 +1141,8 @@ export class CodexAgentManager extends EventEmitter {
       createdAt: event.createdAt,
       updatedAt: event.createdAt,
       resolvedAt: null,
+      jarvisDeliveredAt: null,
+      jarvisDeliveryThreadId: null,
     };
 
     if (event.type === "approval_requested") {
@@ -1456,7 +1538,15 @@ function cloneWorkItem(workItem: WorkItem): WorkItem {
 }
 
 function cloneNotification(notification: AgentNotification): AgentNotification {
-  return { ...notification };
+  return normalizeNotification(notification);
+}
+
+function normalizeNotification(notification: AgentNotification): AgentNotification {
+  return {
+    ...notification,
+    jarvisDeliveredAt: notification.jarvisDeliveredAt ?? null,
+    jarvisDeliveryThreadId: notification.jarvisDeliveryThreadId ?? null,
+  };
 }
 
 function approvalNotificationSummary(agentName: string, payload: Record<string, unknown>): string {

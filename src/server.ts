@@ -552,7 +552,7 @@ function renderHtml(title: string): string {
           <label>Name<input id="agent-name" name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
           <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
-          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
+          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
           <label>Routing description<textarea name="routingDescription" rows="2" placeholder="Short capability summary for the router"></textarea></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
@@ -575,7 +575,7 @@ function renderHtml(title: string): string {
           </summary>
           <form id="edit-agent-form" class="agent-editor-form">
             <label>Name<input name="name" autocomplete="off"></label>
-            <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option></select></label>
+            <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
             <label>Working directory<input name="cwd" autocomplete="off"></label>
             <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
             <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
@@ -784,6 +784,16 @@ const defaultRouterInstructions = [
   "If no worker is a good fit, choose the closest safe worker and explain the uncertainty in reason.",
 ].join("\\n");
 
+const defaultJarvisInstructions = [
+  "You are Jarvis, the human-facing agent for the multi-agent Codex command center.",
+  "Your job is to keep the human calmly aware of important agent activity.",
+  "When the manager sends command center notifications, summarize them in concise plain English.",
+  "Do not investigate the underlying tasks yourself.",
+  "Do not approve, decline, route, assign, or execute work unless the human explicitly asks you to.",
+  "Tell the human which source agent needs attention so they can open that agent's chat.",
+  "If several notifications arrive together, group them into a short status update.",
+].join("\\n");
+
 const agentList = document.getElementById("agents");
 const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
@@ -966,16 +976,26 @@ async function createAgent(event) {
 }
 
 function applyCreateRoleDefaults() {
-  if (createRoleSelect.value === "router") {
+  const defaultInstructions = defaultInstructionsForRole(createRoleSelect.value);
+  if (defaultInstructions) {
     if (!createInstructionsTouched || !createInstructionsInput.value.trim()) {
-      createInstructionsInput.value = defaultRouterInstructions;
+      createInstructionsInput.value = defaultInstructions;
       createInstructionsTouched = false;
     }
     return;
   }
-  if (!createInstructionsTouched && createInstructionsInput.value === defaultRouterInstructions) {
+  if (
+    !createInstructionsTouched &&
+    (createInstructionsInput.value === defaultRouterInstructions || createInstructionsInput.value === defaultJarvisInstructions)
+  ) {
     createInstructionsInput.value = "";
   }
+}
+
+function defaultInstructionsForRole(role) {
+  if (role === "router") return defaultRouterInstructions;
+  if (role === "jarvis") return defaultJarvisInstructions;
+  return "";
 }
 
 function applyRoleMetadata(body, existingMetadata = {}, forceMetadata = false) {
@@ -1208,7 +1228,9 @@ function renderAgentEditor(selected) {
   editAgentLoadedId = selected.id;
   editAgentDirty = false;
   editAgentForm.elements.name.value = selected.name || "";
-  editAgentForm.elements.role.value = selected.metadata?.role === "router" ? "router" : "";
+  editAgentForm.elements.role.value = selected.metadata?.role === "router" || selected.metadata?.role === "jarvis"
+    ? selected.metadata.role
+    : "";
   editAgentForm.elements.cwd.value = selected.cwd || "";
   editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
   editAgentForm.elements.instructions.value = selected.instructions || "";
