@@ -1609,6 +1609,9 @@ function approvalSummary(requestPayload, resolvedPayload) {
 
 function eventToMessages(event, state) {
   if (event.type === "turn_started") {
+    if (event.payload && event.payload.internal === true) {
+      return [];
+    }
     const input = event.payload && event.payload.input ? String(event.payload.input) : "";
     return input
       ? [{ kind: "user", meta: "You", text: input, time: event.createdAt }]

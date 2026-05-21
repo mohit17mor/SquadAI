@@ -46,6 +46,10 @@ export type AskOptions = {
   shellCommands?: "deny" | "allow";
   fileWrites?: "deny" | "allow";
   network?: "deny" | "allow";
+  internal?: {
+    hiddenInput?: boolean;
+    reason?: string;
+  };
   confirmation?: {
     confirmed: boolean;
     reason?: string;

@@ -541,6 +541,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /openNotification/);
     assert.match(html, /dismissNotification/);
     assert.match(html, /data-notification-agent-id/);
+    assert.match(html, /event\.payload\.internal === true/);
     assert.match(html, /sensor-events/);
     assert.match(html, /work-items/);
     assert.match(html, /hasActiveTurnPending/);

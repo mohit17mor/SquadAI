@@ -491,6 +491,7 @@ export class CodexAgentManager extends EventEmitter {
     try {
       const result = await this.sendToAgent(jarvis.definition.id, this.jarvisNotificationPrompt(batch), {
         timeoutMs: 600_000,
+        internal: { hiddenInput: true, reason: "jarvis_notification_delivery" },
       });
       const deliveredAt = this.now();
       const deliveredIds = new Set(batch.map((notification) => notification.id));
@@ -596,13 +597,17 @@ export class CodexAgentManager extends EventEmitter {
     }
 
     this.setStatus(record, "running");
+    const { internal, ...turnOptions } = options;
     await this.recordEvent(record.definition.id, "turn_started", "Turn started.", {
       input,
+      internal: internal?.hiddenInput === true,
+      reason: internal?.reason,
     });
 
+    const { internal: _defaultInternal, ...defaultAskOptions } = record.definition.defaultAskOptions ?? {};
     const result = await session.ask(input, {
-      ...record.definition.defaultAskOptions,
-      ...options,
+      ...defaultAskOptions,
+      ...turnOptions,
     });
     this.setStatus(record, "idle");
     record.lastError = null;
@@ -997,15 +1002,7 @@ export class CodexAgentManager extends EventEmitter {
       }
       return parts.join(" | ");
     });
-    return [
-      "Command center notifications need the human's attention.",
-      "Briefly tell the human what needs attention in plain English.",
-      "Do not take action, do not investigate, do not approve or decline anything, and do not assign work.",
-      "The user can click each notification in the command center to open the source agent.",
-      "",
-      "Notifications:",
-      ...lines,
-    ].join("\n");
+    return ["Notify user:", ...lines].join("\n");
   }
 
   private invalidateRouterRosters(): void {

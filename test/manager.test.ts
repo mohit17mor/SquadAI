@@ -768,11 +768,18 @@ test("automation delivers pending notifications to an idle Jarvis agent", async 
   const automation = manager.runAutomationCycle();
   await waitFor(() => clients.length === 2, "jarvis client");
   const jarvisPrompt = clients[1]?.session("thread-1").pending?.input ?? "";
-  assert.match(jarvisPrompt, /Command center notifications/);
+  assert.match(jarvisPrompt, /^Notify user:/);
   assert.match(jarvisPrompt, /notif-/);
   assert.match(jarvisPrompt, /Maintenance Debugger/);
   assert.match(jarvisPrompt, /tool crashed/);
-  assert.match(jarvisPrompt, /Do not take action/);
+  assert.doesNotMatch(jarvisPrompt, /Command center notifications need the human's attention/);
+  assert.doesNotMatch(jarvisPrompt, /The user can click each notification/);
+
+  const jarvisStarted = manager
+    .listEvents("jarvis")
+    .find((event) => event.type === "turn_started" && event.payload.input === jarvisPrompt);
+  assert.equal(jarvisStarted?.payload.internal, true);
+  assert.equal(jarvisStarted?.payload.reason, "jarvis_notification_delivery");
 
   assert.equal(
     manager.listNotifications().find((item) => item.id === notification?.id)?.jarvisDeliveredAt,
