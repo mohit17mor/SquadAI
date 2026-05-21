@@ -28,6 +28,8 @@ import type {
 } from "./types.js";
 import { CodexAgentManagerError } from "./types.js";
 
+const DEFAULT_AGENT_TURN_TIMEOUT_MS = 1_800_000;
+
 type RuntimeRecord = {
   definition: AgentDefinition;
   status: AgentStatus;
@@ -218,7 +220,10 @@ export class CodexAgentManager extends EventEmitter {
       throw new CodexAgentManagerError(`Agent ${agentId} is already running a turn.`);
     }
 
-    const turn = this.runTurn(record, input, options);
+    const turn = this.runTurn(record, input, {
+      timeoutMs: DEFAULT_AGENT_TURN_TIMEOUT_MS,
+      ...options,
+    });
     record.activeTurn = turn;
     return turn;
   }

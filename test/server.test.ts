@@ -471,6 +471,12 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /activity-sequence/);
     assert.match(html, /activity-toggle/);
     assert.match(html, /activityOpenState/);
+    assert.match(html, /activityScrollState/);
+    assert.match(html, /captureActivityScrollPositions/);
+    assert.match(html, /restoreActivityScrollPositions/);
+    assert.match(html, /activityInteractionPauseUntil/);
+    assert.match(html, /markActivityInteraction/);
+    assert.match(html, /Date\.now\(\) > activityInteractionPauseUntil/);
     assert.match(html, /bindActivityToggles/);
     assert.match(html, /data-activity-id/);
     assert.match(html, /max-height: 260px/);

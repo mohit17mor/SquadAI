@@ -744,6 +744,8 @@ let activePanel = "agents";
 let lastAgentListHtml = "";
 let lastMessagesHtml = "";
 const activityOpenState = new Map();
+const activityScrollState = new Map();
+let activityInteractionPauseUntil = 0;
 const defaultRouterInstructions = [
   "You are the router agent for the multi-agent Codex command center.",
   "Your job is to inspect incoming sensor events and choose the best worker agent.",
@@ -1679,22 +1681,70 @@ function toast(message, type = "info") {
 
 function renderMessagesIfChanged(nextHtml) {
   if (nextHtml === lastMessagesHtml) return;
-  const shouldStickToBottom = isScrolledNearBottom(messages);
+  captureActivityScrollPositions();
+  const shouldStickToBottom = isScrolledNearBottom(messages) && Date.now() > activityInteractionPauseUntil;
   messages.innerHTML = nextHtml;
   lastMessagesHtml = nextHtml;
   bindApprovalButtons();
   bindActivityToggles();
+  restoreActivityScrollPositions();
   if (shouldStickToBottom) {
     scrollDown();
   }
 }
 
 function bindActivityToggles() {
+  const presentActivityIds = new Set();
   for (const details of messages.querySelectorAll("[data-activity-id]")) {
+    const activityId = details.dataset.activityId;
+    if (!activityId) continue;
+    presentActivityIds.add(activityId);
     details.addEventListener("toggle", () => {
-      activityOpenState.set(details.dataset.activityId, details.open);
+      activityOpenState.set(activityId, details.open);
+      markActivityInteraction();
     });
+    details.addEventListener("pointerdown", markActivityInteraction);
+    const detailList = details.querySelector(".activity-detail-list");
+    if (detailList) {
+      detailList.addEventListener("scroll", () => {
+        activityScrollState.set(activityId, detailList.scrollTop);
+        markActivityInteraction();
+      }, { passive: true });
+      detailList.addEventListener("pointerdown", markActivityInteraction);
+      detailList.addEventListener("wheel", markActivityInteraction, { passive: true });
+    }
   }
+  for (const activityId of activityScrollState.keys()) {
+    if (!presentActivityIds.has(activityId)) {
+      activityScrollState.delete(activityId);
+    }
+  }
+}
+
+function captureActivityScrollPositions() {
+  for (const details of messages.querySelectorAll("[data-activity-id]")) {
+    const activityId = details.dataset.activityId;
+    const detailList = details.querySelector(".activity-detail-list");
+    if (activityId && detailList) {
+      activityScrollState.set(activityId, detailList.scrollTop);
+    }
+  }
+}
+
+function restoreActivityScrollPositions() {
+  for (const details of messages.querySelectorAll("[data-activity-id]")) {
+    const activityId = details.dataset.activityId;
+    const detailList = details.querySelector(".activity-detail-list");
+    if (!activityId || !detailList) continue;
+    const scrollTop = activityScrollState.get(activityId);
+    if (typeof scrollTop === "number") {
+      detailList.scrollTop = scrollTop;
+    }
+  }
+}
+
+function markActivityInteraction() {
+  activityInteractionPauseUntil = Date.now() + 3000;
 }
 
 function isScrolledNearBottom(node) {

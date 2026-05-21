@@ -240,6 +240,22 @@ test("starts named agents lazily and sends plain text to the matching session", 
   });
 });
 
+test("uses a long default timeout for agent turns unless caller overrides it", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "long investigation");
+  await waitFor(() => clients.length === 1, "default timeout client");
+
+  assert.equal(clients[0]?.session("thread-1").asks[0]?.options.timeoutMs, 1_800_000);
+
+  clients[0]?.session("thread-1").complete("done");
+  await send;
+});
+
 test("rejects concurrent sends to the same agent while allowing another agent to run", async () => {
   const clients: FakeCodexClient[] = [];
   const manager = new CodexAgentManager({
