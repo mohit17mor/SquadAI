@@ -91,6 +91,7 @@ export interface AuditSink {
 
 export type TurnResult = {
   threadId: string;
+  turnId: string | null;
   finalText: string;
   turn: Record<string, unknown>;
   items: unknown[];

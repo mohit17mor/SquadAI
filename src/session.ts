@@ -13,6 +13,10 @@ import {
 
 type ActiveTurn = {
   options: AskOptions;
+  turnId: string | null;
+  turnIdReady: Promise<string>;
+  resolveTurnId: (turnId: string) => void;
+  rejectTurnId: (error: Error) => void;
   finalText: string;
   items: unknown[];
   lastActivity: string;
@@ -46,8 +50,19 @@ export class CodexSession extends EventEmitter {
 
     let timeout: NodeJS.Timeout | null = null;
     const resultPromise = new Promise<TurnResult>((resolve, reject) => {
+      let resolveTurnId!: (turnId: string) => void;
+      let rejectTurnId!: (error: Error) => void;
+      const turnIdReady = new Promise<string>((turnResolve, turnReject) => {
+        resolveTurnId = turnResolve;
+        rejectTurnId = turnReject;
+      });
+      turnIdReady.catch(() => {});
       this.activeTurn = {
         options,
+        turnId: null,
+        turnIdReady,
+        resolveTurnId,
+        rejectTurnId,
         finalText: "",
         items: [],
         lastActivity: "turn/start",
@@ -65,13 +80,24 @@ export class CodexSession extends EventEmitter {
     });
 
     try {
-      await this.peer.request("turn/start", {
+      const started = await this.peer.request<{ turn?: { id?: string } }>("turn/start", {
         threadId: this.threadId,
         input: [{ type: "text", text: input }],
       });
+      const active = this.activeTurn as ActiveTurn | null;
+      if (active) {
+        const turnId = started.turn?.id ?? null;
+        active.turnId = turnId;
+        if (turnId) {
+          active.resolveTurnId(turnId);
+        } else {
+          active.rejectTurnId(new CodexControlError("App Server did not return a turn id."));
+        }
+      }
       return await resultPromise;
     } catch (error) {
-      this.failActiveTurn(error instanceof Error ? error : new Error(String(error)));
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      this.failActiveTurn(normalized);
       throw error;
     } finally {
       if (timeout) {
@@ -115,6 +141,7 @@ export class CodexSession extends EventEmitter {
 
       active.resolve({
         threadId: String(params.threadId ?? this.threadId),
+        turnId: typeof turn.id === "string" ? turn.id : active.turnId,
         finalText: active.finalText.trim(),
         turn,
         items: active.items,
@@ -141,12 +168,25 @@ export class CodexSession extends EventEmitter {
     await this.peer.request("thread/compact/start", { threadId: this.threadId });
   }
 
+  async interrupt(): Promise<void> {
+    const active = this.activeTurn;
+    if (!active) {
+      throw new CodexControlError("No active Codex turn to interrupt.");
+    }
+    const turnId = active.turnId ?? await active.turnIdReady;
+    await this.peer.request("turn/interrupt", {
+      threadId: this.threadId,
+      turnId,
+    });
+  }
+
   private failActiveTurn(error: Error): void {
     const active = this.activeTurn;
     if (!active) {
       return;
     }
     this.activeTurn = null;
+    active.rejectTurnId(error);
     active.reject(error);
     this.emit("turn.failed", error);
   }

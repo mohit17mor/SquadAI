@@ -11,6 +11,7 @@ export declare class CodexSession extends EventEmitter {
     ask(input: string, options?: AskOptions): Promise<TurnResult>;
     handleNotification(message: JsonRpcMessage): boolean;
     compact(): Promise<void>;
+    interrupt(): Promise<void>;
     private failActiveTurn;
 }
 export declare function threadStartParams(options: SessionStartOptions): Record<string, unknown>;

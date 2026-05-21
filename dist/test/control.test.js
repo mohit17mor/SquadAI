@@ -88,7 +88,7 @@ test("ask starts a turn and resolves with final agent text", async () => {
     const { session } = await startedSession(transport);
     const turn = session.ask("hello");
     await transport.waitForRequest("turn/start");
-    transport.respondTo("turn/start", {});
+    transport.respondTo("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
     transport.server({
         method: "item/agentMessage/delta",
         params: { delta: "Hi " },
@@ -104,7 +104,29 @@ test("ask starts a turn and resolves with final agent text", async () => {
     const result = await turn;
     assert.equal(result.finalText, "Hi Project User.");
     assert.equal(result.threadId, "thread-1");
+    assert.equal(result.turnId, "turn-1");
     assert.equal(result.turn.status, "completed");
+});
+test("interrupt sends turn interrupt for active turn", async () => {
+    const transport = new FakeTransport();
+    const { session } = await startedSession(transport);
+    const turn = session.ask("stop me");
+    await transport.waitForRequest("turn/start");
+    transport.respondTo("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+    const interrupting = session.interrupt();
+    const interrupt = await transport.waitForRequest("turn/interrupt");
+    assert.deepEqual(interrupt.params, {
+        threadId: "thread-1",
+        turnId: "turn-1",
+    });
+    transport.respondTo("turn/interrupt", {});
+    await interrupting;
+    transport.server({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-1", status: "interrupted" } },
+    });
+    const result = await turn;
+    assert.equal(result.turn.status, "interrupted");
 });
 test("initialize advertises experimental API capability for dynamic tools", async () => {
     const transport = new FakeTransport();
