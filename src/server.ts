@@ -884,8 +884,12 @@ document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
 for (const button of document.querySelectorAll("[data-panel]")) {
   button.addEventListener("click", () => {
+    const previousPanel = activePanel;
     activePanel = button.dataset.panel || "agents";
-    renderPanel();
+    if (previousPanel !== activePanel) {
+      lastMessagesHtml = "";
+    }
+    render();
   });
 }
 const agentForm = document.getElementById("agent-form");

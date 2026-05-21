@@ -496,6 +496,10 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /ops-count/);
     assert.match(html, /Talk to the command center as a whole/);
     assert.match(html, /jarvisAgent/);
+    assert.match(html, /const previousPanel = activePanel/);
+    assert.match(html, /previousPanel !== activePanel/);
+    assert.match(html, /lastMessagesHtml = ""/);
+    assert.match(html, /render\(\);/);
     assert.match(html, /editAgentDirty = false/);
     assert.match(html, /editAgentLoadedId = null/);
     assert.match(html, /event\.currentTarget\.reset/);
