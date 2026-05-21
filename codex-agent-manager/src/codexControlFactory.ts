@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type {
@@ -11,8 +12,7 @@ type CodexControlModule = {
 };
 
 export function createDefaultClientFactory(
-  codexControlPath = process.env.CODEX_CONTROL_PATH ??
-    "/home/developer/scratch/codex-control/dist/src/index.js",
+  codexControlModule = process.env.CODEX_CONTROL_PATH ?? "codex-control",
 ): CodexControlClientFactory {
   return (context?: CodexControlClientContext) => {
     let clientPromise: Promise<CodexControlClientLike> | null = null;
@@ -38,7 +38,7 @@ export function createDefaultClientFactory(
     };
 
     async function client(): Promise<CodexControlClientLike> {
-      clientPromise ??= import(pathToFileURL(codexControlPath).href).then((module) => {
+      clientPromise ??= importCodexControl(codexControlModule).then((module) => {
         const { CodexControlClient } = module as CodexControlModule;
         return new CodexControlClient({
           approvalHandler: context?.approvalHandler,
@@ -47,4 +47,12 @@ export function createDefaultClientFactory(
       return clientPromise;
     }
   };
+}
+
+function importCodexControl(specifier: string): Promise<unknown> {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("..")) {
+    const path = isAbsolute(specifier) ? specifier : resolve(specifier);
+    return import(pathToFileURL(path).href);
+  }
+  return import(specifier);
 }
