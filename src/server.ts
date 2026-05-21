@@ -1338,6 +1338,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
         summaries.push(current);
       }
       current = {
+        activityId: "activity-" + event.id,
         eventIds: [],
         entries: [],
         status: "running",
@@ -1346,12 +1347,12 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
         createdAt: event.createdAt,
         updatedAt: event.createdAt,
       };
-      current.eventIds.push(event.id);
       continue;
     }
     if (event.type === "codex_item_completed") {
       if (!current) {
         current = {
+          activityId: "activity-" + event.id,
           eventIds: [],
           entries: [],
           status: "running",
@@ -1378,6 +1379,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
       }
       if (!current) {
         current = {
+          activityId: "activity-" + event.id,
           eventIds: [],
           entries: [],
           status: "running",
@@ -1400,6 +1402,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
     if (event.type === "codex_thread_compacted") {
       if (!current) {
         current = {
+          activityId: "activity-" + event.id,
           eventIds: [],
           entries: [],
           status: "running",
@@ -1437,7 +1440,7 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
 function activitySummaryToTimelineMessage(summary) {
   return {
     kind: "timeline",
-    activityId: "activity-" + String(summary.eventIds[0] || summary.createdAt),
+    activityId: summary.activityId || "activity-" + String(summary.eventIds[0] || summary.createdAt),
     meta: "Codex activity",
     title: summary.hasCompaction ? "Thread compacted" : summary.status === "running" ? "Agent is working" : "Activity",
     status: summary.status,

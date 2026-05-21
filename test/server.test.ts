@@ -407,6 +407,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /summarizeWorkEvents/);
     assert.match(html, /workSummaryToTimelineMessage/);
     assert.match(html, /activitySummaryToTimelineMessage/);
+    assert.match(html, /activityId: "activity-" \+ event\.id/);
+    assert.match(html, /summary\.activityId \|\| "activity-" \+ String\(summary\.eventIds\[0\] \|\| summary\.createdAt\)/);
+    assert.doesNotMatch(html, /current\.eventIds\.push\(event\.id\);\s+continue;\s+\}\s+if \(event\.type === "codex_item_completed"\)/);
     assert.match(html, /resolveApproval/);
     assert.match(html, /data-approval-action="approved"/);
     assert.match(html, /Event Inbox/);
