@@ -150,6 +150,7 @@ export class CodexSession extends EventEmitter {
 export function threadStartParams(options) {
     const params = {
         model: options.model,
+        serviceTier: options.serviceTier,
         cwd: options.cwd,
         approvalPolicy: options.approvalPolicy,
         sandbox: options.sandbox,
@@ -158,6 +159,11 @@ export function threadStartParams(options) {
         experimentalRawEvents: false,
         persistExtendedHistory: false,
     };
+    if (options.reasoningEffort) {
+        params.config = {
+            model_reasoning_effort: options.reasoningEffort,
+        };
+    }
     if (options.dynamicTools?.length) {
         params.dynamicTools = options.dynamicTools.map((tool) => ({
             name: tool.name,

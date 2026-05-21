@@ -17,9 +17,12 @@ export type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never"
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ExternalWritePolicy = "deny" | "allow";
 export type MutationPolicy = "deny" | "allow";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type SessionStartOptions = {
     cwd: string;
     model?: string;
+    reasoningEffort?: ReasoningEffort;
+    serviceTier?: string;
     approvalPolicy?: ApprovalPolicy;
     sandbox?: SandboxMode;
     baseInstructions?: string;
@@ -65,6 +68,9 @@ export type AuditRecord = {
 export interface AuditSink {
     record(entry: AuditRecord): void | Promise<void>;
 }
+export interface CodexModelCatalogProvider {
+    listModels(options?: ModelListOptions): Promise<ModelListResult>;
+}
 export type TurnResult = {
     threadId: string;
     turnId: string | null;
@@ -92,6 +98,33 @@ export type DynamicToolCallResponse = {
 export type DynamicToolHandler = (args: Record<string, unknown>, params: Record<string, unknown>) => DynamicToolCallResponse | Promise<DynamicToolCallResponse>;
 export type DynamicTool = DynamicToolSpec & {
     handler?: DynamicToolHandler;
+};
+export type ModelServiceTier = {
+    id: string;
+    name: string;
+    description: string;
+};
+export type ReasoningEffortOption = {
+    reasoningEffort: ReasoningEffort;
+    description: string;
+};
+export type CodexModelOption = {
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    supportedReasoningEfforts: ReasoningEffortOption[];
+    defaultReasoningEffort: ReasoningEffort;
+    additionalSpeedTiers?: string[];
+    serviceTiers: ModelServiceTier[];
+    isDefault: boolean;
+};
+export type ModelListOptions = {
+    includeHidden?: boolean;
+};
+export type ModelListResult = {
+    models: CodexModelOption[];
 };
 export declare class CodexControlError extends Error {
     constructor(message: string, options?: ErrorOptions);

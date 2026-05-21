@@ -8,6 +8,8 @@ import type {
   ApprovalHandler,
   AuditSink,
   JsonRpcMessage,
+  ModelListOptions,
+  ModelListResult,
   SessionStartOptions,
 } from "./types.js";
 
@@ -15,6 +17,11 @@ type ThreadStartResponse = {
   thread?: {
     id?: string;
   };
+};
+
+type ModelListResponse = {
+  data?: unknown[];
+  nextCursor?: string | null;
 };
 
 export type CodexControlClientOptions = {
@@ -88,6 +95,21 @@ export class CodexControlClient {
     return session;
   }
 
+  async listModels(options: ModelListOptions = {}): Promise<ModelListResult> {
+    await this.start();
+    const models: unknown[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const response = await this.peer.request<ModelListResponse>("model/list", {
+        includeHidden: options.includeHidden === true,
+        cursor: cursor ?? null,
+      });
+      models.push(...(response.data ?? []));
+      cursor = response.nextCursor ?? null;
+    } while (cursor);
+    return { models: models.map(normalizeModelOption) };
+  }
+
   async close(): Promise<void> {
     await this.peer.close();
   }
@@ -106,4 +128,64 @@ export class CodexControlClient {
       }
     }
   }
+}
+
+function normalizeModelOption(value: unknown): ModelListResult["models"][number] {
+  const record = isRecord(value) ? value : {};
+  return {
+    id: stringValue(record.id),
+    model: stringValue(record.model),
+    displayName: stringValue(record.displayName),
+    description: stringValue(record.description),
+    hidden: record.hidden === true,
+    supportedReasoningEfforts: Array.isArray(record.supportedReasoningEfforts)
+      ? record.supportedReasoningEfforts.map(normalizeReasoningEffortOption)
+      : [],
+    defaultReasoningEffort: reasoningEffortValue(record.defaultReasoningEffort),
+    additionalSpeedTiers: Array.isArray(record.additionalSpeedTiers)
+      ? record.additionalSpeedTiers.map(String)
+      : [],
+    serviceTiers: Array.isArray(record.serviceTiers)
+      ? record.serviceTiers.map(normalizeServiceTier)
+      : [],
+    isDefault: record.isDefault === true,
+  };
+}
+
+function normalizeReasoningEffortOption(value: unknown): ModelListResult["models"][number]["supportedReasoningEfforts"][number] {
+  const record = isRecord(value) ? value : {};
+  return {
+    reasoningEffort: reasoningEffortValue(record.reasoningEffort),
+    description: stringValue(record.description),
+  };
+}
+
+function normalizeServiceTier(value: unknown): ModelListResult["models"][number]["serviceTiers"][number] {
+  const record = isRecord(value) ? value : {};
+  return {
+    id: stringValue(record.id),
+    name: stringValue(record.name),
+    description: stringValue(record.description),
+  };
+}
+
+function reasoningEffortValue(value: unknown): ModelListResult["models"][number]["defaultReasoningEffort"] {
+  return isReasoningEffort(value) ? value : "medium";
+}
+
+function isReasoningEffort(value: unknown): value is ModelListResult["models"][number]["defaultReasoningEffort"] {
+  return value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh";
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

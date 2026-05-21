@@ -55,6 +55,20 @@ export class CodexControlClient {
         this.sessions.set(threadId, session);
         return session;
     }
+    async listModels(options = {}) {
+        await this.start();
+        const models = [];
+        let cursor;
+        do {
+            const response = await this.peer.request("model/list", {
+                includeHidden: options.includeHidden === true,
+                cursor: cursor ?? null,
+            });
+            models.push(...(response.data ?? []));
+            cursor = response.nextCursor ?? null;
+        } while (cursor);
+        return { models: models.map(normalizeModelOption) };
+    }
     async close() {
         await this.peer.close();
     }
@@ -71,5 +85,58 @@ export class CodexControlClient {
             }
         }
     }
+}
+function normalizeModelOption(value) {
+    const record = isRecord(value) ? value : {};
+    return {
+        id: stringValue(record.id),
+        model: stringValue(record.model),
+        displayName: stringValue(record.displayName),
+        description: stringValue(record.description),
+        hidden: record.hidden === true,
+        supportedReasoningEfforts: Array.isArray(record.supportedReasoningEfforts)
+            ? record.supportedReasoningEfforts.map(normalizeReasoningEffortOption)
+            : [],
+        defaultReasoningEffort: reasoningEffortValue(record.defaultReasoningEffort),
+        additionalSpeedTiers: Array.isArray(record.additionalSpeedTiers)
+            ? record.additionalSpeedTiers.map(String)
+            : [],
+        serviceTiers: Array.isArray(record.serviceTiers)
+            ? record.serviceTiers.map(normalizeServiceTier)
+            : [],
+        isDefault: record.isDefault === true,
+    };
+}
+function normalizeReasoningEffortOption(value) {
+    const record = isRecord(value) ? value : {};
+    return {
+        reasoningEffort: reasoningEffortValue(record.reasoningEffort),
+        description: stringValue(record.description),
+    };
+}
+function normalizeServiceTier(value) {
+    const record = isRecord(value) ? value : {};
+    return {
+        id: stringValue(record.id),
+        name: stringValue(record.name),
+        description: stringValue(record.description),
+    };
+}
+function reasoningEffortValue(value) {
+    return isReasoningEffort(value) ? value : "medium";
+}
+function isReasoningEffort(value) {
+    return value === "none" ||
+        value === "minimal" ||
+        value === "low" ||
+        value === "medium" ||
+        value === "high" ||
+        value === "xhigh";
+}
+function stringValue(value) {
+    return typeof value === "string" ? value : "";
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 //# sourceMappingURL=client.js.map

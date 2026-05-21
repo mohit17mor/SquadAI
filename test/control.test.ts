@@ -389,6 +389,84 @@ test("thread start passes dynamic tool specs to app server", async () => {
   ]);
 });
 
+test("thread start passes model reasoning and service tier to app server", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+
+  const sessionPromise = client.startSession({
+    cwd: "/tmp/project",
+    model: "gpt-test",
+    reasoningEffort: "high",
+    serviceTier: "fast",
+  });
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  await transport.waitForRequest("thread/start");
+  transport.respondTo("thread/start", { thread: { id: "thread-1" } });
+  await sessionPromise;
+
+  const threadStart = transport.sent.find((message) => message.method === "thread/start");
+  assert.equal((threadStart?.params as Record<string, unknown>).model, "gpt-test");
+  assert.equal((threadStart?.params as Record<string, unknown>).serviceTier, "fast");
+  assert.deepEqual((threadStart?.params as Record<string, unknown>).config, {
+    model_reasoning_effort: "high",
+  });
+});
+
+test("lists model catalog from app server with pagination", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+
+  const listing = client.listModels();
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  const first = await transport.waitForRequest("model/list");
+  assert.deepEqual(first.params, { includeHidden: false, cursor: null });
+  assert.ok(first.id, "expected first model/list request id");
+  transport.server({ id: first.id, result: {
+    data: [
+      {
+        id: "gpt-test",
+        model: "gpt-test",
+        displayName: "GPT Test",
+        description: "Test model",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }],
+        defaultReasoningEffort: "low",
+        additionalSpeedTiers: ["fast"],
+        serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],
+        isDefault: true,
+      },
+    ],
+    nextCursor: "next-page",
+  } });
+  await waitFor(
+    () => transport.sent.filter((message) => message.method === "model/list").length === 2,
+    "second model/list request",
+  );
+  const second = transport.sent.filter((message) => message.method === "model/list").at(-1);
+  assert.ok(second?.id, "expected second model/list request");
+  assert.equal((second?.params as Record<string, unknown>).cursor, "next-page");
+  transport.server({ id: second.id, result: { data: [], nextCursor: null } });
+
+  assert.deepEqual(await listing, {
+    models: [
+      {
+        id: "gpt-test",
+        model: "gpt-test",
+        displayName: "GPT Test",
+        description: "Test model",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }],
+        defaultReasoningEffort: "low",
+        additionalSpeedTiers: ["fast"],
+        serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],
+        isDefault: true,
+      },
+    ],
+  });
+});
+
 test("dynamic tool calls are routed to registered handlers", async () => {
   const transport = new FakeTransport();
   const client = new CodexControlClient({ transport });
