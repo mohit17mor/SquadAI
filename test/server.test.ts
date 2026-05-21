@@ -104,9 +104,15 @@ test("command center API creates agents, lists them, sends messages, and exposes
         name: "Maintenance Debugger",
         cwd: "/tmp/ops-poc",
         instructions: "You specialize in maintenance debugging.",
+        model: "gpt-test",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        metadata: { routingDescription: "Debugs maintenance tickets." },
       },
     });
     assert.equal(created.agent.id, "maintenance");
+    assert.equal(created.agent.model, "gpt-test");
+    assert.equal(created.agent.metadata.routingDescription, "Debugs maintenance tickets.");
 
     const listed = await jsonFetch(`${baseUrl}/api/agents`);
     assert.equal(listed.agents.length, 1);
@@ -114,7 +120,16 @@ test("command center API creates agents, lists them, sends messages, and exposes
 
     const sent = await jsonFetch(`${baseUrl}/api/agents/maintenance/messages`, {
       method: "POST",
-      body: { message: "hello agent", options: { network: "allow" } },
+      body: {
+        message: "hello agent",
+        options: {
+          timeoutMs: 1234,
+          externalWrites: "deny",
+          shellCommands: "allow",
+          fileWrites: "deny",
+          network: "allow",
+        },
+      },
     });
     assert.equal(sent.result.finalText, "received: hello agent");
 
@@ -124,6 +139,76 @@ test("command center API creates agents, lists them, sends messages, and exposes
     const page = await fetch(`${baseUrl}/`);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Jarvis Command Center/);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center API returns useful errors for invalid requests", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+
+    await expectJsonStatus(`${baseUrl}/missing`, {}, 404, /Not found/);
+    await expectJsonStatus(
+      `${baseUrl}/api/agents`,
+      { method: "POST", body: [] },
+      400,
+      /Expected a JSON object/,
+    );
+    await expectJsonStatus(
+      `${baseUrl}/api/agents`,
+      {
+        method: "POST",
+        body: {
+          name: "!!!",
+          cwd: "/tmp",
+          instructions: "help",
+        },
+      },
+      400,
+      /Agent name must contain/,
+    );
+    await expectJsonStatus(
+      `${baseUrl}/api/agents`,
+      {
+        method: "POST",
+        body: {
+          id: "bad",
+          name: "Bad",
+          cwd: "/tmp",
+          instructions: "help",
+          approvalPolicy: "sometimes",
+        },
+      },
+      400,
+      /Invalid enum value/,
+    );
+    await expectJsonStatus(
+      `${baseUrl}/api/sensor-events`,
+      { method: "POST", body: { source: "", type: "ticket", body: "x" } },
+      400,
+      /Field source/,
+    );
+    await expectJsonStatus(
+      `${baseUrl}/api/approvals/approval-1`,
+      { method: "POST", body: { decision: "maybe" } },
+      400,
+      /Invalid enum value/,
+    );
+
+    const automation = await jsonFetch(`${baseUrl}/api/automation/tick`, {
+      method: "POST",
+      body: {},
+    });
+    assert.deepEqual(automation.result, { routedWorkItem: null, dispatchedWorkItems: [] });
   } finally {
     await server.close();
     await manager.close();
@@ -491,5 +576,26 @@ async function jsonFetch(
   const text = await response.text();
   const body = text ? JSON.parse(text) : {};
   assert.equal(response.status, 200, JSON.stringify(body));
+  return body;
+}
+
+async function expectJsonStatus(
+  url: string,
+  init: { method?: string; body?: unknown },
+  status: number,
+  errorPattern: RegExp,
+): Promise<any> {
+  const request: RequestInit = {
+    method: init.method ?? "GET",
+  };
+  if (init.body !== undefined) {
+    request.headers = { "content-type": "application/json" };
+    request.body = JSON.stringify(init.body);
+  }
+  const response = await fetch(url, request);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : {};
+  assert.equal(response.status, status, JSON.stringify(body));
+  assert.match(String(body.error), errorPattern);
   return body;
 }

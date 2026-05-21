@@ -458,6 +458,44 @@ test("creates agents dynamically and persists their definitions", async () => {
   assert.equal(resumed.getAgent("dynamic").cwd, "/tmp/ops-poc");
 });
 
+test("rejects invalid agent definitions and invalid manager operations", async () => {
+  assert.throws(
+    () => new CodexAgentManager({ agents: [agent(), agent()], clientFactory: fakeFactory() }),
+    /Duplicate agent id/,
+  );
+  assert.throws(
+    () => new CodexAgentManager({ agents: [agent({ id: "bad id" })], clientFactory: fakeFactory() }),
+    /Invalid agent id/,
+  );
+  assert.throws(
+    () => new CodexAgentManager({ agents: [agent({ name: " " })], clientFactory: fakeFactory() }),
+    /must have a name/,
+  );
+  assert.throws(
+    () => new CodexAgentManager({ agents: [agent({ cwd: " " })], clientFactory: fakeFactory() }),
+    /must have a cwd/,
+  );
+  assert.throws(
+    () => new CodexAgentManager({ agents: [agent({ instructions: " " })], clientFactory: fakeFactory() }),
+    /must have instructions/,
+  );
+
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(),
+  });
+
+  await assert.rejects(manager.sendToAgent("maintenance", " "), /empty message/);
+  assert.throws(() => manager.getAgent("missing"), /Unknown agent/);
+  assert.throws(() => manager.getSensorEvent("missing"), /Unknown sensor event/);
+  assert.throws(() => manager.getWorkItem("missing"), /Unknown work item/);
+  await assert.rejects(manager.retryWorkItem("missing"), /Unknown work item/);
+  await assert.rejects(manager.interruptAgentTurn("maintenance"), /does not have a running turn/);
+
+  await manager.close();
+  await manager.close();
+});
+
 test("updates agent instructions by clearing the existing Codex session", async () => {
   const clients: FakeCodexClient[] = [];
   const manager = new CodexAgentManager({
@@ -939,6 +977,156 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   clients[1]?.session("thread-1").complete("storage investigation complete");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
+});
+
+test("returns immutable sensor and work item snapshots", async () => {
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "worker",
+        name: "Worker",
+        instructions: "Handle routed work.",
+      }),
+    ],
+    clientFactory: fakeFactory(),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1",
+    metadata: { nested: { value: 1 } },
+  });
+  const work = await (manager as any).createWorkItemFromDecision(
+    manager.getSensorEvent("sensor-1"),
+    "router",
+    {
+      targetAgentId: "worker",
+      prompt: "Classify INC-01-1.",
+      metadata: { nested: { value: 2 } },
+    },
+  );
+
+  const sensorSnapshot = manager.listSensorEvents()[0]!;
+  assert.ok(sensorSnapshot.metadata);
+  sensorSnapshot.metadata.changed = true;
+  const workSnapshot = manager.getWorkItem(work.id);
+  workSnapshot.metadata.changed = true;
+
+  assert.equal(manager.getSensorEvent("sensor-1").metadata?.changed, undefined);
+  assert.equal(manager.getWorkItem(work.id).metadata.changed, undefined);
+});
+
+test("rejects invalid sensor event and routing inputs", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "other-router",
+        name: "Other Router",
+        instructions: "Also route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({
+        id: "worker",
+        name: "Worker",
+        instructions: "Handle routed work.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  await assert.rejects(
+    manager.ingestSensorEvent({ source: " ", type: "ticket.claimed", body: "body" }),
+    /Field source/,
+  );
+  await assert.rejects(manager.processNextSensorEvent("router"), /No pending sensor events/);
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.claimed",
+    body: "INC-01-1",
+  });
+  await assert.rejects(manager.processNextSensorEvent(), /Expected exactly one router agent, found 2/);
+
+  const route = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 1, "router client for invalid routing");
+  await completeRouterRosterUpdate(clients[0], "router prompt for invalid routing");
+  clients[0]?.session("thread-1").complete("not json");
+
+  await assert.rejects(route, /Router response must be a JSON object/);
+  assert.equal(manager.getSensorEvent("sensor-1").status, "failed");
+});
+
+test("rejects unsafe or malformed routing decisions", async () => {
+  const cases: Array<{ name: string; response: Record<string, unknown>; error: RegExp }> = [
+    {
+      name: "self assignment",
+      response: { targetAgentId: "router", prompt: "Do the work." },
+      error: /cannot assign work to itself/,
+    },
+    {
+      name: "unknown worker",
+      response: { targetAgentId: "missing", prompt: "Do the work." },
+      error: /Unknown agent/,
+    },
+    {
+      name: "empty prompt",
+      response: { targetAgentId: "worker", prompt: " " },
+      error: /Field prompt/,
+    },
+    {
+      name: "metadata not object",
+      response: { targetAgentId: "worker", prompt: "Do the work.", metadata: "bad" },
+      error: /Expected metadata to be an object/,
+    },
+  ];
+
+  for (const item of cases) {
+    const clients: FakeCodexClient[] = [];
+    const manager = new CodexAgentManager({
+      agents: [
+        agent({
+          id: "router",
+          name: "Router",
+          instructions: "Route incoming sensor events.",
+          metadata: { role: "router" },
+        }),
+        agent({
+          id: "worker",
+          name: "Worker",
+          instructions: "Handle routed work.",
+        }),
+      ],
+      clientFactory: fakeFactory(clients),
+    });
+
+    await manager.ingestSensorEvent({
+      source: "issue-tracker",
+      type: "ticket.claimed",
+      body: `${item.name}: INC-01-1`,
+    });
+
+    const route = manager.processNextSensorEvent("router");
+    await waitFor(() => clients.length === 1, `${item.name} router client`);
+    await completeRouterRosterUpdate(clients[0], `${item.name} router prompt`);
+    clients[0]?.session("thread-1").complete(JSON.stringify(item.response));
+
+    await assert.rejects(route, item.error);
+    assert.equal(manager.getSensorEvent("sensor-1").status, "failed");
+  }
 });
 
 test("sends compact router roster once and omits long worker instructions from event prompts", async () => {
