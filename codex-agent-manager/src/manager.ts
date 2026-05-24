@@ -95,6 +95,7 @@ export class CodexAgentManager extends EventEmitter {
   private nextWorkItemId = 1;
   private nextNotificationId = 1;
   private routerRosterStates = new Map<string, RouterRosterState>();
+  private dispatchQueuedWorkInFlight: Promise<WorkItem[]> | null = null;
   private started: Promise<void> | null = null;
   private closed = false;
 
@@ -474,14 +475,29 @@ export class CodexAgentManager extends EventEmitter {
   }
 
   async dispatchQueuedWork(): Promise<WorkItem[]> {
+    if (this.dispatchQueuedWorkInFlight) {
+      return this.dispatchQueuedWorkInFlight;
+    }
+    const dispatch = this.dispatchQueuedWorkOnce();
+    this.dispatchQueuedWorkInFlight = dispatch;
+    try {
+      return await dispatch;
+    } finally {
+      this.dispatchQueuedWorkInFlight = null;
+    }
+  }
+
+  private async dispatchQueuedWorkOnce(): Promise<WorkItem[]> {
     this.assertOpen();
     await this.start();
     const started: WorkItem[] = [];
+    const reservedAgentIds = new Set<string>();
     for (const workItem of this.workItems.filter((item) => item.status === "queued")) {
       const record = this.records.get(workItem.targetAgentId);
-      if (!record || !this.isAgentAvailable(record)) {
+      if (!record || reservedAgentIds.has(record.definition.id) || !this.isAgentAvailable(record)) {
         continue;
       }
+      reservedAgentIds.add(record.definition.id);
       workItem.status = "running";
       workItem.startedAt = this.now();
       workItem.updatedAt = workItem.startedAt;

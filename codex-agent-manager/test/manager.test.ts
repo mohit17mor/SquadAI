@@ -1205,6 +1205,67 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
 });
 
+test("dispatches only one queued work item per target agent at a time", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "worker",
+        name: "Worker",
+        instructions: "Handle routed work.",
+      }),
+    ],
+    clientFactory: fakeFactory(clients),
+  });
+
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.created",
+    body: "INC-01-1",
+  });
+  await manager.ingestSensorEvent({
+    source: "issue-tracker",
+    type: "ticket.created",
+    body: "INC-01-2",
+  });
+  const first = await (manager as any).createWorkItemFromDecision(
+    manager.getSensorEvent("sensor-1"),
+    "router",
+    {
+      targetAgentId: "worker",
+      prompt: "Investigate INC-01-1.",
+    },
+  );
+  const second = await (manager as any).createWorkItemFromDecision(
+    manager.getSensorEvent("sensor-2"),
+    "router",
+    {
+      targetAgentId: "worker",
+      prompt: "Investigate INC-01-2.",
+    },
+  );
+
+  const started = await manager.dispatchQueuedWork();
+  assert.deepEqual(started.map((item) => item.id), [first.id]);
+  assert.equal(manager.getWorkItem(first.id).status, "running");
+  assert.equal(manager.getWorkItem(second.id).status, "queued");
+  await waitFor(() => clients.length === 1, "first worker client");
+  assert.equal(clients[0]?.session("thread-1").pending?.input, "Investigate INC-01-1.");
+
+  clients[0]?.session("thread-1").complete("first done");
+  await waitFor(() => manager.getWorkItem(first.id).status === "done", "first work done");
+
+  const laterStarted = await manager.dispatchQueuedWork();
+  assert.deepEqual(laterStarted.map((item) => item.id), [second.id]);
+  assert.equal(manager.getWorkItem(second.id).status, "running");
+  await waitFor(
+    () => clients[0]?.session("thread-1").pending?.input === "Investigate INC-01-2.",
+    "second worker prompt",
+  );
+  clients[0]?.session("thread-1").complete("second done");
+  await waitFor(() => manager.getWorkItem(second.id).status === "done", "second work done");
+});
+
 test("returns immutable sensor and work item snapshots", async () => {
   const manager = new CodexAgentManager({
     agents: [
