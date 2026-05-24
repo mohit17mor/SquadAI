@@ -677,7 +677,7 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
 .shell.jarvis-mode, .shell.ops-mode { grid-template-columns: 220px minmax(0, 1fr); }
 .shell.jarvis-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace { display: none; }
-.shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { grid-column: 2; }
+.shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { display: grid; grid-column: 2; }
 .command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 20px; border-bottom: 1px solid #30363d; }
 h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
@@ -744,6 +744,20 @@ textarea { resize: vertical; }
 .ops-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 .ops-log { display: none; }
 .ops-log.active { display: block; }
+.log-row { border-bottom: 1px solid rgba(48,54,61,.72); }
+.log-summary { display: grid; grid-template-columns: 88px 150px 150px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 7px 0; cursor: pointer; list-style: none; }
+.log-summary::-webkit-details-marker { display: none; }
+.log-summary:hover { background: rgba(88,166,255,.05); }
+.log-time { color: #6e7681; font-variant-numeric: tabular-nums; }
+.log-source { color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-status { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-status.queued, .log-status.pending, .log-status.routing, .log-status.running { color: #d29922; }
+.log-status.completed, .log-status.routed { color: #3fb950; }
+.log-status.failed { color: #f85149; }
+.log-message { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-detail { margin: 0 0 8px 250px; padding: 8px 10px; border-left: 2px solid #30363d; color: #8b949e; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(22,27,34,.65); border-radius: 0 6px 6px 0; }
+.log-detail strong { color: #c9d1d9; }
+.log-empty { display: grid; place-items: center; min-height: 280px; color: #8b949e; border: 1px dashed #30363d; border-radius: 8px; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
 .status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
@@ -1336,7 +1350,9 @@ function render() {
   cancelAgentButton.disabled = cancelInFlight;
   cancelAgentButton.textContent = cancelInFlight ? "Cancelling" : "Cancel";
   renderAgentEditor(selected);
-  const visibleEvents = selectedAgentId ? events.filter((item) => item.agentId === selectedAgentId) : [];
+  const visibleEvents = selected
+    ? events.filter((item) => item.agentId === selected.id && eventBelongsToAgentInstance(item, selected))
+    : [];
   dedupePendingMessages(visibleEvents);
   const hasCompletion = visibleEvents.some((event) => event.type === "turn_completed" || event.type === "turn_failed");
   const hasTurnStarted = visibleEvents.some((event) => event.type === "turn_started");
@@ -1444,29 +1460,76 @@ function renderPanel() {
 }
 
 function renderQueues() {
-  const visibleSensorEvents = sensorEvents.filter((event) => event.status !== "routed");
-  eventCount.textContent = String(visibleSensorEvents.length);
-  if (eventPanelCount) eventPanelCount.textContent = String(visibleSensorEvents.length);
+  eventCount.textContent = String(sensorEvents.length);
+  if (eventPanelCount) eventPanelCount.textContent = String(sensorEvents.length);
   workCount.textContent = String(workItems.length);
   if (workPanelCount) workPanelCount.textContent = String(workItems.length);
-  sensorEventList.innerHTML = [...visibleSensorEvents].reverse().map((event) => \`
-    <div class="queue-item">
-      <span class="queue-time">\${escapeHtml(formatShortTime(event.updatedAt || event.createdAt))}</span>
-      <strong>\${escapeHtml(event.source)}</strong>
-      <span class="queue-state">\${escapeHtml(event.status)} · \${escapeHtml(event.id)}</span>
-      <span class="sub queue-message">\${escapeHtml(event.title || event.type)} — \${escapeHtml(event.body)}</span>
-    </div>
-  \`).join("") || '<div class="empty">No pending or failed sensor events.</div>';
-  workItemList.innerHTML = [...workItems].reverse().map((item) => \`
-    <div class="queue-item">
-      <span class="queue-time">\${escapeHtml(formatShortTime(item.updatedAt || item.createdAt))}</span>
-      <strong>\${escapeHtml(item.targetAgentId)}</strong>
-      <span class="queue-state">\${escapeHtml(item.status)} · \${escapeHtml(item.id)}</span>
-      <span class="sub queue-message">\${item.eventId ? escapeHtml(item.eventId) + " — " : ""}\${escapeHtml(item.prompt)}</span>
-    </div>
-  \`).join("") || '<div class="empty">No work queued yet.</div>';
+  sensorEventList.innerHTML = renderSensorEventLog(sensorEvents);
+  workItemList.innerHTML = renderWorkItemLog(workItems);
   updateOpsCount();
   renderNotifications();
+}
+
+function renderSensorEventLog(items) {
+  return [...items].reverse().map((event) => {
+    const detail = [
+      event.body ? ["Body", event.body] : null,
+      event.url ? ["URL", event.url] : null,
+      event.workItemId ? ["Work item", event.workItemId] : null,
+      event.failureReason ? ["Failure", event.failureReason] : null,
+      hasKeys(event.metadata) ? ["Metadata", JSON.stringify(event.metadata, null, 2)] : null,
+    ].filter(Boolean);
+    return renderLogRow({
+      time: event.updatedAt || event.createdAt,
+      source: event.source,
+      status: event.status + " · " + event.id,
+      statusClass: event.status,
+      message: event.title || event.type || event.body || event.id,
+      detail,
+    });
+  }).join("") || '<div class="log-empty">No sensor events yet.</div>';
+}
+
+function renderWorkItemLog(items) {
+  return [...items].reverse().map((item) => {
+    const agent = agentName(item.targetAgentId);
+    const detail = [
+      item.eventId ? ["Sensor event", item.eventId] : null,
+      item.prompt ? ["Prompt", item.prompt] : null,
+      item.result ? ["Result", item.result] : null,
+      item.failureReason ? ["Failure", item.failureReason] : null,
+      item.reason ? ["Routing reason", item.reason] : null,
+    ].filter(Boolean);
+    return renderLogRow({
+      time: item.updatedAt || item.createdAt,
+      source: agent,
+      status: item.status + " · " + item.id,
+      statusClass: item.status,
+      message: item.prompt || item.id,
+      detail,
+    });
+  }).join("") || '<div class="log-empty">No work items yet.</div>';
+}
+
+function renderLogRow({ time, source, status, statusClass, message, detail }) {
+  const detailHtml = detail.length
+    ? \`<div class="log-detail">\${detail.map(([label, value]) => \`<strong>\${escapeHtml(label)}:</strong> \${escapeHtml(String(value))}\`).join("\\n\\n")}</div>\`
+    : "";
+  return \`
+    <details class="log-row">
+      <summary class="log-summary">
+        <span class="log-time">\${escapeHtml(formatShortTime(time))}</span>
+        <span class="log-source">\${escapeHtml(source || "system")}</span>
+        <span class="log-status \${escapeAttr(statusClass || "")}">\${escapeHtml(status || "")}</span>
+        <span class="log-message">\${escapeHtml(message || "")}</span>
+      </summary>
+      \${detailHtml}
+    </details>
+  \`;
+}
+
+function hasKeys(value) {
+  return value && typeof value === "object" && Object.keys(value).length > 0;
 }
 
 function renderNotifications() {
@@ -1504,8 +1567,7 @@ function updateOpsCount() {
     return;
   }
   if (activePanel === "events") {
-    const visible = sensorEvents.filter((event) => event.status !== "routed").length;
-    opsCount.textContent = visible + (visible === 1 ? " item" : " items");
+    opsCount.textContent = sensorEvents.length + (sensorEvents.length === 1 ? " item" : " items");
     return;
   }
   if (activePanel === "work") {
@@ -1516,6 +1578,18 @@ function updateOpsCount() {
 function formatShortTime(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
+}
+
+function eventBelongsToAgentInstance(event, agent) {
+  if (!agent?.createdAt || !event?.createdAt) {
+    return true;
+  }
+  const eventTime = Date.parse(event.createdAt);
+  const agentTime = Date.parse(agent.createdAt);
+  if (Number.isNaN(eventTime) || Number.isNaN(agentTime)) {
+    return true;
+  }
+  return eventTime >= agentTime;
 }
 
 function bindNotificationActions() {

@@ -548,3 +548,67 @@ test("ask times out with last activity included", async () => {
 
   await assert.rejects(turn, /Timed out waiting for Codex turn/);
 });
+
+test("ask interrupts timed out app-server turns when a turn id is known", async () => {
+  const transport = new FakeTransport();
+  const { session } = await startedSession(transport);
+
+  const turn = session.ask("slow", { timeoutMs: 1 });
+  await transport.waitForRequest("turn/start");
+  transport.respondTo("turn/start", { turn: { id: "turn-1" } });
+
+  await assert.rejects(turn, /Timed out waiting for Codex turn/);
+  const interrupt = await transport.waitForRequest("turn/interrupt");
+  assert.deepEqual(interrupt.params, {
+    threadId: "thread-1",
+    turnId: "turn-1",
+  });
+  transport.respondTo("turn/interrupt", {});
+});
+
+test("approval requests after a timed out turn are auto-declined without UI approval", async () => {
+  const transport = new FakeTransport();
+  let approvalRequests = 0;
+  const client = new CodexControlClient({
+    transport,
+    approvalHandler() {
+      approvalRequests += 1;
+      return { decision: "approved" };
+    },
+  });
+  const starting = client.start();
+
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  await starting;
+
+  const sessionPromise = client.startSession({
+    cwd: "/tmp/project",
+    approvalPolicy: "on-request",
+  });
+  await transport.waitForRequest("thread/start");
+  transport.respondTo("thread/start", { thread: { id: "thread-1" } });
+  const session = await sessionPromise;
+
+  const turn = session.ask("slow", { timeoutMs: 1 });
+  await transport.waitForRequest("turn/start");
+  transport.respondTo("turn/start", { turn: { id: "turn-1" } });
+  await assert.rejects(turn, /Timed out waiting for Codex turn/);
+  await transport.waitForRequest("turn/interrupt");
+  transport.respondTo("turn/interrupt", {});
+
+  transport.server({
+    id: 995,
+    method: "item/commandExecution/requestApproval",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      command: ["npm", "test"],
+      cwd: "/tmp/project",
+    },
+  });
+
+  const response = await transport.waitForClientResponse(995);
+  assert.equal(approvalRequests, 0);
+  assert.deepEqual(response.result, { decision: "decline" });
+});

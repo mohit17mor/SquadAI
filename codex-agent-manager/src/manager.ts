@@ -33,6 +33,7 @@ import type {
 import { CodexAgentManagerError } from "./types.js";
 
 const DEFAULT_AGENT_TURN_TIMEOUT_MS = 1_800_000;
+const INTERNAL_AGENT_TURN_TIMEOUT_MS = 600_000;
 
 type RuntimeRecord = {
   definition: AgentDefinition;
@@ -435,7 +436,7 @@ export class CodexAgentManager extends EventEmitter {
         result = await this.sendToAgent(
           router.definition.id,
           this.routerPrompt(event, expectedRosterDigest),
-          { timeoutMs: 600_000 },
+          { timeoutMs: INTERNAL_AGENT_TURN_TIMEOUT_MS },
         );
         if (this.currentRouterRosterDigest(router.definition.id) === expectedRosterDigest) {
           break;
@@ -514,7 +515,7 @@ export class CodexAgentManager extends EventEmitter {
 
     try {
       const result = await this.sendToAgent(jarvis.definition.id, this.jarvisNotificationPrompt(batch), {
-        timeoutMs: 600_000,
+        timeoutMs: INTERNAL_AGENT_TURN_TIMEOUT_MS,
         internal: { hiddenInput: true, reason: "jarvis_notification_delivery" },
       });
       const deliveredAt = this.now();
@@ -955,7 +956,7 @@ export class CodexAgentManager extends EventEmitter {
     await this.sendToAgent(
       router.definition.id,
       this.routerRosterPrompt(roster, digest),
-      { timeoutMs: 600_000 },
+      { timeoutMs: INTERNAL_AGENT_TURN_TIMEOUT_MS },
     );
     if (!router.threadId) {
       throw new CodexAgentManagerError("Router session did not have a thread id after roster update.");
@@ -1082,7 +1083,7 @@ export class CodexAgentManager extends EventEmitter {
   private async runWorkItem(workItem: WorkItem): Promise<void> {
     try {
       const result = await this.sendToAgent(workItem.targetAgentId, workItem.prompt, {
-        timeoutMs: 600_000,
+        timeoutMs: DEFAULT_AGENT_TURN_TIMEOUT_MS,
         network: "allow",
       });
       workItem.status = "done";

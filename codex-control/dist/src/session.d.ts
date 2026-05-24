@@ -13,5 +13,6 @@ export declare class CodexSession extends EventEmitter {
     compact(): Promise<void>;
     interrupt(): Promise<void>;
     private failActiveTurn;
+    private interruptActiveTurnAfterTimeout;
 }
 export declare function threadStartParams(options: SessionStartOptions): Record<string, unknown>;

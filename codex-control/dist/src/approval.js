@@ -1,7 +1,7 @@
 export class ApprovalManager {
     auditSink;
     approvalHandler;
-    activeOptions = {};
+    activeOptions = null;
     constructor(auditSink, approvalHandler) {
         this.auditSink = auditSink;
         this.approvalHandler = approvalHandler;
@@ -10,13 +10,13 @@ export class ApprovalManager {
         this.activeOptions = options;
     }
     clearActiveTurnOptions() {
-        this.activeOptions = {};
+        this.activeOptions = null;
     }
     async handle(message) {
         const method = message.method ?? "";
         const params = (message.params ?? {});
         let { result, decision } = this.defaultDecision(method, params);
-        if (this.approvalHandler && this.isUserApprovalMethod(method)) {
+        if (this.activeOptions && this.approvalHandler && this.isUserApprovalMethod(method)) {
             const response = await this.approvalHandler({
                 timestamp: new Date().toISOString(),
                 kind: this.auditKind(method),
@@ -36,7 +36,7 @@ export class ApprovalManager {
             params,
             result,
         };
-        if (this.activeOptions.confirmation?.reason) {
+        if (this.activeOptions?.confirmation?.reason) {
             auditRecord.reason = this.activeOptions.confirmation.reason;
         }
         await this.audit(auditRecord);
@@ -44,14 +44,14 @@ export class ApprovalManager {
     }
     defaultDecision(method, params) {
         if (method === "item/commandExecution/requestApproval") {
-            const approved = this.activeOptions.shellCommands === "allow" && this.confirmed();
+            const approved = this.activeOptions?.shellCommands === "allow" && this.confirmed();
             return {
                 result: { decision: approved ? "accept" : "decline" },
                 decision: approved ? "approved" : "declined",
             };
         }
         else if (method === "item/fileChange/requestApproval") {
-            const approved = this.activeOptions.fileWrites === "allow" && this.confirmed();
+            const approved = this.activeOptions?.fileWrites === "allow" && this.confirmed();
             return {
                 result: { decision: approved ? "accept" : "decline" },
                 decision: approved ? "approved" : "declined",
@@ -120,18 +120,18 @@ export class ApprovalManager {
     permissionsResult(params) {
         const requested = (params.permissions ?? {});
         const permissions = {};
-        if (requested.network !== undefined && this.activeOptions.network !== "deny") {
+        if (requested.network !== undefined && this.activeOptions?.network !== "deny") {
             permissions.network = requested.network;
         }
         if (requested.fileSystem !== undefined &&
-            this.activeOptions.fileWrites === "allow" &&
+            this.activeOptions?.fileWrites === "allow" &&
             this.confirmed()) {
             permissions.fileSystem = requested.fileSystem;
         }
         return { permissions, scope: "turn" };
     }
     elicitationResult(params) {
-        if (this.activeOptions.externalWrites !== "allow" ||
+        if (this.activeOptions?.externalWrites !== "allow" ||
             !this.confirmed() ||
             params.mode !== "form") {
             return { action: "decline", content: null, _meta: null };
@@ -176,7 +176,7 @@ export class ApprovalManager {
         return field.default ?? null;
     }
     confirmed() {
-        return this.activeOptions.confirmation?.confirmed === true;
+        return this.activeOptions?.confirmation?.confirmed === true;
     }
     auditKind(method) {
         if (method === "item/commandExecution/requestApproval") {

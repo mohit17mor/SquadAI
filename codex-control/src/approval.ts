@@ -10,7 +10,7 @@ import type {
 type JsonObject = Record<string, unknown>;
 
 export class ApprovalManager {
-  private activeOptions: AskOptions = {};
+  private activeOptions: AskOptions | null = null;
 
   constructor(
     private readonly auditSink?: AuditSink,
@@ -22,7 +22,7 @@ export class ApprovalManager {
   }
 
   clearActiveTurnOptions(): void {
-    this.activeOptions = {};
+    this.activeOptions = null;
   }
 
   async handle(message: JsonRpcMessage): Promise<unknown> {
@@ -30,7 +30,7 @@ export class ApprovalManager {
     const params = (message.params ?? {}) as JsonObject;
     let { result, decision } = this.defaultDecision(method, params);
 
-    if (this.approvalHandler && this.isUserApprovalMethod(method)) {
+    if (this.activeOptions && this.approvalHandler && this.isUserApprovalMethod(method)) {
       const response = await this.approvalHandler({
         timestamp: new Date().toISOString(),
         kind: this.auditKind(method) as Exclude<AuditRecord["kind"], "dynamic_tool_call">,
@@ -51,7 +51,7 @@ export class ApprovalManager {
       params,
       result,
     };
-    if (this.activeOptions.confirmation?.reason) {
+    if (this.activeOptions?.confirmation?.reason) {
       auditRecord.reason = this.activeOptions.confirmation.reason;
     }
     await this.audit(auditRecord);
@@ -63,13 +63,13 @@ export class ApprovalManager {
     params: JsonObject,
   ): { result: unknown; decision: AuditDecision } {
     if (method === "item/commandExecution/requestApproval") {
-      const approved = this.activeOptions.shellCommands === "allow" && this.confirmed();
+      const approved = this.activeOptions?.shellCommands === "allow" && this.confirmed();
       return {
         result: { decision: approved ? "accept" : "decline" },
         decision: approved ? "approved" : "declined",
       };
     } else if (method === "item/fileChange/requestApproval") {
-      const approved = this.activeOptions.fileWrites === "allow" && this.confirmed();
+      const approved = this.activeOptions?.fileWrites === "allow" && this.confirmed();
       return {
         result: { decision: approved ? "accept" : "decline" },
         decision: approved ? "approved" : "declined",
@@ -141,13 +141,13 @@ export class ApprovalManager {
     const requested = (params.permissions ?? {}) as JsonObject;
     const permissions: JsonObject = {};
 
-    if (requested.network !== undefined && this.activeOptions.network !== "deny") {
+    if (requested.network !== undefined && this.activeOptions?.network !== "deny") {
       permissions.network = requested.network;
     }
 
     if (
       requested.fileSystem !== undefined &&
-      this.activeOptions.fileWrites === "allow" &&
+      this.activeOptions?.fileWrites === "allow" &&
       this.confirmed()
     ) {
       permissions.fileSystem = requested.fileSystem;
@@ -158,7 +158,7 @@ export class ApprovalManager {
 
   private elicitationResult(params: JsonObject): JsonObject {
     if (
-      this.activeOptions.externalWrites !== "allow" ||
+      this.activeOptions?.externalWrites !== "allow" ||
       !this.confirmed() ||
       params.mode !== "form"
     ) {
@@ -218,7 +218,7 @@ export class ApprovalManager {
   }
 
   private confirmed(): boolean {
-    return this.activeOptions.confirmation?.confirmed === true;
+    return this.activeOptions?.confirmation?.confirmed === true;
   }
 
   private auditKind(method: string): AuditRecord["kind"] {

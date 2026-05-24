@@ -71,6 +71,7 @@ export class CodexSession extends EventEmitter {
       };
       timeout = setTimeout(() => {
         const lastActivity = this.activeTurn?.lastActivity ?? "unknown";
+        void this.interruptActiveTurnAfterTimeout();
         this.failActiveTurn(
           new CodexTurnTimeoutError(
             `Timed out waiting for Codex turn after ${timeoutMs}ms. Last activity: ${lastActivity}`,
@@ -189,6 +190,26 @@ export class CodexSession extends EventEmitter {
     active.rejectTurnId(error);
     active.reject(error);
     this.emit("turn.failed", error);
+  }
+
+  private async interruptActiveTurnAfterTimeout(): Promise<void> {
+    const active = this.activeTurn;
+    const turnId = active?.turnId;
+    if (!turnId) {
+      return;
+    }
+    try {
+      await this.peer.request(
+        "turn/interrupt",
+        {
+          threadId: this.threadId,
+          turnId,
+        },
+        1_000,
+      );
+    } catch {
+      // Timeout already failed the local turn; interruption is best-effort cleanup.
+    }
   }
 }
 

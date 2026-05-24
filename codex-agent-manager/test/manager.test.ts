@@ -1198,6 +1198,7 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   await waitFor(() => clients.length === 2, "worker client");
   assert.equal(manager.getWorkItem(work.id).status, "running");
   assert.match(clients[1]?.session("thread-1").pending?.input ?? "", /Investigate platform-123/);
+  assert.equal(clients[1]?.session("thread-1").asks[0]?.options.timeoutMs, 1_800_000);
 
   clients[1]?.session("thread-1").complete("storage investigation complete");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
