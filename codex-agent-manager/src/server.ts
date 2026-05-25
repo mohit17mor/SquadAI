@@ -1856,6 +1856,28 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
       });
       continue;
     }
+    if (event.type === "codex_turn_retrying") {
+      if (!current) {
+        current = {
+          activityId: "activity-" + event.id,
+          eventIds: [],
+          entries: [],
+          status: "running",
+          hasApproval: false,
+          hasCompaction: false,
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+      }
+      current.eventIds.push(event.id);
+      current.updatedAt = event.createdAt;
+      current.entries.push({
+        itemType: "connection",
+        title: "Reconnecting",
+        summary: retryingSummary(event.payload || {}),
+      });
+      continue;
+    }
     if (event.type === "turn_completed" || event.type === "turn_failed") {
       if (current && current.entries.length) {
         current.status = event.type === "turn_completed" ? "done" : "failed";
@@ -1936,6 +1958,9 @@ function eventToMessages(event, state) {
   if (event.type === "codex_item_completed" || event.type === "codex_thread_compacted") {
     return [];
   }
+  if (event.type === "codex_turn_retrying") {
+    return [];
+  }
   if (event.type === "agent_starting") {
     return state.hasTurnStarted || state.hasCompletion
       ? []
@@ -1948,6 +1973,22 @@ function eventToMessages(event, state) {
     return [];
   }
   return [{ kind: "system", meta: "", text: event.type + ": " + event.message, time: event.createdAt }];
+}
+
+function retryingSummary(payload) {
+  const params = payload && typeof payload === "object" && payload.params && typeof payload.params === "object"
+    ? payload.params
+    : payload;
+  const error = params && typeof params === "object" && params.error && typeof params.error === "object"
+    ? params.error
+    : params;
+  const nested = error && typeof error === "object" && error.error && typeof error.error === "object"
+    ? error.error
+    : error;
+  const message = nested && typeof nested === "object" && typeof nested.message === "string"
+    ? nested.message
+    : "";
+  return message || "Codex stream disconnected; retrying.";
 }
 
 function renderMessage(message) {

@@ -78,6 +78,12 @@ class FakeCodexSession {
     }
   }
 
+  emitTurnRetrying(params: Record<string, unknown>): void {
+    for (const handler of this.handlers.get("turn.retrying") ?? []) {
+      handler(params);
+    }
+  }
+
   async ask(
     input: string,
     options: Record<string, unknown>,
@@ -1094,6 +1100,15 @@ test("records Codex item and compaction events emitted by the session", async ()
     manager
       .listEvents("maintenance")
       .some((event) => event.type === "codex_thread_compacted"),
+  );
+
+  session.emitTurnRetrying({
+    error: { message: "Reconnecting... 2/5" },
+    willRetry: true,
+  });
+  await waitFor(
+    () => manager.listEvents("maintenance").some((event) => event.type === "codex_turn_retrying"),
+    "codex retrying event",
   );
 
   session.complete("done");

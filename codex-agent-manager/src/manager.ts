@@ -884,6 +884,12 @@ export class CodexAgentManager extends EventEmitter {
     session.on("item.completed", (item) => {
       void this.recordCodexItemCompleted(record.definition.id, session.threadId, item);
     });
+    session.on("turn.retrying", (params) => {
+      void this.recordEvent(record.definition.id, "codex_turn_retrying", "Codex is reconnecting.", {
+        threadId: session.threadId,
+        params: cloneUnknown(params),
+      });
+    });
     session.on("thread.compacted", (params) => {
       void this.recordEvent(record.definition.id, "codex_thread_compacted", "Thread compacted.", {
         threadId: session.threadId,

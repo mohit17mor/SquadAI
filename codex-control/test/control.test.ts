@@ -566,6 +566,59 @@ test("ask interrupts timed out app-server turns when a turn id is known", async 
   transport.respondTo("turn/interrupt", {});
 });
 
+test("ask keeps waiting when app-server reports a retryable stream disconnect", async () => {
+  const transport = new FakeTransport();
+  const { session } = await startedSession(transport);
+
+  const turn = session.ask("hello after idle");
+  await transport.waitForRequest("turn/start");
+  transport.respondTo("turn/start", { turn: { id: "turn-1", status: "inProgress" } });
+
+  let settled = false;
+  turn.finally(() => {
+    settled = true;
+  }).catch(() => {});
+
+  transport.server({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        error: {
+          error: {
+            message: "Reconnecting... 2/5",
+            codexErrorInfo: {
+              responseStreamDisconnected: {
+                httpStatusCode: null,
+              },
+            },
+          },
+          willRetry: true,
+          threadId: "thread-1",
+          turnId: "turn-1",
+        },
+      },
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false);
+
+  transport.server({
+    method: "item/completed",
+    params: { threadId: "thread-1", item: { type: "agentMessage", text: "Recovered." } },
+  });
+  transport.server({
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
+  });
+
+  const result = await turn;
+  assert.equal(result.finalText, "Recovered.");
+});
+
 test("approval requests after a timed out turn are auto-declined without UI approval", async () => {
   const transport = new FakeTransport();
   let approvalRequests = 0;

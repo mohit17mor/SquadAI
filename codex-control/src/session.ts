@@ -136,6 +136,11 @@ export class CodexSession extends EventEmitter {
     if (method === "turn/completed") {
       const turn = (params.turn ?? {}) as Record<string, unknown>;
       if (turn.status === "failed") {
+        if (isRetryableTurnFailure(turn.error ?? turn)) {
+          active.lastActivity = "turn/retrying";
+          this.emit("turn.retrying", turn);
+          return true;
+        }
         this.failActiveTurn(new CodexControlError(JSON.stringify(turn.error ?? turn)));
         return true;
       }
@@ -158,6 +163,11 @@ export class CodexSession extends EventEmitter {
     }
 
     if (method === "error") {
+      if (isRetryableTurnFailure(params)) {
+        active.lastActivity = "turn/retrying";
+        this.emit("turn.retrying", params);
+        return true;
+      }
       this.failActiveTurn(new CodexControlError(JSON.stringify(params)));
       return true;
     }
@@ -211,6 +221,25 @@ export class CodexSession extends EventEmitter {
       // Timeout already failed the local turn; interruption is best-effort cleanup.
     }
   }
+}
+
+function isRetryableTurnFailure(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.willRetry === true) {
+    return true;
+  }
+  if (isRecord(value.error) && value.error.willRetry === true) {
+    return true;
+  }
+  return isRecord(value.codexErrorInfo) &&
+    isRecord(value.codexErrorInfo.responseStreamDisconnected) &&
+    value.willRetry !== false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function threadStartParams(options: SessionStartOptions): Record<string, unknown> {
