@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 
 import type { CodexAgentManager } from "./manager.js";
@@ -81,6 +82,27 @@ export class CommandCenterServer {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/") {
         this.html(response);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/assets/topology.js") {
+        await this.javascript(response, new URL("./ui/topology.js", import.meta.url));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/vendor/three.module.js") {
+        await this.javascript(
+          response,
+          new URL("../../node_modules/three/build/three.module.min.js", import.meta.url),
+        );
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/vendor/three.core.min.js") {
+        await this.javascript(
+          response,
+          new URL("../../node_modules/three/build/three.core.min.js", import.meta.url),
+        );
         return;
       }
 
@@ -233,6 +255,15 @@ export class CommandCenterServer {
       "cache-control": "no-store",
     });
     response.end(JSON.stringify(body));
+  }
+
+  private async javascript(response: ServerResponse, path: URL): Promise<void> {
+    const source = await readFile(path, "utf8");
+    response.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    response.end(source);
   }
 
   private sse(response: ServerResponse): void {
@@ -549,6 +580,7 @@ function renderHtml(title: string): string {
         <h1>${escapeHtml(title)}</h1>
       </div>
       <div class="rail-nav" aria-label="Command center sections">
+        <button type="button" class="rail-item" data-panel="topology">Topology</button>
         <button type="button" class="rail-item" data-panel="jarvis">Jarvis</button>
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <button type="button" class="rail-item" data-panel="create">Create Agent</button>
@@ -561,6 +593,48 @@ function renderHtml(title: string): string {
         <span id="connection">Connecting</span>
       </div>
     </nav>
+    <section id="topology-workspace" class="topology-workspace" aria-label="Live agent topology">
+      <header class="topology-toolbar">
+        <div class="topology-toolbar-group" role="toolbar" aria-label="Topology tools">
+          <button type="button" class="topology-tool active">Select</button>
+          <button type="button" class="topology-tool" title="Connection editing is coming next" disabled>Connect</button>
+          <button id="topology-add-agent" type="button" class="topology-tool primary">Add agent</button>
+          <button type="button" class="topology-tool" title="Event source editing is coming next" disabled>Add event source</button>
+          <button id="topology-fit" type="button" class="topology-tool">Fit view</button>
+        </div>
+        <label class="topology-search-label">
+          <span>Search topology</span>
+          <input id="topology-search" type="search" placeholder="Search agents" autocomplete="off">
+        </label>
+        <div class="topology-health">
+          <span><i class="status-dot idle"></i>System live</span>
+          <button id="topology-motion-toggle" type="button" class="topology-tool" aria-pressed="true">Motion on</button>
+        </div>
+      </header>
+      <div class="topology-stage">
+        <canvas id="topology-canvas" aria-label="Interactive 3D map of agents and event routes"></canvas>
+        <div id="topology-agent-list" class="topology-agent-list" aria-label="Agents in topology"></div>
+        <div id="topology-fallback" class="topology-fallback" hidden></div>
+        <div class="topology-legend" aria-label="Topology legend">
+          <span><i class="legend-signal event"></i>Event</span>
+          <span><i class="legend-signal route"></i>Routing</span>
+          <span><i class="legend-signal approval"></i>Approval</span>
+        </div>
+        <div class="topology-view-controls">
+          <button id="topology-zoom-out" type="button" aria-label="Zoom out">−</button>
+          <button id="topology-fit-secondary" type="button">Fit</button>
+          <button type="button" class="active">3D</button>
+        </div>
+      </div>
+      <aside id="topology-inspector" class="topology-inspector" aria-live="polite">
+        <div class="topology-inspector-empty"><strong>No agent selected</strong><span>Add or select an agent to inspect it.</span></div>
+      </aside>
+      <footer class="topology-timeline" aria-label="Live topology timeline">
+        <span class="topology-live"><i></i>Live</span>
+        <div class="timeline-track"><i></i><span></span><span></span><span></span><span></span><span></span></div>
+        <time>Now</time>
+      </footer>
+    </section>
     <aside class="side-panel">
       <header class="panel-header">
         <div>
@@ -656,6 +730,8 @@ function renderHtml(title: string): string {
     </section>
     <div id="toasts" class="toasts"></div>
   </main>
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
+  <script type="module" src="/assets/topology.js"></script>
   <script>${js()}</script>
 </body>
 </html>`;
@@ -675,9 +751,80 @@ button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
 button.danger { background: #21262d; color: #f85149; }
 button.danger:hover { border-color: #f85149; background: #2d1517; }
 .shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
-.shell.jarvis-mode, .shell.ops-mode { grid-template-columns: 220px minmax(0, 1fr); }
-.shell.jarvis-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace { display: none; }
+.shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 220px minmax(0, 1fr); }
+.shell.jarvis-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace, .shell.topology-mode .side-panel, .shell.topology-mode .workspace, .shell.topology-mode .ops-workspace { display: none; }
 .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { display: grid; grid-column: 2; }
+.shell.topology-mode .topology-workspace { display: grid; grid-column: 2; }
+.topology-workspace { display: none; position: relative; grid-template-columns: minmax(0, 1fr) 330px; grid-template-rows: 68px minmax(0, 1fr) 64px; min-width: 0; min-height: 0; overflow: hidden; background: #070a12; }
+.topology-toolbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; min-width: 0; padding: 10px 16px; background: #0c101b; border-bottom: 1px solid #202638; z-index: 4; }
+.topology-toolbar-group { display: flex; gap: 7px; }
+.topology-tool { background: #111728; color: #aeb8d2; border-color: #293149; border-radius: 7px; padding: 8px 11px; font-size: 12px; font-weight: 600; }
+.topology-tool:hover, .topology-tool.active { background: #182039; color: #f4f7ff; border-color: #586dba; }
+.topology-tool.primary { background: #6477ed; color: white; border-color: #7888f6; }
+.topology-tool:disabled { color: #596277; border-color: #202638; cursor: not-allowed; opacity: .7; }
+.topology-search-label { flex: 1; max-width: 340px; margin: 0; display: block; }
+.topology-search-label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.topology-search-label input { height: 36px; background: #090d17; border-color: #252c40; color: #dfe5f7; }
+.topology-health { margin-left: auto; display: flex; align-items: center; gap: 12px; color: #99a4bf; font-size: 12px; white-space: nowrap; }
+.topology-health > span { display: flex; align-items: center; gap: 7px; }
+.topology-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #070a12; }
+#topology-canvas { display: block; width: 100%; height: 100%; cursor: grab; outline: none; }
+#topology-canvas:active { cursor: grabbing; }
+.topology-agent-list { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.topology-label { position: absolute; left: 0; top: 0; min-width: 108px; display: grid; gap: 2px; padding: 7px 10px; pointer-events: auto; color: #e8edff; background: rgba(10,14,25,.88); border: 1px solid rgba(116,132,183,.36); border-radius: 8px; box-shadow: 0 10px 22px rgba(0,0,0,.22); transition: border-color .16s, background .16s, opacity .16s; }
+.topology-label:hover, .topology-label.selected { background: rgba(20,27,48,.96); border-color: #7589f6; }
+.topology-label strong { font-size: 12px; font-weight: 700; white-space: nowrap; }
+.topology-label span { color: #8994ae; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.topology-label.status-running span, .topology-label.status-starting span { color: #54e59a; }
+.topology-label.status-failed span { color: #ff687c; }
+.topology-source-label { pointer-events: none; border-color: rgba(75,220,244,.35); background: rgba(7,24,34,.86); }
+.topology-source-label span { color: #56cfe7; }
+.topology-legend { position: absolute; left: 18px; top: 18px; display: flex; gap: 13px; padding: 7px 9px; color: #7f8aa4; background: rgba(7,10,18,.76); border: 1px solid #20273a; border-radius: 7px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.topology-legend span { display: flex; align-items: center; gap: 5px; }
+.legend-signal { width: 7px; height: 7px; border-radius: 999px; background: #6879ed; }
+.legend-signal.event { background: #67d8ff; }
+.legend-signal.approval { background: #f5aa42; }
+.topology-view-controls { position: absolute; left: 18px; bottom: 18px; display: flex; gap: 4px; padding: 4px; background: rgba(11,15,26,.9); border: 1px solid #252d42; border-radius: 8px; }
+.topology-view-controls button { min-width: 36px; padding: 6px 9px; color: #8e99b4; background: transparent; border: 0; border-radius: 5px; font-size: 11px; }
+.topology-view-controls button:hover, .topology-view-controls button.active { color: white; background: #202a49; }
+.topology-inspector { grid-column: 2; grid-row: 2 / 4; min-width: 0; overflow-y: auto; background: #0c101b; border-left: 1px solid #202638; color: #dfe5f7; z-index: 3; }
+.topology-inspector header { display: flex; justify-content: space-between; gap: 12px; padding: 22px 20px 18px; border-bottom: 1px solid #202638; }
+.topology-inspector header h2 { margin: 3px 0 6px; color: #f3f6ff; font-size: 20px; letter-spacing: -.02em; text-transform: none; }
+.topology-inspector header p { display: flex; align-items: center; gap: 7px; margin: 0; color: #8f9ab3; font-size: 12px; text-transform: capitalize; }
+.topology-inspector header button { align-self: start; padding: 1px 7px; color: #8490aa; background: transparent; border: 0; font-size: 22px; }
+.topology-kicker { color: #6879ed; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
+.topology-inspector section { padding: 18px 20px; border-bottom: 1px solid #202638; }
+.topology-inspector h3 { margin: 0 0 12px; color: #8390ac; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
+.topology-inspector dl { display: grid; gap: 9px; margin: 0; }
+.topology-inspector dl div { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px; }
+.topology-inspector dt { color: #73809d; font-size: 11px; }
+.topology-inspector dd { margin: 0; color: #d8def0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topology-runtime { display: grid; gap: 7px; color: #aab4cd; font-size: 11px; }
+.topology-runtime > div { height: 4px; overflow: hidden; background: #1c2335; border-radius: 999px; }
+.topology-runtime > div i { display: block; height: 100%; background: #6879ed; border-radius: inherit; }
+.topology-runtime small { color: #697590; }
+.topology-permissions { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; color: #aab4cd; font-size: 11px; }
+.topology-permissions li::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 9px 1px 1px; border-radius: 50%; background: #54e59a; box-shadow: 0 0 8px rgba(84,229,154,.45); }
+.topology-inspector footer { display: grid; gap: 8px; padding: 18px 20px 24px; }
+.topology-inspector footer button { width: 100%; }
+.topology-inspector-empty { height: 100%; display: grid; place-content: center; gap: 6px; padding: 24px; text-align: center; color: #76819a; }
+.topology-inspector-empty strong { color: #d8deef; }
+.topology-fallback { position: absolute; inset: 0; padding: 28px; overflow-y: auto; background: #070a12; }
+.topology-fallback button { width: 100%; display: flex; justify-content: space-between; margin-bottom: 8px; background: #111728; border-color: #293149; }
+.topology-timeline { grid-column: 1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; padding: 13px 18px; background: #0c101b; border-top: 1px solid #202638; color: #737e96; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.topology-live { display: flex; align-items: center; gap: 7px; color: #54e59a; }
+.topology-live i { width: 7px; height: 7px; border-radius: 999px; background: #54e59a; box-shadow: 0 0 10px rgba(84,229,154,.5); }
+.timeline-track { position: relative; height: 2px; background: #2a334d; }
+.timeline-track i { position: absolute; right: 18%; top: -4px; width: 10px; height: 10px; border-radius: 999px; background: #7182f4; box-shadow: 0 0 12px rgba(113,130,244,.75); }
+.timeline-track span { position: absolute; top: -2px; width: 6px; height: 6px; border-radius: 999px; background: #6576d9; }
+.timeline-track span:nth-of-type(1) { left: 12%; }
+.timeline-track span:nth-of-type(2) { left: 28%; background: #67d8ff; }
+.timeline-track span:nth-of-type(3) { left: 45%; }
+.timeline-track span:nth-of-type(4) { left: 62%; background: #f5aa42; }
+.timeline-track span:nth-of-type(5) { left: 76%; }
+.status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: #7180a4; }
+.status-dot.idle, .status-dot.running, .status-dot.starting { background: #54e59a; }
+.status-dot.failed { background: #ff5d72; }
 .command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 20px; border-bottom: 1px solid #30363d; }
 h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
@@ -812,7 +959,7 @@ textarea { resize: vertical; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
-@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
+@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
 `;
 }
 
@@ -828,7 +975,7 @@ let modelOptions = [];
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
-let activePanel = "jarvis";
+let activePanel = "topology";
 let lastAgentListHtml = "";
 let lastMessagesHtml = "";
 const activityOpenState = new Map();
@@ -906,6 +1053,18 @@ for (const button of document.querySelectorAll("[data-panel]")) {
     render();
   });
 }
+window.addEventListener("topology:open-agent", (event) => {
+  const agentId = event.detail && event.detail.agentId;
+  if (!agentId) return;
+  selectedAgentId = agentId;
+  activePanel = "agents";
+  lastMessagesHtml = "";
+  editAgentDirty = false;
+  render();
+});
+window.addEventListener("topology:refresh-main", () => {
+  void refresh();
+});
 const agentForm = document.getElementById("agent-form");
 const createRoleSelect = agentForm.elements.role;
 const createInstructionsInput = agentForm.elements.instructions;
@@ -1097,7 +1256,7 @@ async function refreshQueues() {
   sensorEvents = sensorBody.events;
   workItems = workBody.workItems;
   workCount.textContent = String(workItems.length);
-  workPanelCount.textContent = String(workItems.length);
+  if (workPanelCount) workPanelCount.textContent = String(workItems.length);
   renderQueues();
 }
 
@@ -1426,6 +1585,7 @@ function renderAgentEditor(selected) {
 
 function renderPanel() {
   const titles = {
+    topology: ["Topology", "Live agent, event, and work relationships."],
     jarvis: ["Jarvis", "Talk to the command center as a whole."],
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
@@ -1435,8 +1595,10 @@ function renderPanel() {
   };
   const [title, subtitle] = titles[activePanel] || titles.agents;
   const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
+  const topologyMode = activePanel === "topology";
   shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
   shell.classList.toggle("ops-mode", opsMode);
+  shell.classList.toggle("topology-mode", topologyMode);
   if (opsMode) {
     opsTitle.textContent = title;
     opsSubtitle.textContent = subtitle;

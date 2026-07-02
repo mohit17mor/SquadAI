@@ -20,10 +20,12 @@
     "start": "npm run build && node dist/src/cli.js"
   },
   "dependencies": {
-    "codex-control": "file:../codex-control"
+    "codex-control": "file:../codex-control",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@types/node": "^25.7.0",
+    "@types/three": "^0.185.0",
     "typescript": "^6.0.3"
   },
   "license": "UNLICENSED"

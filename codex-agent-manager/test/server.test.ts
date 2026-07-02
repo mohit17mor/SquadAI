@@ -488,7 +488,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-panel="work"/);
     assert.match(html, /data-panel="notifications"/);
     assert.match(html, /notification-count/);
-    assert.match(html, /activePanel = "jarvis"/);
+    assert.match(html, /activePanel = "topology"/);
     assert.match(html, /jarvis-mode/);
     assert.match(html, /ops-mode/);
     assert.match(html, /ops-workspace/);
@@ -629,6 +629,55 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /hasCompletion/);
     assert.match(html, /Starting agent session/);
     assert.doesNotMatch(html, /slice\(\)\.reverse\(\)/);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center UI exposes a topology-first home and rendering module", async () => {
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const page = await fetch(`${baseUrl}/`);
+    const html = await page.text();
+
+    assert.match(html, /data-panel="topology"/);
+    assert.match(html, /id="topology-workspace"/);
+    assert.match(html, /id="topology-canvas"/);
+    assert.match(html, /id="topology-inspector"/);
+    assert.match(html, /id="topology-agent-list"/);
+    assert.match(html, /id="topology-add-agent"/);
+    assert.match(html, /id="topology-motion-toggle"/);
+    assert.match(html, /id="topology-zoom-out"/);
+    assert.match(html, /id="topology-fit-secondary"/);
+    assert.match(html, /activePanel = "topology"/);
+    assert.match(html, /type="module" src="\/assets\/topology\.js"/);
+
+    const moduleResponse = await fetch(`${baseUrl}/assets/topology.js`);
+    assert.equal(moduleResponse.status, 200);
+    assert.match(moduleResponse.headers.get("content-type") ?? "", /javascript/);
+    const moduleSource = await moduleResponse.text();
+    assert.match(moduleSource, /from "three"/);
+    assert.match(moduleSource, /SphereGeometry/);
+    assert.match(moduleSource, /prefers-reduced-motion/);
+    assert.match(moduleSource, /\/api\/sensor-events/);
+    assert.match(moduleSource, /createSourceNode/);
+
+    const vendorResponse = await fetch(`${baseUrl}/vendor/three.module.js`);
+    assert.equal(vendorResponse.status, 200);
+    assert.match(vendorResponse.headers.get("content-type") ?? "", /javascript/);
+    assert.match(await vendorResponse.text(), /SphereGeometry/);
+
+    const coreVendorResponse = await fetch(`${baseUrl}/vendor/three.core.min.js`);
+    assert.equal(coreVendorResponse.status, 200);
+    assert.match(coreVendorResponse.headers.get("content-type") ?? "", /javascript/);
   } finally {
     await server.close();
     await manager.close();
