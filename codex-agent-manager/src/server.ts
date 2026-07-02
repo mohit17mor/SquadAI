@@ -814,10 +814,12 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .topology-health { margin-left: auto; display: flex; align-items: center; gap: 12px; color: #99a4bf; font-size: 12px; white-space: nowrap; }
 .topology-health > span { display: flex; align-items: center; gap: 7px; }
 .topology-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #070a12; }
-#topology-canvas { display: block; width: 100%; height: 100%; cursor: grab; outline: none; }
+#topology-canvas { display: block; width: 100%; height: 100%; cursor: grab; outline: none; touch-action: none; }
 #topology-canvas:active { cursor: grabbing; }
+#topology-canvas.over-agent { cursor: move; }
+#topology-canvas.dragging-node { cursor: grabbing; }
 .topology-agent-list { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.topology-label { position: absolute; left: 0; top: 0; min-width: 108px; display: grid; gap: 2px; padding: 7px 10px; pointer-events: auto; color: #e8edff; background: rgba(10,14,25,.88); border: 1px solid rgba(116,132,183,.36); border-radius: 8px; box-shadow: 0 10px 22px rgba(0,0,0,.22); transition: border-color .16s, background .16s, opacity .16s; }
+.topology-label { position: absolute; left: 0; top: 0; min-width: 108px; display: grid; gap: 2px; padding: 7px 10px; pointer-events: none; color: #e8edff; background: rgba(10,14,25,.88); border: 1px solid rgba(116,132,183,.36); border-radius: 8px; box-shadow: 0 10px 22px rgba(0,0,0,.22); transition: border-color .16s, background .16s, opacity .16s; }
 .topology-label:hover, .topology-label.selected { background: rgba(20,27,48,.96); border-color: #7589f6; }
 .topology-label strong { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .topology-label span { color: #8994ae; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }

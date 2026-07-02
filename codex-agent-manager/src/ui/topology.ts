@@ -40,6 +40,20 @@ type SourceRecord = {
   label: HTMLDivElement;
 };
 
+type ConnectionRecord = {
+  line: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+};
+
+type NodeDrag = {
+  node: NodeRecord;
+  plane: THREE.Plane;
+  offset: THREE.Vector3;
+};
+
+const TOPOLOGY_LAYOUT_KEY = "jarvis.topology.agent-positions.v1";
+
 const canvas = document.querySelector<HTMLCanvasElement>("#topology-canvas");
 const workspace = document.querySelector<HTMLElement>("#topology-workspace");
 const labelLayer = document.querySelector<HTMLElement>("#topology-agent-list");
@@ -99,13 +113,16 @@ function startTopology(
 
   const nodes = new Map<string, NodeRecord>();
   const sourceNodes = new Map<string, SourceRecord>();
+  const savedPositions = loadSavedPositions();
+  const connections: ConnectionRecord[] = [];
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const pulses: Array<{ mesh: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; started: number }> = [];
   let agents: AgentSnapshot[] = [];
   let sensorSources: string[] = [];
   let selectedAgentId: string | null = null;
-  let dragging = false;
+  let rotating = false;
+  let nodeDrag: NodeDrag | null = null;
   let lastPointer = { x: 0, y: 0 };
   let dragOrigin = { x: 0, y: 0 };
   let frameCount = 0;
@@ -122,13 +139,45 @@ function startTopology(
   resizeObserver.observe(canvasElement);
 
   canvasElement.addEventListener("pointerdown", (event) => {
-    dragging = true;
     lastPointer = { x: event.clientX, y: event.clientY };
     dragOrigin = { ...lastPointer };
+    const node = nodeFromPointer(event);
+    if (node) {
+      selectAgent(node.agent.id);
+      const worldPosition = node.group.getWorldPosition(new THREE.Vector3());
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+        camera.getWorldDirection(new THREE.Vector3()),
+        worldPosition,
+      );
+      const intersection = pointerPlaneIntersection(event, plane);
+      nodeDrag = {
+        node,
+        plane,
+        offset: intersection ? worldPosition.clone().sub(intersection) : new THREE.Vector3(),
+      };
+      canvasElement.classList.add("dragging-node");
+    } else {
+      rotating = true;
+    }
     canvasElement.setPointerCapture(event.pointerId);
   });
   canvasElement.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
+    if (nodeDrag) {
+      const intersection = pointerPlaneIntersection(event, nodeDrag.plane);
+      if (!intersection) return;
+      const localPosition = world.worldToLocal(intersection.add(nodeDrag.offset));
+      localPosition.x = THREE.MathUtils.clamp(localPosition.x, -7.5, 7.5);
+      localPosition.y = THREE.MathUtils.clamp(localPosition.y, -4.3, 4.3);
+      localPosition.z = THREE.MathUtils.clamp(localPosition.z, -2.5, 2.5);
+      nodeDrag.node.group.position.copy(localPosition);
+      updateConnections();
+      needsRender = true;
+      return;
+    }
+    if (!rotating) {
+      canvasElement.classList.toggle("over-agent", Boolean(nodeFromPointer(event)));
+      return;
+    }
     world.rotation.y += (event.clientX - lastPointer.x) * 0.004;
     world.rotation.x = THREE.MathUtils.clamp(
       world.rotation.x + (event.clientY - lastPointer.y) * 0.002,
@@ -138,11 +187,25 @@ function startTopology(
     lastPointer = { x: event.clientX, y: event.clientY };
     needsRender = true;
   });
-  canvasElement.addEventListener("pointerup", (event) => {
+  const finishPointerInteraction = (event: PointerEvent): void => {
     const moved = Math.abs(event.clientX - dragOrigin.x) + Math.abs(event.clientY - dragOrigin.y);
-    dragging = false;
-    canvasElement.releasePointerCapture(event.pointerId);
-    if (moved < 3) selectFromPointer(event);
+    if (nodeDrag) {
+      savedPositions.set(nodeDrag.node.agent.id, nodeDrag.node.group.position.clone());
+      savePositions(savedPositions);
+    }
+    const wasRotating = rotating;
+    rotating = false;
+    nodeDrag = null;
+    canvasElement.classList.remove("dragging-node");
+    if (canvasElement.hasPointerCapture(event.pointerId)) {
+      canvasElement.releasePointerCapture(event.pointerId);
+    }
+    if (wasRotating && moved < 3) selectFromPointer(event);
+  };
+  canvasElement.addEventListener("pointerup", finishPointerInteraction);
+  canvasElement.addEventListener("pointercancel", finishPointerInteraction);
+  canvasElement.addEventListener("pointerleave", () => {
+    if (!nodeDrag && !rotating) canvasElement.classList.remove("over-agent");
   });
   canvasElement.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -240,11 +303,13 @@ function startTopology(
     for (const source of sourceNodes.values()) source.label.remove();
     nodes.clear();
     sourceNodes.clear();
+    connections.length = 0;
 
     const router = agents.find((agent) => agent.metadata.role === "router");
     const ordered = router ? [router, ...agents.filter((agent) => agent.id !== router.id)] : agents;
     ordered.forEach((agent, index) => {
-      const position = nodePosition(agent, index, ordered.length);
+      const position = savedPositions.get(agent.id)?.clone()
+        ?? nodePosition(agent, index, ordered.length);
       const node = createNode(agent, position);
       nodes.set(agent.id, node);
       world.add(node.group);
@@ -368,6 +433,17 @@ function startTopology(
     );
     line.renderOrder = -1;
     world.add(line);
+    connections.push({ line, from, to });
+  }
+
+  function updateConnections(): void {
+    for (const connection of connections) {
+      const positions = connection.line.geometry.getAttribute("position") as THREE.BufferAttribute;
+      positions.setXYZ(0, connection.from.x, connection.from.y, connection.from.z);
+      positions.setXYZ(1, connection.to.x, connection.to.y, connection.to.z);
+      positions.needsUpdate = true;
+      connection.line.geometry.computeBoundingSphere();
+    }
   }
 
   function animateEvent(event: AgentEvent): void {
@@ -395,13 +471,27 @@ function startTopology(
   }
 
   function selectFromPointer(event: PointerEvent): void {
+    const node = nodeFromPointer(event);
+    if (node) selectAgent(node.agent.id);
+  }
+
+  function nodeFromPointer(event: PointerEvent): NodeRecord | null {
+    setRayFromPointer(event);
+    const hit = raycaster.intersectObjects(Array.from(nodes.values()).map((node) => node.sphere))[0];
+    const agentId = hit?.object.userData.agentId;
+    return typeof agentId === "string" ? nodes.get(agentId) ?? null : null;
+  }
+
+  function pointerPlaneIntersection(event: PointerEvent, plane: THREE.Plane): THREE.Vector3 | null {
+    setRayFromPointer(event);
+    return raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+  }
+
+  function setRayFromPointer(event: PointerEvent): void {
     const rect = canvasElement.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects(Array.from(nodes.values()).map((node) => node.sphere))[0];
-    const agentId = hit?.object.userData.agentId;
-    if (typeof agentId === "string") selectAgent(agentId);
   }
 
   function selectAgent(agentId: string): void {
@@ -468,7 +558,7 @@ function startTopology(
       for (const node of nodes.values()) {
         if (node.agent.status === "running" || node.agent.status === "starting") {
           node.halo.rotation.z += 0.008;
-          node.group.position.y += Math.sin(now * 0.0014 + node.group.position.x) * 0.0007;
+          node.sphere.position.y = Math.sin(now * 0.0014 + node.group.position.x) * 0.035;
           animated = true;
         }
       }
@@ -519,6 +609,35 @@ function nodePosition(agent: AgentSnapshot, index: number, count: number): THREE
   const angle = (workerIndex / workerCount) * Math.PI * 2 - Math.PI / 2;
   const radius = 3.7 + (workerIndex % 2) * 0.45;
   return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * 2.35, Math.sin(angle) * 0.45);
+}
+
+function loadSavedPositions(): Map<string, THREE.Vector3> {
+  const positions = new Map<string, THREE.Vector3>();
+  try {
+    const raw = window.localStorage.getItem(TOPOLOGY_LAYOUT_KEY);
+    if (!raw) return positions;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [agentId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value) || value.length !== 3) continue;
+      const coordinates = value.map(Number);
+      if (coordinates.every(Number.isFinite)) {
+        positions.set(agentId, new THREE.Vector3(coordinates[0], coordinates[1], coordinates[2]));
+      }
+    }
+  } catch {
+    // A corrupt or unavailable local store should not prevent the topology from rendering.
+  }
+  return positions;
+}
+
+function savePositions(positions: Map<string, THREE.Vector3>): void {
+  try {
+    window.localStorage.setItem(TOPOLOGY_LAYOUT_KEY, JSON.stringify(Object.fromEntries(
+      Array.from(positions, ([agentId, position]) => [agentId, position.toArray()]),
+    )));
+  } catch {
+    // Dragging remains available for this session when storage is unavailable.
+  }
 }
 
 function statusColor(status: AgentStatus): number {
