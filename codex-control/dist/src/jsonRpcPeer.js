@@ -1,4 +1,4 @@
-import { CodexControlError, } from "./types.js";
+import { CodexAppServerError, CodexControlError, } from "./types.js";
 export class JsonRpcPeer {
     transport;
     requestTimeoutMs;
@@ -78,7 +78,7 @@ export class JsonRpcPeer {
         clearTimeout(pending.timer);
         this.pending.delete(message.id);
         if (message.error !== undefined) {
-            pending.reject(new CodexControlError(JSON.stringify(message.error)));
+            pending.reject(new CodexAppServerError(message.error));
             return;
         }
         pending.resolve(message.result);

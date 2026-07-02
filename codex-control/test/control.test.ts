@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CodexAppServerError,
   CodexControlClient,
   type AppServerTransport,
   type ApprovalRequest,
@@ -174,6 +175,59 @@ test("initialize advertises experimental API capability for dynamic tools", asyn
     transport.respondTo("initialize", {});
     await starting;
   }
+});
+
+test("preserves structured app-server errors for deterministic diagnosis", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+  const listing = client.listModels();
+
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  const request = await transport.waitForRequest("model/list");
+  assert.ok(request.id);
+  transport.server({
+    id: request.id,
+    error: {
+      code: -32602,
+      message: "Model gpt-retired is not available",
+      data: { model: "gpt-retired", kind: "model_not_found" },
+    },
+  });
+
+  await assert.rejects(listing, (error: unknown) => {
+    assert.ok(error instanceof CodexAppServerError);
+    assert.equal(error.code, -32602);
+    assert.equal(error.message, "Model gpt-retired is not available");
+    assert.deepEqual(error.data, { model: "gpt-retired", kind: "model_not_found" });
+    assert.deepEqual(error.rpcError, {
+      code: -32602,
+      message: "Model gpt-retired is not available",
+      data: { model: "gpt-retired", kind: "model_not_found" },
+    });
+    return true;
+  });
+});
+
+test("exposes app-server runtime identity from initialize", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+  const info = client.getRuntimeInfo();
+
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {
+    userAgent: "codex_cli_rs/0.130.0 (macos 15.5; arm64)",
+    platformFamily: "unix",
+    platformOs: "macos",
+    codexHome: "/tmp/codex-home",
+  });
+
+  assert.deepEqual(await info, {
+    userAgent: "codex_cli_rs/0.130.0 (macos 15.5; arm64)",
+    platformFamily: "unix",
+    platformOs: "macos",
+    codexHome: "/tmp/codex-home",
+  });
 });
 
 test("permissions approval grants requested network but not filesystem by default", async () => {

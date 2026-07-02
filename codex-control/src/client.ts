@@ -7,6 +7,7 @@ import type {
   AppServerTransport,
   ApprovalHandler,
   AuditSink,
+  CodexRuntimeInfo,
   JsonRpcMessage,
   ModelListOptions,
   ModelListResult,
@@ -24,6 +25,8 @@ type ModelListResponse = {
   nextCursor?: string | null;
 };
 
+type InitializeResponse = Partial<CodexRuntimeInfo>;
+
 export type CodexControlClientOptions = {
   transport?: AppServerTransport;
   requestTimeoutMs?: number;
@@ -37,6 +40,7 @@ export class CodexControlClient {
   private readonly dynamicToolManager = new DynamicToolManager();
   private readonly sessions = new Map<string, CodexSession>();
   private started = false;
+  private runtimeInfo: CodexRuntimeInfo | null = null;
 
   constructor(options: CodexControlClientOptions = {}) {
     const transport = options.transport ?? new StdioCodexAppServerTransport();
@@ -56,7 +60,7 @@ export class CodexControlClient {
       return;
     }
     await this.peer.start();
-    await this.peer.request("initialize", {
+    const initialized = await this.peer.request<InitializeResponse>("initialize", {
       clientInfo: {
         name: "codex_control",
         title: "Codex Control",
@@ -66,8 +70,19 @@ export class CodexControlClient {
         experimentalApi: true,
       },
     });
+    this.runtimeInfo = {
+      userAgent: stringValue(initialized.userAgent),
+      platformFamily: stringValue(initialized.platformFamily),
+      platformOs: stringValue(initialized.platformOs),
+      codexHome: stringValue(initialized.codexHome),
+    };
     this.peer.notify("initialized", {});
     this.started = true;
+  }
+
+  async getRuntimeInfo(): Promise<CodexRuntimeInfo> {
+    await this.start();
+    return { ...(this.runtimeInfo as CodexRuntimeInfo) };
   }
 
   async startSession(options: SessionStartOptions): Promise<CodexSession> {

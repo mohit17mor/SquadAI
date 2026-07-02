@@ -1,4 +1,4 @@
-export type AgentStatus = "idle" | "starting" | "running" | "failed" | "stopped";
+export type AgentStatus = "idle" | "starting" | "running" | "failed" | "blocked" | "stopped";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type AgentEventType =
@@ -25,6 +25,9 @@ export type AgentEventType =
   | "agent_updated"
   | "agent_deleted"
   | "agent_failed"
+  | "compatibility_blocked"
+  | "compatibility_migrated"
+  | "compatibility_declined"
   | "agent_stopped";
 
 export type AgentDefinition = {
@@ -97,6 +100,7 @@ export type AgentSnapshot = {
   createdAt: string;
   updatedAt: string;
   lastError: string | null;
+  compatibilityIssue: CompatibilityIssue | null;
 };
 
 export type AgentEvent = {
@@ -137,7 +141,7 @@ export type SensorEvent = SensorEventInput & {
   updatedAt: string;
 };
 
-export type WorkItemStatus = "queued" | "running" | "done" | "failed";
+export type WorkItemStatus = "queued" | "running" | "done" | "failed" | "blocked";
 
 export type WorkItem = {
   id: string;
@@ -154,10 +158,12 @@ export type WorkItem = {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  retryGeneration?: number;
 };
 
 export type AgentNotificationKind =
   | "approval_required"
+  | "compatibility_required"
   | "agent_failed"
   | "turn_failed"
   | "work_item_failed"
@@ -221,6 +227,49 @@ export type AgentModelCatalog = {
   models: AgentModelOption[];
 };
 
+export type CodexRuntimeInfo = {
+  userAgent: string;
+  platformFamily: string;
+  platformOs: string;
+  codexHome: string;
+};
+
+export type CompatibilityIssueKind =
+  | "model_unavailable"
+  | "reasoning_effort_unsupported"
+  | "service_tier_unsupported";
+
+export type CompatibilityIssue = {
+  kind: CompatibilityIssueKind;
+  fingerprint: string;
+  agentId: string;
+  model: string;
+  configuredValue: string;
+  recommendedValue: string | null;
+  message: string;
+  suggestedModels: AgentModelOption[];
+};
+
+export type CompatibilityApprovalStatus = "pending" | "approved" | "declined";
+
+export type CompatibilityApproval = {
+  id: string;
+  agentId: string;
+  status: CompatibilityApprovalStatus;
+  issue: CompatibilityIssue;
+  affectedWorkItemIds: string[];
+  createdAt: string;
+  resolvedAt: string | null;
+  replacementModel: string | null;
+};
+
+export type CompatibilityApprovalResolution = {
+  decision: "approved" | "declined";
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  serviceTier?: string;
+};
+
 export type RoutingDecision = {
   targetAgentId: string;
   prompt: string;
@@ -246,6 +295,7 @@ export type PersistedAgentManagerState = {
   sensorEvents?: SensorEvent[];
   workItems?: WorkItem[];
   notifications?: AgentNotification[];
+  compatibilityApprovals?: CompatibilityApproval[];
 };
 
 export interface AgentStateStore {
@@ -257,6 +307,7 @@ export type CodexControlClientLike = {
   startSession(options: Record<string, unknown>): Promise<CodexSessionLike>;
   resumeSession(threadId: string): Promise<CodexSessionLike>;
   listModels?(options?: { includeHidden?: boolean }): Promise<AgentModelCatalog>;
+  getRuntimeInfo?(): Promise<CodexRuntimeInfo>;
   close(): Promise<void>;
 };
 

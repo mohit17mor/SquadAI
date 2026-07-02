@@ -126,8 +126,20 @@ export type ModelListOptions = {
 export type ModelListResult = {
     models: CodexModelOption[];
 };
+export type CodexRuntimeInfo = {
+    userAgent: string;
+    platformFamily: string;
+    platformOs: string;
+    codexHome: string;
+};
 export declare class CodexControlError extends Error {
     constructor(message: string, options?: ErrorOptions);
+}
+export declare class CodexAppServerError extends CodexControlError {
+    readonly code: number | string | null;
+    readonly data: unknown;
+    readonly rpcError: Record<string, unknown>;
+    constructor(value: unknown);
 }
 export declare class CodexTurnTimeoutError extends CodexControlError {
     constructor(message: string);

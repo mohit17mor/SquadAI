@@ -108,11 +108,30 @@ class FakeCodexSession {
       turn: { status: "completed" },
     });
   }
+
+  fail(error: Error): void {
+    assert.ok(this.pending, "expected pending ask");
+    const pending = this.pending;
+    this.pending = null;
+    pending.reject(error);
+  }
 }
 
 function fakeFactory(clients: FakeCodexClient[] = []): CodexControlClientFactory {
   return () => {
     const client = new FakeCodexClient();
+    clients.push(client);
+    return client;
+  };
+}
+
+function catalogFactory(
+  modelCatalog: AgentModelCatalog,
+  clients: FakeCodexClient[] = [],
+): CodexControlClientFactory {
+  return () => {
+    const client = new FakeCodexClient();
+    client.modelCatalog = modelCatalog;
     clients.push(client);
     return client;
   };
@@ -268,12 +287,16 @@ test("passes model, reasoning, and speed settings to new Codex sessions", async 
   });
 
   const send = manager.sendToAgent("maintenance", "Use the configured runtime.");
-  await waitFor(() => clients.length === 1, "maintenance client");
+  await waitFor(
+    () => clients.some((client) => client.startCalls.length === 1),
+    "maintenance client",
+  );
+  const runtimeClient = clients.find((client) => client.startCalls.length === 1);
 
   assert.equal(manager.getAgent("maintenance").model, "gpt-test");
   assert.equal(manager.getAgent("maintenance").reasoningEffort, "high");
   assert.equal(manager.getAgent("maintenance").serviceTier, "fast");
-  assert.deepEqual(clients[0]?.startCalls[0], {
+  assert.deepEqual(runtimeClient?.startCalls[0], {
     cwd: "/tmp/ops-poc",
     model: "gpt-test",
     reasoningEffort: "high",
@@ -284,8 +307,246 @@ test("passes model, reasoning, and speed settings to new Codex sessions", async 
     dynamicTools: undefined,
   });
 
-  clients[0]?.session("thread-1").complete("done");
+  runtimeClient?.session("thread-1").complete("done");
   await send;
+});
+
+test("blocks a pinned agent and requests migration approval when its model disappears", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({ model: "gpt-retired" })],
+    clientFactory: catalogFactory({
+      models: [{
+        id: "gpt-current",
+        model: "gpt-current",
+        displayName: "GPT Current",
+        description: "Current default",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+        defaultReasoningEffort: "medium",
+        additionalSpeedTiers: [],
+        serviceTiers: [],
+        isDefault: true,
+      }],
+    }, clients),
+  });
+
+  await assert.rejects(
+    manager.sendToAgent("maintenance", "continue the queued work"),
+    /blocked.*gpt-retired/i,
+  );
+
+  assert.equal(manager.getAgent("maintenance").status, "blocked");
+  assert.equal(clients.every((client) => client.startCalls.length === 0), true);
+  const approvals = manager.listCompatibilityApprovals();
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0]?.issue.kind, "model_unavailable");
+  assert.equal(approvals[0]?.issue.suggestedModels[0]?.model, "gpt-current");
+});
+
+test("approved model migration unblocks the agent and allows work to resume", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({ model: "gpt-retired" })],
+    clientFactory: catalogFactory({
+      models: [{
+        id: "gpt-current",
+        model: "gpt-current",
+        displayName: "GPT Current",
+        description: "Current default",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+        defaultReasoningEffort: "medium",
+        additionalSpeedTiers: [],
+        serviceTiers: [],
+        isDefault: true,
+      }],
+    }, clients),
+  });
+
+  await assert.rejects(manager.sendToAgent("maintenance", "original prompt"), /blocked/i);
+  const approval = manager.listCompatibilityApprovals()[0];
+  assert.ok(approval);
+
+  const resolved = await manager.resolveCompatibilityApproval(approval.id, {
+    decision: "approved",
+    model: "gpt-current",
+  });
+
+  assert.equal(resolved.status, "approved");
+  assert.equal(manager.getAgent("maintenance").model, "gpt-current");
+  assert.equal(manager.getAgent("maintenance").status, "idle");
+
+  const send = manager.sendToAgent("maintenance", "original prompt");
+  await waitFor(
+    () => clients.some((client) => client.startCalls.length === 1),
+    "migrated agent session",
+  );
+  const runtimeClient = clients.find((client) => client.startCalls.length === 1);
+  assert.equal(runtimeClient?.startCalls[0]?.model, "gpt-current");
+  runtimeClient?.session("thread-1").complete("resumed");
+  assert.equal((await send).finalText, "resumed");
+  assert.ok(manager.listEvents("maintenance").some((event) => event.type === "compatibility_migrated"));
+});
+
+test("approved migration automatically retries blocked work with its original prompt", async () => {
+  const clients: FakeCodexClient[] = [];
+  const stateStore = new MemoryAgentStateStore({
+    workItems: [{
+      id: "work-1",
+      eventId: null,
+      targetAgentId: "maintenance",
+      prompt: "preserve this exact prompt",
+      status: "queued",
+      routerAgentId: null,
+      reason: null,
+      result: null,
+      failureReason: null,
+      metadata: {},
+      createdAt: "2026-07-02T00:00:00.000Z",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+      startedAt: null,
+      completedAt: null,
+      retryGeneration: 0,
+    }],
+  });
+  const manager = new CodexAgentManager({
+    agents: [agent({ model: "gpt-retired" })],
+    stateStore,
+    clientFactory: catalogFactory({
+      models: [{
+        id: "gpt-current",
+        model: "gpt-current",
+        displayName: "GPT Current",
+        description: "Current default",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+        defaultReasoningEffort: "medium",
+        additionalSpeedTiers: [],
+        serviceTiers: [],
+        isDefault: true,
+      }],
+    }, clients),
+  });
+
+  await manager.dispatchQueuedWork();
+  await waitFor(() => manager.getWorkItem("work-1").status === "blocked", "blocked work item");
+  const approval = manager.listCompatibilityApprovals()[0];
+  assert.ok(approval);
+
+  await manager.resolveCompatibilityApproval(approval.id, {
+    decision: "approved",
+    model: "gpt-current",
+  });
+  await waitFor(
+    () => clients.some((client) => client.startCalls.length === 1),
+    "automatically retried work session",
+  );
+  const runtimeClient = clients.find((client) => client.startCalls.length === 1);
+  assert.equal(runtimeClient?.session("thread-1").pending?.input, "preserve this exact prompt");
+  runtimeClient?.session("thread-1").complete("retried result");
+  await waitFor(() => manager.getWorkItem("work-1").status === "done", "retried work completion");
+
+  const workItem = manager.getWorkItem("work-1");
+  assert.equal(workItem.result, "retried result");
+  assert.equal(workItem.retryGeneration, 1);
+});
+
+test("reactively diagnoses a model removed after preflight instead of marking an ordinary failure", async () => {
+  const clients: FakeCodexClient[] = [];
+  let liveCatalog: AgentModelCatalog = {
+    models: [{
+      id: "gpt-current",
+      model: "gpt-current",
+      displayName: "GPT Current",
+      description: "Initially available",
+      hidden: false,
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+      defaultReasoningEffort: "medium",
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      isDefault: true,
+    }],
+  };
+  const manager = new CodexAgentManager({
+    agents: [agent({ model: "gpt-current" })],
+    clientFactory: () => {
+      const client = new FakeCodexClient();
+      client.modelCatalog = liveCatalog;
+      clients.push(client);
+      return client;
+    },
+  });
+
+  const send = manager.sendToAgent("maintenance", "work started before catalog changed");
+  await waitFor(
+    () => clients.some((client) => client.startCalls.length === 1),
+    "runtime session before model removal",
+  );
+  const runtimeClient = clients.find((client) => client.startCalls.length === 1);
+  liveCatalog = {
+    models: [{
+      id: "gpt-replacement",
+      model: "gpt-replacement",
+      displayName: "GPT Replacement",
+      description: "New default",
+      hidden: false,
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+      defaultReasoningEffort: "medium",
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      isDefault: true,
+    }],
+  };
+  runtimeClient?.session("thread-1").fail(new Error("Model gpt-current is not available"));
+
+  await assert.rejects(send, /blocked.*gpt-current/i);
+  assert.equal(manager.getAgent("maintenance").status, "blocked");
+  assert.equal(manager.listCompatibilityApprovals()[0]?.issue.suggestedModels[0]?.model, "gpt-replacement");
+  assert.equal(manager.listEvents("maintenance").some((event) => event.type === "turn_failed"), false);
+});
+
+test("restores pending compatibility approvals and resolves them after manager restart", async () => {
+  const stateStore = new MemoryAgentStateStore();
+  const modelCatalog: AgentModelCatalog = {
+    models: [{
+      id: "gpt-current",
+      model: "gpt-current",
+      displayName: "GPT Current",
+      description: "Current default",
+      hidden: false,
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }],
+      defaultReasoningEffort: "medium",
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      isDefault: true,
+    }],
+  };
+  const first = new CodexAgentManager({
+    agents: [agent({ model: "gpt-retired" })],
+    stateStore,
+    clientFactory: catalogFactory(modelCatalog),
+  });
+  await assert.rejects(first.sendToAgent("maintenance", "detect removal"), /blocked/i);
+  const approvalId = first.listCompatibilityApprovals()[0]?.id;
+  assert.ok(approvalId);
+  await first.close();
+
+  const second = new CodexAgentManager({
+    agents: [],
+    stateStore,
+    clientFactory: catalogFactory(modelCatalog),
+  });
+  await second.start();
+  assert.equal(second.getAgent("maintenance").status, "blocked");
+  assert.equal(second.listCompatibilityApprovals()[0]?.id, approvalId);
+
+  const resolved = await second.resolveCompatibilityApproval(approvalId, {
+    decision: "approved",
+    model: "gpt-current",
+  });
+  assert.equal(resolved.status, "approved");
+  assert.equal(second.getAgent("maintenance").model, "gpt-current");
 });
 
 test("lists model options through a short-lived codex-control client", async () => {

@@ -13,6 +13,7 @@ export type {
   AuditSink,
   CodexModelCatalogProvider,
   CodexModelOption,
+  CodexRuntimeInfo,
   Confirmation,
   DynamicTool,
   DynamicToolCallOutputContentItem,
@@ -31,4 +32,4 @@ export type {
   SessionStartOptions,
   TurnResult,
 } from "./types.js";
-export { CodexControlError, CodexTurnTimeoutError } from "./types.js";
+export { CodexAppServerError, CodexControlError, CodexTurnTimeoutError } from "./types.js";

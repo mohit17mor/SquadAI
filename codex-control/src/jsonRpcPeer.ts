@@ -1,4 +1,5 @@
 import {
+  CodexAppServerError,
   CodexControlError,
   type AppServerTransport,
   type JsonRpcId,
@@ -109,7 +110,7 @@ export class JsonRpcPeer {
     this.pending.delete(message.id as JsonRpcId);
 
     if (message.error !== undefined) {
-      pending.reject(new CodexControlError(JSON.stringify(message.error)));
+      pending.reject(new CodexAppServerError(message.error));
       return;
     }
     pending.resolve(message.result);

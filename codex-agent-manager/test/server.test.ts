@@ -396,6 +396,61 @@ test("command center API resolves pending approvals", async () => {
   }
 });
 
+test("command center API exposes and resolves compatibility migration approvals", async () => {
+  const manager = new CodexAgentManager({
+    agents: [{
+      id: "maintenance",
+      name: "Maintenance Debugger",
+      cwd: "/tmp/ops-poc",
+      instructions: "You specialize in maintenance debugging.",
+      model: "gpt-retired",
+    }],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    await expectJsonStatus(
+      `${baseUrl}/api/agents/maintenance/messages`,
+      { method: "POST", body: { message: "continue" } },
+      400,
+      /blocked/i,
+    );
+
+    const compatibility = await jsonFetch(`${baseUrl}/api/compatibility`);
+    assert.equal(compatibility.approvals.length, 1);
+    assert.equal(compatibility.approvals[0].issue.kind, "model_unavailable");
+    assert.equal(compatibility.approvals[0].issue.suggestedModels[0].model, "gpt-test");
+    const notifications = await jsonFetch(`${baseUrl}/api/notifications`);
+    const compatibilityNotification = notifications.notifications.find(
+      (item: { kind: string }) => item.kind === "compatibility_required",
+    );
+    assert.ok(compatibilityNotification);
+    await expectJsonStatus(
+      `${baseUrl}/api/notifications/${compatibilityNotification.id}/dismiss`,
+      { method: "POST" },
+      400,
+      /Compatibility approvals resolve/,
+    );
+
+    const resolved = await jsonFetch(
+      `${baseUrl}/api/compatibility/${compatibility.approvals[0].id}/resolve`,
+      { method: "POST", body: { decision: "approved", model: "gpt-test" } },
+    );
+    assert.equal(resolved.approval.status, "approved");
+    assert.equal(resolved.approval.replacementModel, "gpt-test");
+
+    const agents = await jsonFetch(`${baseUrl}/api/agents`);
+    assert.equal(agents.agents[0].model, "gpt-test");
+    assert.equal(agents.agents[0].status, "idle");
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center API interrupts running agents", async () => {
   const manager = new CodexAgentManager({
     agents: [
@@ -531,6 +586,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /serviceTierOptions/);
     assert.match(html, /selected\.reasoningEffort/);
     assert.match(html, /selected\.serviceTier/);
+    assert.match(html, /compatibilityApprovals/);
+    assert.match(html, /resolveCompatibilityApproval/);
+    assert.match(html, /id="compatibility-health"/);
     assert.doesNotMatch(html, /<datalist id="model-options"/);
     assert.doesNotMatch(html, /list="model-options"/);
     assert.match(html, /<option value="router">Router<\/option>/);

@@ -37,6 +37,11 @@ export class CodexControlClient {
     return { models: [{ id: "gpt-test", model: "gpt-test" }] };
   }
 
+  async getRuntimeInfo() {
+    events.push({ type: "runtimeInfo" });
+    return { userAgent: "codex_cli_rs/0.130.0", platformFamily: "unix", platformOs: "macos", codexHome: "/tmp/codex" };
+  }
+
   async close() {
     events.push({ type: "close" });
   }
@@ -57,6 +62,7 @@ export class CodexControlClient {
   assert.deepEqual(await client.listModels?.({ includeHidden: true }), {
     models: [{ id: "gpt-test", model: "gpt-test" }],
   });
+  assert.equal((await client.getRuntimeInfo?.())?.userAgent, "codex_cli_rs/0.130.0");
   await client.close();
 
   assert.deepEqual(events, [
@@ -64,6 +70,7 @@ export class CodexControlClient {
     { type: "start", options: { cwd: "/tmp/ops-poc" } },
     { type: "resume", threadId: "existing-thread" },
     { type: "listModels", options: { includeHidden: true } },
+    { type: "runtimeInfo" },
     { type: "close" },
   ]);
 });

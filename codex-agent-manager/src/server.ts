@@ -9,6 +9,7 @@ import type {
   AgentEvent,
   ApprovalScope,
   AskOptions,
+  CompatibilityApprovalResolution,
   ReasoningEffort,
   SensorEventInput,
 } from "./types.js";
@@ -168,6 +169,23 @@ export class CommandCenterServer {
 
       if (request.method === "GET" && url.pathname === "/api/notifications") {
         this.json(response, { notifications: this.options.manager.listNotifications() });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/compatibility") {
+        this.json(response, this.options.manager.getCompatibilityStatus());
+        return;
+      }
+
+      const compatibilityMatch = url.pathname.match(/^\/api\/compatibility\/([^/]+)\/resolve$/);
+      if (request.method === "POST" && compatibilityMatch?.[1]) {
+        const body = await readJson(request);
+        const approval = await this.options.manager.resolveCompatibilityApproval(
+          decodeURIComponent(compatibilityMatch[1]),
+          parseCompatibilityResolution(body),
+        );
+        this.kickAutomation();
+        this.json(response, { approval });
         return;
       }
 
@@ -375,6 +393,24 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
     definition.metadata = metadata;
   }
   return definition;
+}
+
+function parseCompatibilityResolution(body: unknown): CompatibilityApprovalResolution {
+  const value = asRecord(body);
+  const decision = optionalEnum(value.decision, ["approved", "declined"]);
+  if (!decision) {
+    throw new Error("Field decision must be approved or declined.");
+  }
+  if (decision === "declined") return { decision };
+  const model = requiredString(value.model, "model");
+  const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
+  const serviceTier = optionalString(value.serviceTier);
+  return {
+    decision,
+    model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+  };
 }
 
 function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
@@ -608,6 +644,7 @@ function renderHtml(title: string): string {
         </label>
         <div class="topology-health">
           <span><i class="status-dot idle"></i>System live</span>
+          <span id="compatibility-health" title="Codex compatibility catalog">Catalog pending</span>
           <button id="topology-motion-toggle" type="button" class="topology-tool" aria-pressed="true">Motion on</button>
         </div>
       </header>
@@ -777,6 +814,7 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .topology-label span { color: #8994ae; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .topology-label.status-running span, .topology-label.status-starting span { color: #54e59a; }
 .topology-label.status-failed span { color: #ff687c; }
+.topology-label.status-blocked span { color: #f5aa42; }
 .topology-source-label { pointer-events: none; border-color: rgba(75,220,244,.35); background: rgba(7,24,34,.86); }
 .topology-source-label span { color: #56cfe7; }
 .topology-legend { position: absolute; left: 18px; top: 18px; display: flex; gap: 13px; padding: 7px 9px; color: #7f8aa4; background: rgba(7,10,18,.76); border: 1px solid #20273a; border-radius: 7px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
@@ -825,6 +863,7 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: #7180a4; }
 .status-dot.idle, .status-dot.running, .status-dot.starting { background: #54e59a; }
 .status-dot.failed { background: #ff5d72; }
+.status-dot.blocked { background: #f5aa42; }
 .command-rail { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 20px; border-bottom: 1px solid #30363d; }
 h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
@@ -933,6 +972,9 @@ textarea { resize: vertical; }
 .approval-actions button { padding: 7px 10px; border-radius: 7px; }
 .approval-actions button[data-approval-action="declined"] { background: #21262d; color: #f85149; }
 .approval-actions button[data-approval-action="declined"]:hover { border-color: #f85149; }
+.compatibility-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.compatibility-actions select { min-width: 170px; padding: 7px 9px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 7px; }
+.compatibility-actions button { padding: 7px 10px; }
 .activity-sequence { background: transparent; border: 1px solid #30363d; border-radius: 8px; max-width: min(560px, 80vw); color: #8b949e; }
 .activity-sequence[open] { background: #0d1117; }
 .activity-sequence.failed { border-color: rgba(248,81,73,.5); }
@@ -971,6 +1013,8 @@ let events = [];
 let sensorEvents = [];
 let workItems = [];
 let notifications = [];
+let compatibilityApprovals = [];
+let compatibilitySnapshot = null;
 let modelOptions = [];
 let pendingMessages = [];
 let sendInFlight = false;
@@ -1020,6 +1064,7 @@ const agentPanelCount = document.getElementById("agent-panel-count");
 const notificationPanelCount = document.getElementById("notification-panel-count");
 const eventPanelCount = document.getElementById("event-panel-count");
 const workPanelCount = document.getElementById("work-panel-count");
+const compatibilityHealth = document.getElementById("compatibility-health");
 const notificationList = document.getElementById("notifications-list");
 const sensorEventList = document.getElementById("sensor-events");
 const workItemList = document.getElementById("work-items");
@@ -1261,9 +1306,24 @@ async function refreshQueues() {
 }
 
 async function refreshNotifications() {
-  const response = await fetch("/api/notifications");
+  const [response, compatibilityResponse] = await Promise.all([
+    fetch("/api/notifications"),
+    fetch("/api/compatibility"),
+  ]);
   const body = await response.json();
+  const compatibilityBody = await compatibilityResponse.json();
   notifications = body.notifications;
+  compatibilityApprovals = Array.isArray(compatibilityBody.approvals) ? compatibilityBody.approvals : [];
+  compatibilitySnapshot = compatibilityBody.snapshot || null;
+  if (compatibilityHealth) {
+    const defaultModel = compatibilitySnapshot?.catalog?.models?.find((model) => model.isDefault);
+    compatibilityHealth.textContent = compatibilitySnapshot
+      ? "Default: " + (defaultModel?.displayName || defaultModel?.model || "Codex")
+      : "Catalog checks on demand";
+    compatibilityHealth.title = compatibilitySnapshot?.codexVersion
+      ? compatibilitySnapshot.codexVersion + " · checked " + compatibilitySnapshot.fetchedAt
+      : "Codex compatibility catalog refreshes before pinned agents start";
+  }
   renderNotifications();
 }
 
@@ -1704,9 +1764,21 @@ function renderNotifications() {
 }
 
 function renderNotificationItem(item) {
-  const dismissButton = item.kind === "approval_required"
+  const dismissButton = item.kind === "approval_required" || item.kind === "compatibility_required"
     ? ""
     : \`<button type="button" class="secondary" data-notification-dismiss-id="\${escapeAttr(item.id)}">Dismiss</button>\`;
+  const compatibilityApproval = item.kind === "compatibility_required"
+    ? compatibilityApprovals.find((approval) => approval.id === item.approvalId && approval.status === "pending")
+    : null;
+  const compatibilityActions = compatibilityApproval ? \`
+    <span class="compatibility-actions" data-compatibility-approval-id="\${escapeAttr(compatibilityApproval.id)}">
+      <select aria-label="Replacement model">
+        \${compatibilityApproval.issue.suggestedModels.map((model) => \`<option value="\${escapeAttr(model.model || model.id)}">\${escapeHtml(model.displayName || model.model || model.id)}\${model.isDefault ? " (Codex default)" : ""}</option>\`).join("")}
+      </select>
+      <button type="button" data-compatibility-action="approved">Apply and retry</button>
+      <button type="button" class="secondary" data-compatibility-action="declined">Keep paused</button>
+    </span>
+  \` : "";
   return \`
     <div class="queue-item notification-item" role="button" tabindex="0" data-notification-id="\${escapeAttr(item.id)}" data-notification-agent-id="\${escapeAttr(item.agentId)}">
       <span class="queue-time">\${escapeHtml(formatShortTime(item.updatedAt || item.createdAt))}</span>
@@ -1714,7 +1786,7 @@ function renderNotificationItem(item) {
       <span class="queue-state">\${escapeHtml(notificationKindLabel(item.kind))} · \${escapeHtml(item.id)}</span>
       <span class="sub queue-message">\${escapeHtml(item.summary)} · event \${escapeHtml(item.sourceEventId)}</span>
       <span class="queue-actions">
-        <span>Open agent</span>
+        \${compatibilityActions || "<span>Open agent</span>"}
         \${dismissButton}
       </span>
     </div>
@@ -1772,6 +1844,35 @@ function bindNotificationActions() {
       void dismissNotification(button.dataset.notificationDismissId);
     });
   }
+  for (const button of notificationList.querySelectorAll("[data-compatibility-action]")) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const container = button.closest("[data-compatibility-approval-id]");
+      const model = container?.querySelector("select")?.value || "";
+      void resolveCompatibilityApproval(
+        container?.dataset.compatibilityApprovalId,
+        button.dataset.compatibilityAction,
+        model,
+      );
+    });
+  }
+}
+
+async function resolveCompatibilityApproval(approvalId, decision, model) {
+  if (!approvalId) return;
+  const response = await fetch("/api/compatibility/" + encodeURIComponent(approvalId) + "/resolve", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(decision === "approved" ? { decision, model } : { decision }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    toast(body.error || "Compatibility update failed", "error");
+    return;
+  }
+  await refresh();
+  window.dispatchEvent(new CustomEvent("topology:refresh"));
+  toast(decision === "approved" ? "Agent migrated; blocked work is resuming" : "Agent remains paused");
 }
 
 function openNotification(notificationId, agentId) {
@@ -1802,6 +1903,7 @@ async function dismissNotification(notificationId) {
 function notificationKindLabel(kind) {
   const labels = {
     approval_required: "Approval",
+    compatibility_required: "Compatibility approval",
     agent_failed: "Agent failed",
     turn_failed: "Turn failed",
     work_item_failed: "Work failed",

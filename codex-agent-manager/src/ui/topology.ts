@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-type AgentStatus = "idle" | "starting" | "running" | "failed" | "stopped";
+type AgentStatus = "idle" | "starting" | "running" | "failed" | "blocked" | "stopped";
 
 type AgentSnapshot = {
   id: string;
@@ -524,6 +524,7 @@ function nodePosition(agent: AgentSnapshot, index: number, count: number): THREE
 function statusColor(status: AgentStatus): number {
   if (status === "running" || status === "starting") return 0x54e59a;
   if (status === "failed") return 0xff5d72;
+  if (status === "blocked") return 0xf5aa42;
   if (status === "stopped") return 0x5d6475;
   return 0x7180a4;
 }

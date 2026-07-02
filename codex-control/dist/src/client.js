@@ -9,6 +9,7 @@ export class CodexControlClient {
     dynamicToolManager = new DynamicToolManager();
     sessions = new Map();
     started = false;
+    runtimeInfo = null;
     constructor(options = {}) {
         const transport = options.transport ?? new StdioCodexAppServerTransport();
         this.peer = new JsonRpcPeer(transport, options.requestTimeoutMs);
@@ -23,7 +24,7 @@ export class CodexControlClient {
             return;
         }
         await this.peer.start();
-        await this.peer.request("initialize", {
+        const initialized = await this.peer.request("initialize", {
             clientInfo: {
                 name: "codex_control",
                 title: "Codex Control",
@@ -33,8 +34,18 @@ export class CodexControlClient {
                 experimentalApi: true,
             },
         });
+        this.runtimeInfo = {
+            userAgent: stringValue(initialized.userAgent),
+            platformFamily: stringValue(initialized.platformFamily),
+            platformOs: stringValue(initialized.platformOs),
+            codexHome: stringValue(initialized.codexHome),
+        };
         this.peer.notify("initialized", {});
         this.started = true;
+    }
+    async getRuntimeInfo() {
+        await this.start();
+        return { ...this.runtimeInfo };
     }
     async startSession(options) {
         await this.start();

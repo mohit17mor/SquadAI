@@ -30,6 +30,13 @@ export function createDefaultClientFactory(
         }
         return loaded.listModels(options);
       },
+      async getRuntimeInfo() {
+        const loaded = await client();
+        if (!loaded.getRuntimeInfo) {
+          return { userAgent: "", platformFamily: "", platformOs: "", codexHome: "" };
+        }
+        return loaded.getRuntimeInfo();
+      },
       async close() {
         if (clientPromise) {
           await (await clientPromise).close();

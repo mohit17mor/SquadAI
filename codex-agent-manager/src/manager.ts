@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
+import { CompatibilityGuardian } from "./compatibility.js";
 import { MemoryAgentStateStore } from "./stateStore.js";
 import type {
   AgentDefinition,
@@ -19,6 +20,9 @@ import type {
   ApprovalResponse,
   ApprovalScope,
   CodexAgentManagerOptions,
+  CompatibilityApproval,
+  CompatibilityApprovalResolution,
+  CompatibilityIssue,
   CodexControlClientFactory,
   CodexControlClientLike,
   CodexSessionLike,
@@ -45,6 +49,7 @@ type RuntimeRecord = {
   updatedAt: string;
   lastError: string | null;
   activeTurn: Promise<SendResult> | null;
+  compatibilityIssue: CompatibilityIssue | null;
 };
 
 type PendingApproval = {
@@ -83,17 +88,20 @@ export class CodexAgentManager extends EventEmitter {
   private readonly stateStore: AgentStateStore;
   private readonly clientFactory: CodexControlClientFactory;
   private readonly clock: () => Date;
+  private readonly compatibilityGuardian: CompatibilityGuardian;
   private events: AgentEvent[] = [];
   private sensorEvents: SensorEvent[] = [];
   private workItems: WorkItem[] = [];
   private notifications: AgentNotification[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
   private approvalGrants: ApprovalGrant[] = [];
+  private compatibilityApprovals: CompatibilityApproval[] = [];
   private nextEventId = 1;
   private nextApprovalId = 1;
   private nextSensorEventId = 1;
   private nextWorkItemId = 1;
   private nextNotificationId = 1;
+  private nextCompatibilityApprovalId = 1;
   private routerRosterStates = new Map<string, RouterRosterState>();
   private dispatchQueuedWorkInFlight: Promise<WorkItem[]> | null = null;
   private started: Promise<void> | null = null;
@@ -104,6 +112,7 @@ export class CodexAgentManager extends EventEmitter {
     this.stateStore = options.stateStore ?? new MemoryAgentStateStore();
     this.clientFactory = options.clientFactory ?? createDefaultClientFactory();
     this.clock = options.clock ?? (() => new Date());
+    this.compatibilityGuardian = new CompatibilityGuardian({ now: () => this.clock().getTime() });
 
     for (const definition of options.agents) {
       validateDefinition(definition);
@@ -137,10 +146,114 @@ export class CodexAgentManager extends EventEmitter {
       if (!client.listModels) {
         return { models: [] };
       }
-      return await client.listModels(options);
+      const catalog = await client.listModels(options);
+      if (catalog.models.length) {
+        const runtimeInfo = await client.getRuntimeInfo?.();
+        this.compatibilityGuardian.updateCatalog(catalog, {
+          ...(runtimeInfo?.userAgent ? { codexVersion: runtimeInfo.userAgent } : {}),
+        });
+      }
+      return catalog;
     } finally {
       await client.close();
     }
+  }
+
+  listCompatibilityApprovals(): CompatibilityApproval[] {
+    return this.compatibilityApprovals.map(cloneCompatibilityApproval);
+  }
+
+  getCompatibilityStatus(): {
+    snapshot: ReturnType<CompatibilityGuardian["snapshot"]>;
+    approvals: CompatibilityApproval[];
+  } {
+    return {
+      snapshot: this.compatibilityGuardian.snapshot(),
+      approvals: this.listCompatibilityApprovals(),
+    };
+  }
+
+  async resolveCompatibilityApproval(
+    approvalId: string,
+    resolution: CompatibilityApprovalResolution,
+  ): Promise<CompatibilityApproval> {
+    this.assertOpen();
+    await this.start();
+    const approval = this.compatibilityApprovals.find((item) => item.id === approvalId);
+    if (!approval || approval.status !== "pending") {
+      throw new CodexAgentManagerError(`Unknown or resolved compatibility approval: ${approvalId}`);
+    }
+    const record = this.requireRecord(approval.agentId);
+    const resolvedAt = this.now();
+    if (resolution.decision === "declined") {
+      approval.status = "declined";
+      approval.resolvedAt = resolvedAt;
+      await this.recordEvent(record.definition.id, "compatibility_declined", "Compatibility migration declined.", {
+        compatibilityApprovalId: approval.id,
+        issue: approval.issue,
+      });
+      await this.persist();
+      return cloneCompatibilityApproval(approval);
+    }
+
+    const replacementModel = resolution.model?.trim();
+    if (!replacementModel) {
+      throw new CodexAgentManagerError("Approved compatibility migration requires a replacement model.");
+    }
+    if (this.compatibilityGuardian.needsRefresh()) {
+      await this.refreshCompatibilityCatalog();
+    }
+    const snapshot = this.compatibilityGuardian.snapshot();
+    const replacement = snapshot?.catalog.models.find((model) =>
+      !model.hidden && (model.model === replacementModel || model.id === replacementModel)
+    );
+    if (!replacement) {
+      throw new CodexAgentManagerError(`Replacement model is not currently available: ${replacementModel}`);
+    }
+
+    const previousModel = record.definition.model ?? null;
+    record.definition = {
+      ...record.definition,
+      model: replacement.model,
+      reasoningEffort: resolution.reasoningEffort
+        ?? (record.definition.reasoningEffort && replacement.supportedReasoningEfforts.some(
+          (option) => option.reasoningEffort === record.definition.reasoningEffort,
+        ) ? record.definition.reasoningEffort : replacement.defaultReasoningEffort),
+      serviceTier: resolution.serviceTier
+        ?? (record.definition.serviceTier && (
+          replacement.serviceTiers.some((tier) => tier.id === record.definition.serviceTier)
+          || (replacement.additionalSpeedTiers ?? []).includes(record.definition.serviceTier)
+        ) ? record.definition.serviceTier : undefined),
+    };
+    this.definitions.set(record.definition.id, record.definition);
+    await this.closeRecordClient(record);
+    record.session = null;
+    record.threadId = null;
+    record.compatibilityIssue = null;
+    record.lastError = null;
+    this.setStatus(record, "idle");
+    approval.status = "approved";
+    approval.resolvedAt = resolvedAt;
+    approval.replacementModel = replacement.model;
+    for (const workItem of this.workItems) {
+      if (workItem.targetAgentId === record.definition.id && workItem.status === "blocked") {
+        workItem.status = "queued";
+        workItem.failureReason = null;
+        workItem.completedAt = null;
+        workItem.retryGeneration = (workItem.retryGeneration ?? 0) + 1;
+        workItem.updatedAt = resolvedAt;
+      }
+    }
+    await this.recordEvent(record.definition.id, "compatibility_migrated", "Agent compatibility configuration migrated.", {
+      compatibilityApprovalId: approval.id,
+      previousModel,
+      replacementModel: replacement.model,
+      reasoningEffort: record.definition.reasoningEffort,
+      serviceTier: record.definition.serviceTier,
+    });
+    await this.persist();
+    void this.dispatchQueuedWork();
+    return cloneCompatibilityApproval(approval);
   }
 
   async createAgent(definition: AgentDefinition): Promise<AgentSnapshot> {
@@ -249,6 +362,9 @@ export class CodexAgentManager extends EventEmitter {
     if (notification.status === "pending" && notification.kind === "approval_required") {
       throw new CodexAgentManagerError("Approval notifications resolve when the approval is answered");
     }
+    if (notification.status === "pending" && notification.kind === "compatibility_required") {
+      throw new CodexAgentManagerError("Compatibility approvals resolve when the migration is answered");
+    }
     if (notification.status !== "resolved") {
       this.resolveNotification(notification, this.now());
       await this.persist();
@@ -271,6 +387,7 @@ export class CodexAgentManager extends EventEmitter {
     if (record.activeTurn || record.status === "starting" || record.status === "running") {
       throw new CodexAgentManagerError(`Agent ${agentId} is already running a turn.`);
     }
+    await this.ensureAgentCompatible(record);
 
     const turn = this.runTurn(record, input, {
       timeoutMs: DEFAULT_AGENT_TURN_TIMEOUT_MS,
@@ -610,6 +727,11 @@ export class CodexAgentManager extends EventEmitter {
         }
       }
     } catch (error) {
+      if (await this.tryBlockAfterCompatibilityFailure(record, error)) {
+        throw new CodexAgentManagerError(
+          `Agent ${record.definition.id} is blocked: ${record.compatibilityIssue?.message ?? "Codex configuration is incompatible."}`,
+        );
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.setStatus(record, "failed");
       record.lastError = message;
@@ -730,6 +852,95 @@ export class CodexAgentManager extends EventEmitter {
     await this.persist();
   }
 
+  private async ensureAgentCompatible(record: RuntimeRecord, forceRefresh = false): Promise<void> {
+    if (!record.definition.model) return;
+    if (forceRefresh || this.compatibilityGuardian.needsRefresh()) {
+      await this.refreshCompatibilityCatalog();
+    }
+    const issue = this.compatibilityGuardian.validate(record.definition)[0];
+    if (!issue) return;
+    await this.blockForCompatibility(record, issue);
+    throw new CodexAgentManagerError(`Agent ${record.definition.id} is blocked: ${issue.message}`);
+  }
+
+  private async tryBlockAfterCompatibilityFailure(
+    record: RuntimeRecord,
+    error: unknown,
+  ): Promise<boolean> {
+    if (!record.definition.model || this.compatibilityGuardian.classifyFailure(error) !== "compatibility_suspected") {
+      return false;
+    }
+    try {
+      await this.refreshCompatibilityCatalog();
+    } catch {
+      return false;
+    }
+    const issue = this.compatibilityGuardian.validate(record.definition)[0];
+    if (!issue) return false;
+    await this.closeRecordClient(record);
+    record.session = null;
+    await this.blockForCompatibility(record, issue);
+    return true;
+  }
+
+  private async refreshCompatibilityCatalog(): Promise<void> {
+    const client = this.clientFactory();
+    try {
+      if (!client.listModels) return;
+      const catalog = await client.listModels({ includeHidden: true });
+      if (catalog.models.length) {
+        const runtimeInfo = await client.getRuntimeInfo?.();
+        this.compatibilityGuardian.updateCatalog(catalog, {
+          ...(runtimeInfo?.userAgent ? { codexVersion: runtimeInfo.userAgent } : {}),
+        });
+      }
+    } finally {
+      await client.close();
+    }
+  }
+
+  private async blockForCompatibility(
+    record: RuntimeRecord,
+    issue: CompatibilityIssue,
+  ): Promise<CompatibilityApproval> {
+    record.compatibilityIssue = issue;
+    record.lastError = issue.message;
+    this.setStatus(record, "blocked");
+    for (const workItem of this.workItems) {
+      if (workItem.targetAgentId === record.definition.id && (
+        workItem.status === "queued" || workItem.status === "running"
+      )) {
+        workItem.status = "blocked";
+        workItem.failureReason = issue.message;
+        workItem.updatedAt = this.now();
+      }
+    }
+    const existing = this.compatibilityApprovals.find((approval) =>
+      approval.status === "pending" && approval.issue.fingerprint === issue.fingerprint
+    );
+    if (existing) return existing;
+    const approval: CompatibilityApproval = {
+      id: `compat-${this.nextCompatibilityApprovalId++}`,
+      agentId: record.definition.id,
+      status: "pending",
+      issue,
+      affectedWorkItemIds: this.workItems
+        .filter((workItem) => workItem.targetAgentId === record.definition.id && workItem.status === "blocked")
+        .map((workItem) => workItem.id),
+      createdAt: this.now(),
+      resolvedAt: null,
+      replacementModel: null,
+    };
+    this.compatibilityApprovals.push(approval);
+    await this.recordEvent(record.definition.id, "compatibility_blocked", issue.message, {
+      compatibilityApprovalId: approval.id,
+      issue,
+      affectedWorkItemIds: approval.affectedWorkItemIds,
+    });
+    await this.persist();
+    return approval;
+  }
+
   private async loadState(): Promise<void> {
     const state = await this.stateStore.load();
     this.events = (state.events ?? []).map((event) => ({
@@ -739,12 +950,14 @@ export class CodexAgentManager extends EventEmitter {
     this.sensorEvents = (state.sensorEvents ?? []).map(cloneSensorEvent);
     this.workItems = (state.workItems ?? []).map(cloneWorkItem);
     this.notifications = (state.notifications ?? []).map(normalizeNotification);
+    this.compatibilityApprovals = (state.compatibilityApprovals ?? []).map(cloneCompatibilityApproval);
     this.nextEventId =
       this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
     this.nextApprovalId = nextApprovalEventId(this.events);
     this.nextSensorEventId = nextNumericId(this.sensorEvents, "sensor");
     this.nextWorkItemId = nextNumericId(this.workItems, "work");
     this.nextNotificationId = nextNumericId(this.notifications, "notif");
+    this.nextCompatibilityApprovalId = nextNumericId(this.compatibilityApprovals, "compat");
 
     for (const [agentId, persisted] of Object.entries(state.agents ?? {})) {
       let record = this.records.get(agentId);
@@ -770,6 +983,9 @@ export class CodexAgentManager extends EventEmitter {
       record.createdAt = persisted.createdAt ?? record.createdAt;
       record.updatedAt = persisted.updatedAt ?? record.updatedAt;
       record.lastError = persisted.lastError ?? null;
+      record.compatibilityIssue = this.compatibilityApprovals.find(
+        (approval) => approval.agentId === agentId && approval.status === "pending",
+      )?.issue ?? null;
     }
     await this.recoverInterruptedWorkItems();
     await this.persist();
@@ -806,6 +1022,7 @@ export class CodexAgentManager extends EventEmitter {
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       lastError: record.lastError,
+      compatibilityIssue: record.compatibilityIssue ? cloneUnknown(record.compatibilityIssue) : null,
     };
   }
 
@@ -1120,6 +1337,15 @@ export class CodexAgentManager extends EventEmitter {
       await this.persist();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const record = this.records.get(workItem.targetAgentId);
+      if (record?.status === "blocked" && record.compatibilityIssue) {
+        workItem.status = "blocked";
+        workItem.failureReason = record.compatibilityIssue.message;
+        workItem.completedAt = null;
+        workItem.updatedAt = this.now();
+        await this.persist();
+        return;
+      }
       workItem.status = "failed";
       workItem.failureReason = message;
       workItem.completedAt = this.now();
@@ -1163,12 +1389,20 @@ export class CodexAgentManager extends EventEmitter {
       sensorEvents: this.sensorEvents,
       workItems: this.workItems,
       notifications: this.notifications,
+      compatibilityApprovals: this.compatibilityApprovals,
     });
   }
 
   private applyNotificationPolicy(event: AgentEvent): void {
     if (event.type === "approval_resolved" && typeof event.payload.approvalId === "string") {
       this.resolveNotificationsByApproval(event.payload.approvalId, event.createdAt);
+      return;
+    }
+    if (
+      (event.type === "compatibility_migrated" || event.type === "compatibility_declined")
+      && typeof event.payload.compatibilityApprovalId === "string"
+    ) {
+      this.resolveNotificationsByApproval(event.payload.compatibilityApprovalId, event.createdAt);
       return;
     }
 
@@ -1202,6 +1436,22 @@ export class CodexAgentManager extends EventEmitter {
         summary: approvalNotificationSummary(agentName, event.payload),
         approvalId,
         workItemId: null,
+      };
+    }
+
+    if (event.type === "compatibility_blocked") {
+      const approvalId = typeof event.payload.compatibilityApprovalId === "string"
+        ? event.payload.compatibilityApprovalId
+        : null;
+      return {
+        ...base,
+        kind: "compatibility_required",
+        severity: "attention",
+        summary: `${agentName}: ${event.message}`,
+        approvalId,
+        workItemId: Array.isArray(event.payload.affectedWorkItemIds)
+          ? String(event.payload.affectedWorkItemIds[0] ?? "") || null
+          : null,
       };
     }
 
@@ -1282,6 +1532,7 @@ export class CodexAgentManager extends EventEmitter {
       updatedAt: now,
       lastError: null,
       activeTurn: null,
+      compatibilityIssue: null,
     };
     this.definitions.set(definition.id, definition);
     this.records.set(definition.id, record);
@@ -1478,6 +1729,9 @@ function normalizeRecoveredStatus(status: AgentStatus | undefined): AgentStatus 
   if (status === "failed") {
     return "failed";
   }
+  if (status === "blocked") {
+    return "blocked";
+  }
   return "idle";
 }
 
@@ -1589,6 +1843,10 @@ function cloneWorkItem(workItem: WorkItem): WorkItem {
 
 function cloneNotification(notification: AgentNotification): AgentNotification {
   return normalizeNotification(notification);
+}
+
+function cloneCompatibilityApproval(approval: CompatibilityApproval): CompatibilityApproval {
+  return cloneUnknown(approval);
 }
 
 function normalizeNotification(notification: AgentNotification): AgentNotification {
