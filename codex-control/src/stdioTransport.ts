@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import readline from "node:readline";
 
 import type { AppServerTransport, JsonRpcMessage } from "./types.js";
@@ -9,6 +10,30 @@ export type StdioTransportOptions = {
   env?: NodeJS.ProcessEnv;
 };
 
+export const CODEX_DESKTOP_BINARY = "/Applications/Codex.app/Contents/Resources/codex";
+
+export type CodexBinaryResolutionOptions = {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  isExecutable?: (path: string) => boolean;
+};
+
+export function resolveCodexBinary(options: CodexBinaryResolutionOptions = {}): string {
+  const env = options.env ?? process.env;
+  const configured = env.CODEX_BINARY?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  const platform = options.platform ?? process.platform;
+  const isExecutable = options.isExecutable ?? executable;
+  if (platform === "darwin" && isExecutable(CODEX_DESKTOP_BINARY)) {
+    return CODEX_DESKTOP_BINARY;
+  }
+
+  return "codex";
+}
+
 export class StdioCodexAppServerTransport implements AppServerTransport {
   private readonly command: string;
   private readonly args: string[];
@@ -18,9 +43,15 @@ export class StdioCodexAppServerTransport implements AppServerTransport {
   private closeHandlers: Array<(error?: Error) => void> = [];
 
   constructor(options: StdioTransportOptions = {}) {
-    this.command = options.command ?? "codex";
+    this.command = options.command ?? resolveCodexBinary(
+      options.env ? { env: options.env } : {},
+    );
     this.args = options.args ?? ["app-server"];
     this.env = options.env;
+  }
+
+  getCommand(): string {
+    return this.command;
   }
 
   async start(): Promise<void> {
@@ -100,5 +131,14 @@ export class StdioCodexAppServerTransport implements AppServerTransport {
     for (const handler of this.closeHandlers) {
       handler(error);
     }
+  }
+}
+
+function executable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
 }

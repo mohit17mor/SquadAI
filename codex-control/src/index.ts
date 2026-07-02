@@ -1,7 +1,13 @@
 export { CodexControlClient, type CodexControlClientOptions } from "./client.js";
 export { DynamicToolManager } from "./dynamicTools.js";
 export { CodexSession } from "./session.js";
-export { StdioCodexAppServerTransport, type StdioTransportOptions } from "./stdioTransport.js";
+export {
+  CODEX_DESKTOP_BINARY,
+  resolveCodexBinary,
+  StdioCodexAppServerTransport,
+  type CodexBinaryResolutionOptions,
+  type StdioTransportOptions,
+} from "./stdioTransport.js";
 export type {
   AppServerTransport,
   ApprovalHandler,

@@ -35,6 +35,7 @@ export type CodexControlClientOptions = {
 };
 
 export class CodexControlClient {
+  private readonly transport: AppServerTransport;
   private readonly peer: JsonRpcPeer;
   private readonly approvalManager: ApprovalManager;
   private readonly dynamicToolManager = new DynamicToolManager();
@@ -44,6 +45,7 @@ export class CodexControlClient {
 
   constructor(options: CodexControlClientOptions = {}) {
     const transport = options.transport ?? new StdioCodexAppServerTransport();
+    this.transport = transport;
     this.peer = new JsonRpcPeer(transport, options.requestTimeoutMs);
     this.approvalManager = new ApprovalManager(options.auditSink, options.approvalHandler);
 
@@ -82,7 +84,13 @@ export class CodexControlClient {
 
   async getRuntimeInfo(): Promise<CodexRuntimeInfo> {
     await this.start();
-    return { ...(this.runtimeInfo as CodexRuntimeInfo) };
+    const binaryPath = this.transport instanceof StdioCodexAppServerTransport
+      ? this.transport.getCommand()
+      : undefined;
+    return {
+      ...(this.runtimeInfo as CodexRuntimeInfo),
+      ...(binaryPath ? { binaryPath } : {}),
+    };
   }
 
   async startSession(options: SessionStartOptions): Promise<CodexSession> {
@@ -194,7 +202,9 @@ function isReasoningEffort(value: unknown): value is ModelListResult["models"][n
     value === "low" ||
     value === "medium" ||
     value === "high" ||
-    value === "xhigh";
+    value === "xhigh" ||
+    value === "max" ||
+    value === "ultra";
 }
 
 function stringValue(value: unknown): string {

@@ -151,6 +151,7 @@ export class CodexAgentManager extends EventEmitter {
         const runtimeInfo = await client.getRuntimeInfo?.();
         this.compatibilityGuardian.updateCatalog(catalog, {
           ...(runtimeInfo?.userAgent ? { codexVersion: runtimeInfo.userAgent } : {}),
+          ...(runtimeInfo?.binaryPath ? { binaryPath: runtimeInfo.binaryPath } : {}),
         });
       }
       return catalog;
@@ -892,6 +893,7 @@ export class CodexAgentManager extends EventEmitter {
         const runtimeInfo = await client.getRuntimeInfo?.();
         this.compatibilityGuardian.updateCatalog(catalog, {
           ...(runtimeInfo?.userAgent ? { codexVersion: runtimeInfo.userAgent } : {}),
+          ...(runtimeInfo?.binaryPath ? { binaryPath: runtimeInfo.binaryPath } : {}),
         });
       }
     } finally {

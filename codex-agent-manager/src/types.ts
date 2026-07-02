@@ -1,5 +1,13 @@
 export type AgentStatus = "idle" | "starting" | "running" | "failed" | "blocked" | "stopped";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 
 export type AgentEventType =
   | "agent_starting"
@@ -232,6 +240,7 @@ export type CodexRuntimeInfo = {
   platformFamily: string;
   platformOs: string;
   codexHome: string;
+  binaryPath?: string;
 };
 
 export type CompatibilityIssueKind =

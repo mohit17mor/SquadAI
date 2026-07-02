@@ -4,6 +4,13 @@ export type StdioTransportOptions = {
     args?: string[];
     env?: NodeJS.ProcessEnv;
 };
+export declare const CODEX_DESKTOP_BINARY = "/Applications/Codex.app/Contents/Resources/codex";
+export type CodexBinaryResolutionOptions = {
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+    isExecutable?: (path: string) => boolean;
+};
+export declare function resolveCodexBinary(options?: CodexBinaryResolutionOptions): string;
 export declare class StdioCodexAppServerTransport implements AppServerTransport {
     private readonly command;
     private readonly args;
@@ -12,6 +19,7 @@ export declare class StdioCodexAppServerTransport implements AppServerTransport 
     private messageHandlers;
     private closeHandlers;
     constructor(options?: StdioTransportOptions);
+    getCommand(): string;
     start(): Promise<void>;
     send(message: JsonRpcMessage): void;
     onMessage(handler: (message: JsonRpcMessage) => void): void;

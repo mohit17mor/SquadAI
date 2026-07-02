@@ -14,6 +14,7 @@ export type CompatibilitySnapshot = {
   fetchedAt: string;
   fetchedAtMs: number;
   codexVersion: string | null;
+  binaryPath: string | null;
   fingerprint: string;
 };
 
@@ -34,7 +35,7 @@ export class CompatibilityGuardian {
 
   updateCatalog(
     catalog: AgentModelCatalog,
-    metadata: { codexVersion?: string } = {},
+    metadata: { codexVersion?: string; binaryPath?: string } = {},
   ): CompatibilitySnapshot {
     const fetchedAtMs = this.now();
     this.current = {
@@ -42,6 +43,7 @@ export class CompatibilityGuardian {
       fetchedAt: new Date(fetchedAtMs).toISOString(),
       fetchedAtMs,
       codexVersion: metadata.codexVersion ?? null,
+      binaryPath: metadata.binaryPath ?? null,
       fingerprint: catalogFingerprint(catalog, metadata.codexVersion ?? null),
     };
     return this.current;

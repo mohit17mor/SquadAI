@@ -14,7 +14,16 @@ import type {
   SensorEventInput,
 } from "./types.js";
 
-const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+const REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
 
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
@@ -1321,7 +1330,9 @@ async function refreshNotifications() {
       ? "Default: " + (defaultModel?.displayName || defaultModel?.model || "Codex")
       : "Catalog checks on demand";
     compatibilityHealth.title = compatibilitySnapshot?.codexVersion
-      ? compatibilitySnapshot.codexVersion + " · checked " + compatibilitySnapshot.fetchedAt
+      ? compatibilitySnapshot.codexVersion
+        + (compatibilitySnapshot.binaryPath ? " · " + compatibilitySnapshot.binaryPath : "")
+        + " · checked " + compatibilitySnapshot.fetchedAt
       : "Codex compatibility catalog refreshes before pinned agents start";
   }
   renderNotifications();

@@ -63,6 +63,11 @@ cd /home/developer/scratch/codex-agent-manager
 npm start -- --port 4317 --state ./codex-agents.state.json
 ```
 
+On macOS the manager automatically uses Codex Desktop's bundled app-server.
+Override it with `CODEX_BINARY=/path/to/codex` or
+`--codex-binary /path/to/codex`. Other platforms fall back to `codex` on
+`PATH`.
+
 Then open:
 
 ```text

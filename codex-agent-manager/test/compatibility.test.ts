@@ -51,9 +51,16 @@ test("refreshes a missing or expired compatibility snapshot", () => {
   const guardian = new CompatibilityGuardian({ now: () => now, catalogTtlMs: 3_600_000 });
 
   assert.equal(guardian.needsRefresh(), true);
-  guardian.updateCatalog(catalog, { codexVersion: "0.130.0" });
+  guardian.updateCatalog(catalog, {
+    codexVersion: "0.130.0",
+    binaryPath: "/Applications/Codex.app/Contents/Resources/codex",
+  });
   assert.equal(guardian.needsRefresh(), false);
   assert.equal(guardian.snapshot()?.codexVersion, "0.130.0");
+  assert.equal(
+    guardian.snapshot()?.binaryPath,
+    "/Applications/Codex.app/Contents/Resources/codex",
+  );
   assert.match(guardian.snapshot()?.fingerprint ?? "", /^[a-f0-9]{16}$/);
 
   now += 3_600_001;

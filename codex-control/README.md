@@ -41,6 +41,11 @@ console.log(result.finalText);
 await client.close();
 ```
 
+By default on macOS, `codex-control` uses the app-server binary bundled with
+Codex Desktop so model and protocol upgrades arrive with the app. Set
+`CODEX_BINARY` to use a specific binary; when Desktop is unavailable it falls
+back to `codex` on `PATH`.
+
 ## External Writes
 
 External writes should be explicit. By default, MCP elicitations are declined.

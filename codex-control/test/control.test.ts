@@ -2,13 +2,33 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CODEX_DESKTOP_BINARY,
   CodexAppServerError,
   CodexControlClient,
+  resolveCodexBinary,
   type AppServerTransport,
   type ApprovalRequest,
   type DynamicToolHandler,
   type JsonRpcMessage,
 } from "../src/index.js";
+
+test("resolves the Codex app-server binary from override, Desktop, then PATH", () => {
+  assert.equal(resolveCodexBinary({
+    env: { CODEX_BINARY: "/custom/codex" },
+    platform: "darwin",
+    isExecutable: () => true,
+  }), "/custom/codex");
+  assert.equal(resolveCodexBinary({
+    env: {},
+    platform: "darwin",
+    isExecutable: (path) => path === CODEX_DESKTOP_BINARY,
+  }), CODEX_DESKTOP_BINARY);
+  assert.equal(resolveCodexBinary({
+    env: {},
+    platform: "linux",
+    isExecutable: () => false,
+  }), "codex");
+});
 
 class FakeTransport implements AppServerTransport {
   readonly sent: JsonRpcMessage[] = [];
@@ -485,7 +505,11 @@ test("lists model catalog from app server with pagination", async () => {
         displayName: "GPT Test",
         description: "Test model",
         hidden: false,
-        supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }],
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "Fast" },
+          { reasoningEffort: "max", description: "Maximum" },
+          { reasoningEffort: "ultra", description: "Delegated maximum" },
+        ],
         defaultReasoningEffort: "low",
         additionalSpeedTiers: ["fast"],
         serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],
@@ -511,7 +535,11 @@ test("lists model catalog from app server with pagination", async () => {
         displayName: "GPT Test",
         description: "Test model",
         hidden: false,
-        supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }],
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "Fast" },
+          { reasoningEffort: "max", description: "Maximum" },
+          { reasoningEffort: "ultra", description: "Delegated maximum" },
+        ],
         defaultReasoningEffort: "low",
         additionalSpeedTiers: ["fast"],
         serviceTiers: [{ id: "fast", name: "Fast", description: "Lower latency" }],

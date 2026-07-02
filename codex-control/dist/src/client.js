@@ -4,6 +4,7 @@ import { JsonRpcPeer } from "./jsonRpcPeer.js";
 import { CodexSession, threadStartParams } from "./session.js";
 import { StdioCodexAppServerTransport } from "./stdioTransport.js";
 export class CodexControlClient {
+    transport;
     peer;
     approvalManager;
     dynamicToolManager = new DynamicToolManager();
@@ -12,6 +13,7 @@ export class CodexControlClient {
     runtimeInfo = null;
     constructor(options = {}) {
         const transport = options.transport ?? new StdioCodexAppServerTransport();
+        this.transport = transport;
         this.peer = new JsonRpcPeer(transport, options.requestTimeoutMs);
         this.approvalManager = new ApprovalManager(options.auditSink, options.approvalHandler);
         this.peer.onServerRequest((message) => this.dynamicToolManager.canHandle(message)
@@ -45,7 +47,13 @@ export class CodexControlClient {
     }
     async getRuntimeInfo() {
         await this.start();
-        return { ...this.runtimeInfo };
+        const binaryPath = this.transport instanceof StdioCodexAppServerTransport
+            ? this.transport.getCommand()
+            : undefined;
+        return {
+            ...this.runtimeInfo,
+            ...(binaryPath ? { binaryPath } : {}),
+        };
     }
     async startSession(options) {
         await this.start();
@@ -142,7 +150,9 @@ function isReasoningEffort(value) {
         value === "low" ||
         value === "medium" ||
         value === "high" ||
-        value === "xhigh";
+        value === "xhigh" ||
+        value === "max" ||
+        value === "ultra";
 }
 function stringValue(value) {
     return typeof value === "string" ? value : "";

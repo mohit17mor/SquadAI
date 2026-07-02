@@ -7,6 +7,7 @@ export type CodexControlClientOptions = {
     approvalHandler?: ApprovalHandler;
 };
 export declare class CodexControlClient {
+    private readonly transport;
     private readonly peer;
     private readonly approvalManager;
     private readonly dynamicToolManager;

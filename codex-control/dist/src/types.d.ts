@@ -17,7 +17,7 @@ export type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never"
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ExternalWritePolicy = "deny" | "allow";
 export type MutationPolicy = "deny" | "allow";
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type SessionStartOptions = {
     cwd: string;
     model?: string;
@@ -131,6 +131,7 @@ export type CodexRuntimeInfo = {
     platformFamily: string;
     platformOs: string;
     codexHome: string;
+    binaryPath?: string;
 };
 export declare class CodexControlError extends Error {
     constructor(message: string, options?: ErrorOptions);

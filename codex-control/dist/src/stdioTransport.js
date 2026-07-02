@@ -1,5 +1,20 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import readline from "node:readline";
+export const CODEX_DESKTOP_BINARY = "/Applications/Codex.app/Contents/Resources/codex";
+export function resolveCodexBinary(options = {}) {
+    const env = options.env ?? process.env;
+    const configured = env.CODEX_BINARY?.trim();
+    if (configured) {
+        return configured;
+    }
+    const platform = options.platform ?? process.platform;
+    const isExecutable = options.isExecutable ?? executable;
+    if (platform === "darwin" && isExecutable(CODEX_DESKTOP_BINARY)) {
+        return CODEX_DESKTOP_BINARY;
+    }
+    return "codex";
+}
 export class StdioCodexAppServerTransport {
     command;
     args;
@@ -8,9 +23,12 @@ export class StdioCodexAppServerTransport {
     messageHandlers = [];
     closeHandlers = [];
     constructor(options = {}) {
-        this.command = options.command ?? "codex";
+        this.command = options.command ?? resolveCodexBinary(options.env ? { env: options.env } : {});
         this.args = options.args ?? ["app-server"];
         this.env = options.env;
+    }
+    getCommand() {
+        return this.command;
     }
     async start() {
         if (this.child) {
@@ -76,6 +94,15 @@ export class StdioCodexAppServerTransport {
         for (const handler of this.closeHandlers) {
             handler(error);
         }
+    }
+}
+function executable(path) {
+    try {
+        accessSync(path, constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
     }
 }
 //# sourceMappingURL=stdioTransport.js.map
