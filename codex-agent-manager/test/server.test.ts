@@ -511,10 +511,57 @@ test("command center API ingests sensor events and exposes work queues", async (
     const listed = await jsonFetch(`${baseUrl}/api/sensor-events`);
     const workItems = await jsonFetch(`${baseUrl}/api/work-items`);
 
-    assert.equal(created.event.status, "pending");
+    assert.equal(created.event.status, "unassigned");
     assert.equal(duplicate.event.id, created.event.id);
     assert.equal(listed.events.length, 1);
     assert.deepEqual(workItems.workItems, []);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("direct event routing is recorded before its worker starts", async () => {
+  const manager = new CodexAgentManager({
+    agents: [
+      {
+        id: "maintenance",
+        name: "Maintenance Debugger",
+        cwd: "/tmp/ops-poc",
+        instructions: "You specialize in maintenance debugging.",
+      },
+    ],
+    clientFactory: immediateFactory(),
+  });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const created = await jsonFetch(`${baseUrl}/api/sensor-events`, {
+      method: "POST",
+      body: {
+        source: "jira",
+        type: "ticket.created",
+        body: "platform-456 needs maintenance triage.",
+        dedupeKey: "jira:platform-456",
+        targetAgentId: "maintenance",
+      },
+    });
+
+    await waitFor(
+      () => manager.listWorkItems().some((item) => item.eventId === created.event.id && item.status === "done"),
+      "directly routed work completion",
+    );
+
+    const eventTypes = manager.listEvents().map((event) => event.type);
+    const createdIndex = eventTypes.indexOf("work_item_created");
+    const routedIndex = eventTypes.indexOf("sensor_event_routed");
+    const startedIndex = eventTypes.indexOf("work_item_started");
+
+    assert.ok(createdIndex >= 0);
+    assert.ok(routedIndex > createdIndex);
+    assert.ok(startedIndex > routedIndex);
   } finally {
     await server.close();
     await manager.close();
@@ -542,6 +589,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-panel="events"/);
     assert.match(html, /data-panel="work"/);
     assert.match(html, /data-panel="notifications"/);
+    assert.match(html, /data-sensor-event-assign/);
     assert.match(html, /notification-count/);
     assert.match(html, /activePanel = "topology"/);
     assert.match(html, /jarvis-mode/);

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { CodexAgentManager } from "./manager.js";
 import { createCommandCenterServer } from "./server.js";
 import { JsonFileAgentStateStore } from "./stateStore.js";
+import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
 for (let index = 2; index < process.argv.length; index += 1) {
@@ -21,6 +22,9 @@ const statePath = resolve(
   args.get("state") ?? process.env.CODEX_AGENT_MANAGER_STATE ?? "./codex-agents.state.json",
 );
 const codexBinary = args.get("codex-binary");
+const routingMode = parseRoutingMode(
+  args.get("routing-mode") ?? process.env.CODEX_AGENT_MANAGER_ROUTING_MODE ?? "explicit",
+);
 if (codexBinary) {
   process.env.CODEX_BINARY = codexBinary;
 }
@@ -28,6 +32,7 @@ if (codexBinary) {
 const manager = new CodexAgentManager({
   agents: [],
   stateStore: new JsonFileAgentStateStore(statePath),
+  routingMode,
 });
 const server = createCommandCenterServer({ manager });
 
@@ -36,6 +41,7 @@ await server.listen(port, host);
 console.log(`Jarvis Command Center listening at http://${host}:${server.port}`);
 console.log(`State: ${statePath}`);
 console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);
+console.log(`Routing mode: ${routingMode}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
@@ -47,4 +53,11 @@ async function shutdown(): Promise<void> {
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);
+}
+
+function parseRoutingMode(value: string): RoutingMode {
+  if (value === "explicit" || value === "router-fallback" || value === "router-only") {
+    return value;
+  }
+  throw new Error(`Invalid routing mode: ${value}`);
 }

@@ -25,6 +25,7 @@ type AgentEvent = {
 
 type SensorEventSnapshot = {
   source: string;
+  targetAgentId?: string;
 };
 
 type NodeRecord = {
@@ -120,6 +121,8 @@ function startTopology(
   const pulses: Array<{ mesh: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; started: number }> = [];
   let agents: AgentSnapshot[] = [];
   let sensorSources: string[] = [];
+  let sensorEvents: SensorEventSnapshot[] = [];
+  let routingMode = "explicit";
   let selectedAgentId: string | null = null;
   let rotating = false;
   let nodeDrag: NodeDrag | null = null;
@@ -264,9 +267,10 @@ function startTopology(
 
   async function refreshAgents(): Promise<void> {
     workspaceElement.setAttribute("aria-busy", "true");
-    const [response, sensorResponse] = await Promise.all([
+    const [response, sensorResponse, routingResponse] = await Promise.all([
       fetch("/api/agents"),
       fetch("/api/sensor-events"),
+      fetch("/api/routing"),
     ]);
     if (!response.ok) {
       workspaceElement.setAttribute("aria-busy", "false");
@@ -276,9 +280,14 @@ function startTopology(
     const sensorBody = sensorResponse.ok
       ? await sensorResponse.json() as { events?: SensorEventSnapshot[] }
       : { events: [] };
+    const routingBody = routingResponse.ok
+      ? await routingResponse.json() as { mode?: string }
+      : { mode: "explicit" };
     agents = Array.isArray(body.agents) ? body.agents : [];
+    sensorEvents = Array.isArray(sensorBody.events) ? sensorBody.events : [];
+    routingMode = routingBody.mode ?? "explicit";
     sensorSources = Array.from(new Set(
-      (Array.isArray(sensorBody.events) ? sensorBody.events : [])
+      sensorEvents
         .map((event) => event.source.trim())
         .filter(Boolean),
     ));
@@ -305,11 +314,12 @@ function startTopology(
     sourceNodes.clear();
     connections.length = 0;
 
-    const router = agents.find((agent) => agent.metadata.role === "router");
+    const configuredRouter = agents.find((agent) => agent.metadata.role === "router");
+    const router = routingMode === "explicit" ? undefined : configuredRouter;
     const ordered = router ? [router, ...agents.filter((agent) => agent.id !== router.id)] : agents;
     ordered.forEach((agent, index) => {
       const position = savedPositions.get(agent.id)?.clone()
-        ?? nodePosition(agent, index, ordered.length);
+        ?? nodePosition(agent, index, ordered.length, Boolean(router));
       const node = createNode(agent, position);
       nodes.set(agent.id, node);
       world.add(node.group);
@@ -323,11 +333,30 @@ function startTopology(
       labelsElement.appendChild(record.label);
     });
 
+    for (const [sourceName, source] of sourceNodes) {
+      const targetIds = new Set(
+        sensorEvents
+          .filter((event) => event.source === sourceName && event.targetAgentId)
+          .map((event) => event.targetAgentId as string),
+      );
+      for (const targetId of targetIds) {
+        const targetPosition = nodes.get(targetId)?.group.position;
+        if (targetPosition) {
+          addConnectionPositions(source.group.position, targetPosition, 0x255d73, 0.62);
+        }
+      }
+    }
+
     if (router) {
       const routerPosition = nodes.get(router.id)?.group.position;
       if (routerPosition) {
-        for (const source of sourceNodes.values()) {
-          addConnectionPositions(source.group.position, routerPosition, 0x255d73, 0.62);
+        for (const [sourceName, source] of sourceNodes) {
+          const hasDirectTarget = sensorEvents.some(
+            (event) => event.source === sourceName && event.targetAgentId,
+          );
+          if (!hasDirectTarget) {
+            addConnectionPositions(source.group.position, routerPosition, 0x255d73, 0.62);
+          }
         }
       }
       for (const agent of agents) {
@@ -447,7 +476,9 @@ function startTopology(
   }
 
   function animateEvent(event: AgentEvent): void {
-    const router = agents.find((agent) => agent.metadata.role === "router");
+    const router = routingMode === "explicit"
+      ? undefined
+      : agents.find((agent) => agent.metadata.role === "router");
     const routerPosition = router ? nodes.get(router.id)?.group.position : undefined;
     const source = typeof event.payload.source === "string"
       ? sourceNodes.get(event.payload.source)?.group.position
@@ -601,11 +632,16 @@ function startTopology(
   }
 }
 
-function nodePosition(agent: AgentSnapshot, index: number, count: number): THREE.Vector3 {
-  if (agent.metadata.role === "router") return new THREE.Vector3(0, 0, 0);
+function nodePosition(
+  agent: AgentSnapshot,
+  index: number,
+  count: number,
+  routerActive: boolean,
+): THREE.Vector3 {
+  if (routerActive && agent.metadata.role === "router") return new THREE.Vector3(0, 0, 0);
   if (agent.metadata.role === "jarvis") return new THREE.Vector3(0, 2.6, -0.7);
-  const workerIndex = Math.max(0, index - 1);
-  const workerCount = Math.max(1, count - 1);
+  const workerIndex = routerActive ? Math.max(0, index - 1) : index;
+  const workerCount = Math.max(1, routerActive ? count - 1 : count);
   const angle = (workerIndex / workerCount) * Math.PI * 2 - Math.PI / 2;
   const radius = 3.7 + (workerIndex % 2) * 0.45;
   return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * 2.35, Math.sin(angle) * 0.45);

@@ -1431,6 +1431,7 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
       }),
     ],
     clientFactory: fakeFactory(clients),
+    routingMode: "router-only",
   });
 
   const event = await manager.ingestSensorEvent({
@@ -1479,6 +1480,76 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   clients[1]?.session("thread-1").complete("storage investigation complete");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
+});
+
+test("routes explicitly targeted sensor events without a router turn", async () => {
+  const manager = new CodexAgentManager({
+    agents: [agent({ id: "coder", name: "Coder", instructions: "Implement coding tasks." })],
+    clientFactory: fakeFactory(),
+  });
+
+  const event = await manager.ingestSensorEvent({
+    source: "manual",
+    type: "coding.task",
+    title: "Fix parser",
+    body: "Fix the parser regression and run focused tests.",
+    targetAgentId: "coder",
+    dedupeKey: "coding:parser-1",
+  });
+  const duplicate = await manager.ingestSensorEvent({
+    source: "manual",
+    type: "coding.task",
+    body: "duplicate",
+    targetAgentId: "coder",
+    dedupeKey: "coding:parser-1",
+  });
+
+  assert.equal(event.status, "routed");
+  assert.equal(event.targetAgentId, "coder");
+  assert.ok(event.workItemId);
+  assert.equal(duplicate.id, event.id);
+  assert.equal(manager.listWorkItems().length, 1);
+  const workItem = manager.getWorkItem(event.workItemId as string);
+  assert.equal(workItem.targetAgentId, "coder");
+  assert.equal(workItem.routerAgentId, null);
+  assert.match(workItem.prompt, /Fix parser/);
+  assert.match(workItem.prompt, /Fix the parser regression/);
+});
+
+test("keeps targetless events unassigned and supports durable human assignment", async () => {
+  const manager = new CodexAgentManager({
+    agents: [agent({ id: "coder", name: "Coder", instructions: "Implement coding tasks." })],
+    clientFactory: fakeFactory(),
+  });
+
+  const event = await manager.ingestSensorEvent({
+    source: "manual",
+    type: "coding.task",
+    body: "Investigate the flaky test.",
+  });
+  assert.equal(event.status, "unassigned");
+  assert.equal(manager.listWorkItems().length, 0);
+
+  const assigned = await manager.assignSensorEvent(event.id, "coder");
+  assert.equal(assigned.event.status, "routed");
+  assert.equal(assigned.event.targetAgentId, "coder");
+  assert.equal(assigned.workItem.targetAgentId, "coder");
+  assert.match(assigned.workItem.prompt, /Investigate the flaky test/);
+  await assert.rejects(manager.assignSensorEvent(event.id, "coder"), /already assigned/);
+});
+
+test("rejects unknown explicit sensor event targets", async () => {
+  const manager = new CodexAgentManager({ agents: [], clientFactory: fakeFactory() });
+  await assert.rejects(
+    manager.ingestSensorEvent({
+      source: "manual",
+      type: "coding.task",
+      body: "Do work.",
+      targetAgentId: "missing",
+    }),
+    /Unknown agent: missing/,
+  );
+  assert.equal(manager.listSensorEvents().length, 0);
 });
 
 test("dispatches only one queued work item per target agent at a time", async () => {

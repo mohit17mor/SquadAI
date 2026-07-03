@@ -48,7 +48,13 @@ export class CommandCenterServer {
     });
     options.manager.on("event", (event) => {
       this.broadcast(event as AgentEvent);
-      this.kickAutomation();
+      if (![
+        "sensor_event_ingested",
+        "work_item_created",
+        "sensor_event_routed",
+      ].includes((event as AgentEvent).type)) {
+        this.kickAutomation();
+      }
     });
   }
 
@@ -163,6 +169,11 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/routing") {
+        this.json(response, { mode: this.options.manager.getRoutingMode() });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/sensor-events") {
         const body = await readJson(request);
         const event = await this.options.manager.ingestSensorEvent(parseSensorEvent(body));
@@ -173,6 +184,18 @@ export class CommandCenterServer {
 
       if (request.method === "GET" && url.pathname === "/api/work-items") {
         this.json(response, { workItems: this.options.manager.listWorkItems() });
+        return;
+      }
+
+      const sensorAssignMatch = url.pathname.match(/^\/api\/sensor-events\/([^/]+)\/assign$/);
+      if (request.method === "POST" && sensorAssignMatch?.[1]) {
+        const body = asRecord(await readJson(request));
+        const result = await this.options.manager.assignSensorEvent(
+          decodeURIComponent(sensorAssignMatch[1]),
+          requiredString(body.targetAgentId, "targetAgentId"),
+        );
+        this.kickAutomation();
+        this.json(response, result);
         return;
       }
 
@@ -539,6 +562,7 @@ function parseSensorEvent(body: unknown): SensorEventInput {
   const title = optionalString(value.title);
   const url = optionalString(value.url);
   const dedupeKey = optionalString(value.dedupeKey);
+  const targetAgentId = optionalString(value.targetAgentId);
   const priority = optionalEnum(value.priority, ["low", "normal", "high"]);
   const metadata = asOptionalRecord(value.metadata);
   if (title) {
@@ -549,6 +573,9 @@ function parseSensorEvent(body: unknown): SensorEventInput {
   }
   if (dedupeKey) {
     event.dedupeKey = dedupeKey;
+  }
+  if (targetAgentId) {
+    event.targetAgentId = targetAgentId;
   }
   if (priority) {
     event.priority = priority;
@@ -954,6 +981,9 @@ textarea { resize: vertical; }
 .log-message { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-detail { margin: 0 0 8px 250px; padding: 8px 10px; border-left: 2px solid #30363d; color: #8b949e; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(22,27,34,.65); border-radius: 0 6px 6px 0; }
 .log-detail strong { color: #c9d1d9; }
+.log-actions { margin: 0 0 10px 250px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.log-actions select { min-width: 180px; padding: 7px 9px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 7px; }
+.log-actions button { padding: 7px 11px; }
 .log-empty { display: grid; place-items: center; min-height: 280px; color: #8b949e; border: 1px dashed #30363d; border-radius: 8px; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
@@ -1663,8 +1693,8 @@ function renderPanel() {
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
     notifications: ["Notifications", "Human-attention items from active agents."],
-    events: ["Event Inbox", "Sensor events waiting to be routed or already routed."],
-    work: ["Work Queue", "Worker-owned items created by the router."],
+    events: ["Event Inbox", "Sensor events assigned directly, waiting for assignment, or already routed."],
+    work: ["Work Queue", "Durable work assigned to worker agents."],
   };
   const [title, subtitle] = titles[activePanel] || titles.agents;
   const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
@@ -1701,6 +1731,7 @@ function renderQueues() {
   if (workPanelCount) workPanelCount.textContent = String(workItems.length);
   sensorEventList.innerHTML = renderSensorEventLog(sensorEvents);
   workItemList.innerHTML = renderWorkItemLog(workItems);
+  bindSensorEventActions();
   updateOpsCount();
   renderNotifications();
 }
@@ -1714,6 +1745,16 @@ function renderSensorEventLog(items) {
       event.failureReason ? ["Failure", event.failureReason] : null,
       hasKeys(event.metadata) ? ["Metadata", JSON.stringify(event.metadata, null, 2)] : null,
     ].filter(Boolean);
+    const assignableAgents = agents.filter(
+      (agent) => agent.metadata?.role !== "router" && agent.metadata?.role !== "jarvis",
+    );
+    const actionsHtml = event.status === "unassigned" ? \`
+      <select data-sensor-event-target="\${escapeAttr(event.id)}" aria-label="Assign event to agent">
+        <option value="">Choose an agent</option>
+        \${assignableAgents.map((agent) => \`<option value="\${escapeAttr(agent.id)}">\${escapeHtml(agent.name)}</option>\`).join("")}
+      </select>
+      <button type="button" data-sensor-event-assign="\${escapeAttr(event.id)}"\${assignableAgents.length ? "" : " disabled"}>Assign work</button>
+    \` : "";
     return renderLogRow({
       time: event.updatedAt || event.createdAt,
       source: event.source,
@@ -1721,6 +1762,7 @@ function renderSensorEventLog(items) {
       statusClass: event.status,
       message: event.title || event.type || event.body || event.id,
       detail,
+      actionsHtml,
     });
   }).join("") || '<div class="log-empty">No sensor events yet.</div>';
 }
@@ -1746,7 +1788,7 @@ function renderWorkItemLog(items) {
   }).join("") || '<div class="log-empty">No work items yet.</div>';
 }
 
-function renderLogRow({ time, source, status, statusClass, message, detail }) {
+function renderLogRow({ time, source, status, statusClass, message, detail, actionsHtml = "" }) {
   const detailHtml = detail.length
     ? \`<div class="log-detail">\${detail.map(([label, value]) => \`<strong>\${escapeHtml(label)}:</strong> \${escapeHtml(String(value))}\`).join("\\n\\n")}</div>\`
     : "";
@@ -1759,8 +1801,44 @@ function renderLogRow({ time, source, status, statusClass, message, detail }) {
         <span class="log-message">\${escapeHtml(message || "")}</span>
       </summary>
       \${detailHtml}
+      \${actionsHtml ? \`<div class="log-actions">\${actionsHtml}</div>\` : ""}
     </details>
   \`;
+}
+
+function bindSensorEventActions() {
+  for (const button of sensorEventList.querySelectorAll("[data-sensor-event-assign]")) {
+    button.addEventListener("click", async () => {
+      const eventId = button.dataset.sensorEventAssign;
+      const select = sensorEventList.querySelector(
+        \`[data-sensor-event-target="\${CSS.escape(eventId)}"]\`,
+      );
+      const targetAgentId = select?.value || "";
+      if (!eventId || !targetAgentId) {
+        toast("Choose an agent first", "error");
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "Assigning…";
+      const response = await fetch(
+        "/api/sensor-events/" + encodeURIComponent(eventId) + "/assign",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ targetAgentId }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        toast(result.error || "Assignment failed", "error");
+        button.disabled = false;
+        button.textContent = "Assign work";
+        return;
+      }
+      toast("Event assigned to " + agentName(targetAgentId));
+      await refreshQueues();
+    });
+  }
 }
 
 function hasKeys(value) {

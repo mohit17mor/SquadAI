@@ -127,7 +127,9 @@ export type SendResult = {
   turn: Record<string, unknown>;
 };
 
-export type SensorEventStatus = "pending" | "routing" | "routed" | "failed" | "ignored";
+export type SensorEventStatus = "unassigned" | "pending" | "routing" | "routed" | "failed" | "ignored";
+
+export type RoutingMode = "explicit" | "router-fallback" | "router-only";
 
 export type SensorEventInput = {
   source: string;
@@ -136,6 +138,7 @@ export type SensorEventInput = {
   title?: string;
   url?: string;
   dedupeKey?: string;
+  targetAgentId?: string;
   priority?: "low" | "normal" | "high";
   metadata?: Record<string, unknown>;
 };
@@ -348,6 +351,7 @@ export type CodexAgentManagerOptions = {
   stateStore?: AgentStateStore;
   clientFactory?: CodexControlClientFactory;
   clock?: () => Date;
+  routingMode?: RoutingMode;
 };
 
 export class CodexAgentManagerError extends Error {

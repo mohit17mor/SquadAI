@@ -39,6 +39,7 @@ export type {
   PersistedAgentState,
   ReasoningEffort,
   ReasoningEffortOption,
+  RoutingMode,
   RoutingDecision,
   SensorEvent,
   SensorEventInput,
