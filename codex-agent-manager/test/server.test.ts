@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -245,6 +245,28 @@ test("command center API returns useful errors for invalid requests", async () =
       dispatchedWorkItems: [],
       jarvisNotificationDelivery: null,
     });
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center API lists folders for the workspace picker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "command-center-folders-"));
+  await mkdir(join(root, "zeta"));
+  await mkdir(join(root, "Alpha"));
+  await writeFile(join(root, "not-a-folder.txt"), "ignored", "utf8");
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const server = createCommandCenterServer({ manager });
+  await server.listen(0);
+
+  try {
+    const response = await jsonFetch(
+      `http://127.0.0.1:${server.port}/api/directories?path=${encodeURIComponent(root)}`,
+    );
+    assert.equal(response.path, await realpath(root));
+    assert.deepEqual(response.directories.map((entry: { name: string }) => entry.name), ["Alpha", "zeta"]);
+    assert.ok(response.parent);
   } finally {
     await server.close();
     await manager.close();
@@ -583,7 +605,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /chat-stream/);
     assert.match(html, /command-rail/);
     assert.match(html, /side-panel/);
-    assert.match(html, /id="shell" class="shell"/);
+    assert.match(html, /id="shell" class="shell topology-mode"/);
     assert.match(html, /data-panel="jarvis"/);
     assert.match(html, /data-panel="create"/);
     assert.match(html, /data-panel="events"/);
@@ -592,6 +614,11 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-sensor-event-assign/);
     assert.match(html, /notification-count/);
     assert.match(html, /activePanel = "topology"/);
+    assert.match(html, /class="shell topology-mode"/);
+    assert.match(html, /window\.addEventListener\("pageshow"/);
+    assert.match(html, /id="directory-picker"/);
+    assert.match(html, /data-browse-cwd/);
+    assert.match(html, /\/api\/directories\?path=/);
     assert.match(html, /jarvis-mode/);
     assert.match(html, /ops-mode/);
     assert.match(html, /ops-workspace/);
