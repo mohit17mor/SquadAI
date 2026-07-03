@@ -1,7 +1,9 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import { readdir, readFile, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, realpath } from "node:fs/promises";
 import { AddressInfo } from "node:net";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import type { CodexAgentManager } from "./manager.js";
 import type {
@@ -27,9 +29,12 @@ const REASONING_EFFORTS = [
   "ultra",
 ] as const;
 
+const execFileAsync = promisify(execFile);
+
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   title?: string;
+  directoryPicker?: (initialPath: string) => Promise<string | null>;
   automation?: {
     enabled?: boolean;
     routerAgentId?: string;
@@ -145,22 +150,11 @@ export class CommandCenterServer {
         return;
       }
 
-      if (request.method === "GET" && url.pathname === "/api/directories") {
-        const requestedPath = url.searchParams.get("path")?.trim() || process.cwd();
-        const requestedAbsolutePath = isAbsolute(requestedPath)
-          ? requestedPath
-          : resolve(process.cwd(), requestedPath);
-        const currentPath = await realpath(requestedAbsolutePath);
-        const entries = await readdir(currentPath, { withFileTypes: true });
-        const directories = entries
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => ({ name: entry.name, path: resolve(currentPath, entry.name) }))
-          .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-        this.json(response, {
-          path: currentPath,
-          parent: dirname(currentPath) === currentPath ? null : dirname(currentPath),
-          directories,
-        });
+      if (request.method === "POST" && url.pathname === "/api/directories/pick") {
+        const body = asRecord(await readJson(request));
+        const initialPath = optionalString(body.initialPath) ?? process.cwd();
+        const selectedPath = await (this.options.directoryPicker ?? pickNativeDirectory)(initialPath);
+        this.json(response, selectedPath ? { path: selectedPath } : { canceled: true });
         return;
       }
 
@@ -691,6 +685,37 @@ function optionalEnum<T extends string>(value: unknown, allowed: readonly T[]): 
   return value as T;
 }
 
+async function pickNativeDirectory(initialPath: string): Promise<string | null> {
+  if (process.platform !== "darwin") {
+    throw new Error("The native folder picker is currently available on macOS only.");
+  }
+  const requestedPath = isAbsolute(initialPath) ? initialPath : resolve(process.cwd(), initialPath);
+  let defaultPath: string;
+  try {
+    defaultPath = await realpath(requestedPath);
+  } catch {
+    defaultPath = await realpath(process.cwd());
+  }
+  try {
+    const { stdout } = await execFileAsync("osascript", [
+      "-e", "on run argv",
+      "-e", "set startPath to item 1 of argv",
+      "-e", "set chosenFolder to choose folder with prompt \"Choose agent workspace\" default location (POSIX file startPath)",
+      "-e", "return POSIX path of chosenFolder",
+      "-e", "end run",
+      defaultPath,
+    ], { encoding: "utf8", timeout: 300_000 });
+    const selectedPath = stdout.trim();
+    return selectedPath ? resolve(selectedPath) : null;
+  } catch (error) {
+    const details = error instanceof Error
+      ? `${error.message} ${String((error as Error & { stderr?: unknown }).stderr ?? "")}`
+      : String(error);
+    if (/user canceled|-128/i.test(details)) return null;
+    throw new Error(`Could not open the native folder picker: ${details}`, { cause: error });
+  }
+}
+
 function renderHtml(title: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -868,14 +893,6 @@ function renderHtml(title: string): string {
         <div id="work-items" class="ops-log"></div>
       </div>
     </section>
-    <dialog id="directory-picker" class="directory-picker" aria-labelledby="directory-picker-title">
-      <div class="directory-picker-card">
-        <header><div><span class="topology-kicker">Agent workspace</span><h2 id="directory-picker-title">Choose a folder</h2></div><button id="directory-picker-close" type="button" class="secondary" aria-label="Close folder picker">Close</button></header>
-        <div class="directory-path-row"><button id="directory-picker-parent" type="button" class="secondary" aria-label="Open parent folder">Up</button><input id="directory-picker-path" autocomplete="off" aria-label="Folder path"><button id="directory-picker-go" type="button" class="secondary">Go</button></div>
-        <div id="directory-picker-list" class="directory-list" aria-live="polite"></div>
-        <footer><span id="directory-picker-status">Select the current folder or open a subfolder.</span><div><button id="directory-picker-cancel" type="button" class="secondary">Cancel</button><button id="directory-picker-select" type="button">Select Folder</button></div></footer>
-      </div>
-    </dialog>
     <div id="toasts" class="toasts"></div>
   </main>
   <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
@@ -1015,21 +1032,6 @@ textarea { resize: vertical; }
 .skill-option strong { display: block; color: #c9d1d9; font-size: 12px; }
 .skill-option small, .skill-options > span { color: #8b949e; font-size: 11px; line-height: 1.35; }
 .skill-scope { color: #6e7681; font-size: 10px; text-transform: uppercase; }
-.directory-picker { width: min(680px, calc(100vw - 32px)); padding: 0; border: 1px solid #30363d; border-radius: 12px; background: #0d1117; color: #e6edf3; box-shadow: 0 24px 80px rgba(0,0,0,.55); }
-.directory-picker::backdrop { background: rgba(1,4,9,.72); backdrop-filter: blur(3px); }
-.directory-picker-card { display: grid; grid-template-rows: auto auto minmax(220px, 50vh) auto; }
-.directory-picker header, .directory-picker footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; }
-.directory-picker header { border-bottom: 1px solid #21262d; }
-.directory-picker header h2 { margin: 2px 0 0; font-size: 17px; }
-.directory-picker footer { border-top: 1px solid #21262d; color: #8b949e; font-size: 11px; }
-.directory-picker footer > div { display: flex; gap: 8px; }
-.directory-path-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 8px; padding: 12px 18px; border-bottom: 1px solid #21262d; }
-.directory-path-row button { min-width: 42px; }
-.directory-list { overflow-y: auto; padding: 8px; }
-.directory-entry { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: 7px; background: transparent; color: #c9d1d9; text-align: left; }
-.directory-entry:hover, .directory-entry:focus-visible { background: #161b22; }
-.directory-entry .folder-action { color: #58a6ff; font-size: 11px; }
-.directory-empty { padding: 28px; color: #8b949e; text-align: center; }
 .agents { display: grid; gap: 8px; }
 .agent-editor { margin-top: 16px; padding-top: 12px; border-top: 1px solid #30363d; }
 .settings-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; cursor: pointer; list-style: none; }
@@ -1230,10 +1232,6 @@ let agentIdTouched = false;
 let createInstructionsTouched = false;
 let editAgentLoadedId = null;
 let editAgentDirty = false;
-let directoryTargetInput = null;
-let directoryCurrentPath = null;
-let directoryParentPath = null;
-let directoryLoadGeneration = 0;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
@@ -1842,86 +1840,32 @@ function setupSkillPicker(form) {
   updateSkillPickerVisibility(form);
 }
 
-const directoryDialog = document.getElementById("directory-picker");
-const directoryPathInput = document.getElementById("directory-picker-path");
-const directoryList = document.getElementById("directory-picker-list");
-const directoryStatus = document.getElementById("directory-picker-status");
-const directoryParentButton = document.getElementById("directory-picker-parent");
-const directorySelectButton = document.getElementById("directory-picker-select");
-
 function setupDirectoryBrowse(form) {
   const button = form.querySelector("[data-browse-cwd]");
-  button.addEventListener("click", () => {
-    directoryTargetInput = form.elements.cwd;
-    directoryDialog.showModal();
-    void loadDirectory(directoryTargetInput.value || "/");
-  });
-}
-
-document.getElementById("directory-picker-close").addEventListener("click", closeDirectoryPicker);
-document.getElementById("directory-picker-cancel").addEventListener("click", closeDirectoryPicker);
-document.getElementById("directory-picker-go").addEventListener("click", () => {
-  void loadDirectory(directoryPathInput.value);
-});
-directoryPathInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  void loadDirectory(directoryPathInput.value);
-});
-directoryParentButton.addEventListener("click", () => {
-  if (directoryParentPath) void loadDirectory(directoryParentPath);
-});
-directorySelectButton.addEventListener("click", () => {
-  if (!directoryTargetInput || !directoryCurrentPath) return;
-  directoryTargetInput.value = directoryCurrentPath;
-  directoryTargetInput.dispatchEvent(new Event("input", { bubbles: true }));
-  directoryTargetInput.dispatchEvent(new Event("change", { bubbles: true }));
-  closeDirectoryPicker();
-});
-
-function closeDirectoryPicker() {
-  directoryLoadGeneration += 1;
-  directoryDialog.close();
-  directoryTargetInput = null;
-}
-
-async function loadDirectory(path) {
-  const requestedPath = String(path || "").trim();
-  if (!requestedPath) return;
-  const generation = ++directoryLoadGeneration;
-  directoryCurrentPath = null;
-  directoryParentPath = null;
-  directorySelectButton.disabled = true;
-  directoryParentButton.disabled = true;
-  directoryList.innerHTML = '<div class="directory-empty">Loading folders…</div>';
-  directoryStatus.textContent = "Loading " + requestedPath;
-  try {
-    const response = await fetch("/api/directories?path=" + encodeURIComponent(requestedPath));
-    const body = await response.json();
-    if (generation !== directoryLoadGeneration) return;
-    if (!response.ok) throw new Error(body.error || "Could not open this folder");
-    directoryCurrentPath = body.path;
-    directoryParentPath = body.parent || null;
-    directoryPathInput.value = body.path;
-    directoryParentButton.disabled = !directoryParentPath;
-    directorySelectButton.disabled = false;
-    const directories = Array.isArray(body.directories) ? body.directories : [];
-    directoryList.innerHTML = directories.map((directory) => \`
-      <button type="button" class="directory-entry" data-directory-path="\${escapeAttr(directory.path)}">
-        <span>\${escapeHtml(directory.name)}</span><span class="folder-action">Open</span>
-      </button>
-    \`).join("") || '<div class="directory-empty">No subfolders here. You can select this folder.</div>';
-    for (const entry of directoryList.querySelectorAll("[data-directory-path]")) {
-      entry.addEventListener("click", () => void loadDirectory(entry.dataset.directoryPath));
+  const cwd = form.elements.cwd;
+  button.addEventListener("click", async () => {
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Opening…";
+    try {
+      const response = await fetch("/api/directories/pick", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ initialPath: cwd.value }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not open the folder picker");
+      if (!body.path) return;
+      cwd.value = body.path;
+      cwd.dispatchEvent(new Event("input", { bubbles: true }));
+      cwd.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch (error) {
+      toast(error.message || String(error), "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
     }
-    directoryStatus.textContent = directories.length
-      ? directories.length + (directories.length === 1 ? " folder" : " folders")
-      : "This folder has no subfolders";
-  } catch (error) {
-    if (generation !== directoryLoadGeneration) return;
-    directoryList.innerHTML = '<div class="directory-empty">' + escapeHtml(error.message || String(error)) + "</div>";
-    directoryStatus.textContent = "Folder unavailable";
-  }
+  });
 }
 
 function updateSkillPickerVisibility(form) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -251,22 +251,25 @@ test("command center API returns useful errors for invalid requests", async () =
   }
 });
 
-test("command center API lists folders for the workspace picker", async () => {
-  const root = await mkdtemp(join(tmpdir(), "command-center-folders-"));
-  await mkdir(join(root, "zeta"));
-  await mkdir(join(root, "Alpha"));
-  await writeFile(join(root, "not-a-folder.txt"), "ignored", "utf8");
+test("command center API delegates workspace selection to the native picker", async () => {
+  let requestedInitialPath = "";
   const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
-  const server = createCommandCenterServer({ manager });
+  const server = createCommandCenterServer({
+    manager,
+    directoryPicker: async (initialPath) => {
+      requestedInitialPath = initialPath;
+      return "/tmp/chosen-workspace";
+    },
+  });
   await server.listen(0);
 
   try {
     const response = await jsonFetch(
-      `http://127.0.0.1:${server.port}/api/directories?path=${encodeURIComponent(root)}`,
+      `http://127.0.0.1:${server.port}/api/directories/pick`,
+      { method: "POST", body: { initialPath: "/tmp/current-workspace" } },
     );
-    assert.equal(response.path, await realpath(root));
-    assert.deepEqual(response.directories.map((entry: { name: string }) => entry.name), ["Alpha", "zeta"]);
-    assert.ok(response.parent);
+    assert.equal(requestedInitialPath, "/tmp/current-workspace");
+    assert.equal(response.path, "/tmp/chosen-workspace");
   } finally {
     await server.close();
     await manager.close();
@@ -616,9 +619,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /activePanel = "topology"/);
     assert.match(html, /class="shell topology-mode"/);
     assert.match(html, /window\.addEventListener\("pageshow"/);
-    assert.match(html, /id="directory-picker"/);
+    assert.doesNotMatch(html, /id="directory-picker"/);
     assert.match(html, /data-browse-cwd/);
-    assert.match(html, /\/api\/directories\?path=/);
+    assert.match(html, /\/api\/directories\/pick/);
     assert.match(html, /jarvis-mode/);
     assert.match(html, /ops-mode/);
     assert.match(html, /ops-workspace/);
