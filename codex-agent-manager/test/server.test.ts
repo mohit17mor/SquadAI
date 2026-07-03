@@ -701,8 +701,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /isCommentaryEvent/);
     assert.match(html, /payload\?\.item\?\.phase \|\| ""\) === "commentary"/);
     assert.match(html, /String\(event\.payload\?\.itemType \|\| event\.payload\?\.item\?\.type \|\| ""\) === "agentMessage"/);
-    assert.match(html, /Light command-center shell/);
-    assert.match(html, /body \{ color: #242424; background: #f5f5f3; \}/);
+    assert.match(html, /Commentary extends the original dark command-center theme/);
+    assert.match(html, /body \{ margin: 0;[^\n]+color: #e6edf3; background: #0d1117;/);
     assert.match(html, /activityOpenState/);
     assert.match(html, /activityScrollState/);
     assert.match(html, /captureActivityScrollPositions/);
