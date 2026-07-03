@@ -19,6 +19,8 @@ export type {
   AuditSink,
   CodexModelCatalogProvider,
   CodexModelOption,
+  CodexSkillMetadata,
+  CodexSkillScope,
   CodexRuntimeInfo,
   Confirmation,
   DynamicTool,
@@ -36,6 +38,9 @@ export type {
   ReasoningEffortOption,
   SandboxMode,
   SessionStartOptions,
+  SessionResumeOptions,
+  SkillListOptions,
+  SkillListResult,
   TurnResult,
 } from "./types.js";
 export { CodexAppServerError, CodexControlError, CodexTurnTimeoutError } from "./types.js";

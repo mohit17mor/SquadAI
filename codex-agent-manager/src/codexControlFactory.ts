@@ -20,8 +20,8 @@ export function createDefaultClientFactory(
       async startSession(options: Record<string, unknown>) {
         return (await client()).startSession(options);
       },
-      async resumeSession(threadId: string) {
-        return (await client()).resumeSession(threadId);
+      async resumeSession(threadId: string, options?: Record<string, unknown>) {
+        return (await client()).resumeSession(threadId, options);
       },
       async listModels(options?: { includeHidden?: boolean }) {
         const loaded = await client();
@@ -29,6 +29,13 @@ export function createDefaultClientFactory(
           return { models: [] };
         }
         return loaded.listModels(options);
+      },
+      async listSkills(options: { cwd: string; forceReload?: boolean }) {
+        const loaded = await client();
+        if (!loaded.listSkills) {
+          throw new Error("This Codex App Server does not support skills/list.");
+        }
+        return loaded.listSkills(options);
       },
       async getRuntimeInfo() {
         const loaded = await client();

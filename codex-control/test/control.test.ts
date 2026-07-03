@@ -229,6 +229,60 @@ test("preserves structured app-server errors for deterministic diagnosis", async
   });
 });
 
+test("lists skills for a working directory", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+  const listing = client.listSkills({ cwd: "/repo", forceReload: true });
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  const request = await transport.waitForRequest("skills/list");
+  assert.deepEqual(request.params, { cwds: ["/repo"], forceReload: true });
+  transport.respondTo("skills/list", {
+    data: [{
+      cwd: "/repo",
+      skills: [{ name: "review", description: "Review code", path: "/skills/review/SKILL.md", scope: "repo", enabled: true }],
+      errors: [],
+    }],
+  });
+  assert.deepEqual(await listing, {
+    cwd: "/repo",
+    skills: [{ name: "review", description: "Review code", path: "/skills/review/SKILL.md", scope: "repo", enabled: true }],
+    errors: [],
+  });
+});
+
+test("merges thread-local config and forwards it when resuming", async () => {
+  const transport = new FakeTransport();
+  const client = new CodexControlClient({ transport });
+  const starting = client.startSession({
+    cwd: "/repo",
+    reasoningEffort: "high",
+    config: { skills: { config: [{ path: "/skill", enabled: false }] } },
+  });
+  await transport.waitForRequest("initialize");
+  transport.respondTo("initialize", {});
+  const startRequest = await transport.waitForRequest("thread/start");
+  assert.deepEqual((startRequest.params as Record<string, unknown>).config, {
+    skills: { config: [{ path: "/skill", enabled: false }] },
+    model_reasoning_effort: "high",
+  });
+  transport.respondTo("thread/start", { thread: { id: "thread-skills" } });
+  await starting;
+
+  const resuming = client.resumeSession("thread-skills", {
+    cwd: "/repo",
+    config: { skills: { config: [{ path: "/skill", enabled: true }] } },
+  });
+  const resumeRequest = await transport.waitForRequest("thread/resume");
+  assert.deepEqual(resumeRequest.params, {
+    threadId: "thread-skills",
+    cwd: "/repo",
+    config: { skills: { config: [{ path: "/skill", enabled: true }] } },
+  });
+  transport.respondTo("thread/resume", {});
+  await resuming;
+});
+
 test("exposes app-server runtime identity from initialize", async () => {
   const transport = new FakeTransport();
   const client = new CodexControlClient({ transport });

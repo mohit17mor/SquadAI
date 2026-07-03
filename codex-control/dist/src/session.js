@@ -203,10 +203,12 @@ export function threadStartParams(options) {
         experimentalRawEvents: false,
         persistExtendedHistory: false,
     };
+    const config = { ...(options.config ?? {}) };
     if (options.reasoningEffort) {
-        params.config = {
-            model_reasoning_effort: options.reasoningEffort,
-        };
+        config.model_reasoning_effort = options.reasoningEffort;
+    }
+    if (Object.keys(config).length) {
+        params.config = config;
     }
     if (options.dynamicTools?.length) {
         params.dynamicTools = options.dynamicTools.map((tool) => ({

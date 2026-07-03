@@ -13,6 +13,7 @@ import {
 class FakeCodexClient {
   readonly startCalls: Array<Record<string, unknown>> = [];
   readonly resumeCalls: string[] = [];
+  readonly resumeOptions: Array<Record<string, unknown> | undefined> = [];
   readonly closeCalls: number[] = [];
   modelCatalog: AgentModelCatalog = { models: [] };
   private nextThread = 1;
@@ -25,8 +26,9 @@ class FakeCodexClient {
     return session;
   }
 
-  async resumeSession(threadId: string): Promise<FakeCodexSession> {
+  async resumeSession(threadId: string, options?: Record<string, unknown>): Promise<FakeCodexSession> {
     this.resumeCalls.push(threadId);
+    this.resumeOptions.push(options);
     const session = new FakeCodexSession(threadId);
     this.sessions.set(threadId, session);
     return session;
@@ -38,6 +40,17 @@ class FakeCodexClient {
 
   async listModels(): Promise<AgentModelCatalog> {
     return this.modelCatalog;
+  }
+
+  async listSkills(options: { cwd: string }): Promise<import("../src/index.js").AgentSkillCatalog> {
+    return {
+      cwd: options.cwd,
+      skills: [
+        { name: "review", scope: "repo", description: "Review code", path: "/skills/review/SKILL.md", enabled: true },
+        { name: "deploy", scope: "user", description: "Deploy", path: "/skills/deploy/SKILL.md", enabled: true },
+      ],
+      errors: [],
+    };
   }
 
   session(threadId: string): FakeCodexSession {
@@ -2080,4 +2093,36 @@ test("recovers running work items as failed after manager restart", async () => 
       .listEvents("maintenance")
       .some((event) => event.type === "work_item_failed" && event.payload.recovered === true),
   );
+});
+
+test("applies selected skills as thread-local config and starts fresh when selection changes", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({
+      skillMode: "selected",
+      allowedSkills: [{ name: "review", scope: "repo" }],
+    })],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const send = manager.sendToAgent("maintenance", "Review this change.");
+  await waitFor(() => clients.some((client) => client.startCalls.length === 1), "skill-scoped session");
+  const runtime = clients.find((client) => client.startCalls.length === 1);
+  assert.deepEqual(runtime?.startCalls[0]?.config, {
+    skills: {
+      config: [
+        { path: "/skills/review/SKILL.md", enabled: true },
+        { path: "/skills/deploy/SKILL.md", enabled: false },
+      ],
+    },
+  });
+  runtime?.session("thread-1").complete("reviewed");
+  await send;
+
+  const updated = await manager.updateAgent("maintenance", {
+    skillMode: "selected",
+    allowedSkills: [{ name: "deploy", scope: "user" }],
+  });
+  assert.equal(updated.threadId, null);
+  assert.deepEqual(updated.allowedSkills, [{ name: "deploy", scope: "user" }]);
 });

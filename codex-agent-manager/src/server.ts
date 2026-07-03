@@ -7,6 +7,7 @@ import type {
   AgentDefinition,
   AgentDefinitionUpdate,
   AgentEvent,
+  AgentSkillReference,
   ApprovalScope,
   AskOptions,
   CompatibilityApprovalResolution,
@@ -130,6 +131,16 @@ export class CommandCenterServer {
       if (request.method === "GET" && url.pathname === "/api/model-options") {
         const includeHidden = url.searchParams.get("includeHidden") === "true";
         this.json(response, await this.options.manager.listModelOptions({ includeHidden }));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/skill-options") {
+        const cwd = url.searchParams.get("cwd")?.trim();
+        if (!cwd) throw new Error("Query parameter cwd is required.");
+        this.json(response, await this.options.manager.listSkillOptions(
+          cwd,
+          url.searchParams.get("forceReload") === "true",
+        ));
         return;
       }
 
@@ -406,6 +417,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   const metadata = asOptionalRecord(value.metadata);
   const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
   const serviceTier = optionalString(value.serviceTier);
+  const skillMode = optionalEnum(value.skillMode, ["all", "selected"]);
+  const allowedSkills = parseSkillReferences(value.allowedSkills);
   if (model) {
     definition.model = model;
   }
@@ -415,6 +428,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   if (serviceTier) {
     definition.serviceTier = serviceTier;
   }
+  if (skillMode) definition.skillMode = skillMode;
+  if (allowedSkills) definition.allowedSkills = allowedSkills;
   if (approvalPolicy) {
     definition.approvalPolicy = approvalPolicy;
   }
@@ -466,6 +481,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   const metadata = asOptionalRecord(value.metadata);
   const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
   const serviceTier = optionalString(value.serviceTier);
+  const skillMode = optionalEnum(value.skillMode, ["all", "selected"]);
+  const allowedSkills = parseSkillReferences(value.allowedSkills);
   if (name) {
     update.name = name;
   }
@@ -484,6 +501,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   if ("serviceTier" in value) {
     update.serviceTier = serviceTier;
   }
+  if ("skillMode" in value) update.skillMode = skillMode;
+  if ("allowedSkills" in value) update.allowedSkills = allowedSkills ?? [];
   if (approvalPolicy) {
     update.approvalPolicy = approvalPolicy;
   }
@@ -494,6 +513,22 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
     update.metadata = metadata;
   }
   return update;
+}
+
+function parseSkillReferences(value: unknown): AgentSkillReference[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("Field allowedSkills must be an array.");
+  const seen = new Set<string>();
+  return value.map((item) => {
+    const record = asRecord(item);
+    const name = requiredString(record.name, "allowedSkills.name");
+    const scope = optionalEnum(record.scope, ["user", "repo", "system", "admin"]);
+    if (!scope) throw new Error("Field allowedSkills.scope is invalid.");
+    const key = `${scope}\u0000${name}`;
+    if (seen.has(key)) throw new Error(`Duplicate skill selection ${scope}:${name}.`);
+    seen.add(key);
+    return { name, scope };
+  });
 }
 
 function deriveAgentId(name: string): string {
@@ -730,6 +765,12 @@ function renderHtml(title: string): string {
           <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
           <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
           <label>Working directory<input name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"></label>
+          <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
+          <div class="skill-picker" data-skill-picker hidden>
+            <input type="search" data-skill-search placeholder="Search skills">
+            <div class="skill-options" data-skill-options><span>Choose a working directory to load skills.</span></div>
+            <div class="field-hint">Only checked skills are exposed to this agent. Global plugin and MCP settings are unchanged.</div>
+          </div>
           <label>Routing description<textarea name="routingDescription" rows="2" placeholder="Short capability summary for the router"></textarea></label>
           <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
           <button id="create-agent-button" type="submit">Create Agent</button>
@@ -756,6 +797,12 @@ function renderHtml(title: string): string {
             <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
             <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
             <label>Working directory<input name="cwd" autocomplete="off"></label>
+            <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
+            <div class="skill-picker" data-skill-picker hidden>
+              <input type="search" data-skill-search placeholder="Search skills">
+              <div class="skill-options" data-skill-options></div>
+              <div class="field-hint">Changing skill access starts a fresh session on the next turn.</div>
+            </div>
             <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
             <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
             <div class="field-hint">Saving developer instructions or session settings starts a fresh Codex session on the next turn.</div>
@@ -927,6 +974,15 @@ input, textarea, select { width: 100%; border: 1px solid #30363d; border-radius:
 input:focus, textarea:focus, select:focus { border-color: #58a6ff; }
 textarea { resize: vertical; }
 .field-hint { margin: -3px 0 10px; color: #6e7681; font-size: 11px; line-height: 1.4; }
+.skill-picker { margin: -2px 0 12px; padding: 10px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; }
+.skill-picker input[type="search"] { margin-bottom: 8px; }
+.skill-options { display: grid; gap: 5px; max-height: 210px; overflow-y: auto; }
+.skill-option { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 8px; align-items: start; margin: 0; padding: 7px; border-radius: 6px; }
+.skill-option:hover { background: #161b22; }
+.skill-option input { width: auto; margin-top: 2px; accent-color: #58a6ff; }
+.skill-option strong { display: block; color: #c9d1d9; font-size: 12px; }
+.skill-option small, .skill-options > span { color: #8b949e; font-size: 11px; line-height: 1.35; }
+.skill-scope { color: #6e7681; font-size: 10px; text-transform: uppercase; }
 .agents { display: grid; gap: 8px; }
 .agent-editor { margin-top: 16px; padding-top: 12px; border-top: 1px solid #30363d; }
 .settings-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; cursor: pointer; list-style: none; }
@@ -1057,6 +1113,7 @@ let notifications = [];
 let compatibilityApprovals = [];
 let compatibilitySnapshot = null;
 let modelOptions = [];
+const skillCatalogs = new Map();
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
@@ -1163,6 +1220,8 @@ agentForm.addEventListener("input", (event) => {
 });
 createRoleSelect.addEventListener("change", applyCreateRoleDefaults);
 createModelInput.addEventListener("change", renderModelControls);
+setupSkillPicker(agentForm);
+setupSkillPicker(editAgentForm);
 editAgentForm.addEventListener("submit", updateSelectedAgent);
 editAgentForm.addEventListener("input", () => {
   editAgentDirty = true;
@@ -1374,6 +1433,7 @@ async function createAgent(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const body = Object.fromEntries(form.entries());
+  applySkillSelection(body, event.currentTarget);
   applyRoleMetadata(body);
   const button = document.getElementById("create-agent-button");
   button.disabled = true;
@@ -1402,6 +1462,7 @@ async function createAgent(event) {
   updateDerivedAgentId();
   applyCreateRoleDefaults();
   renderModelControls();
+  updateSkillPickerVisibility(agentForm);
   await refreshAgents();
   await refreshEvents();
   render();
@@ -1448,11 +1509,22 @@ function applyRoleMetadata(body, existingMetadata = {}, forceMetadata = false) {
   delete body.routingDescription;
 }
 
+function applySkillSelection(body, form) {
+  body.skillMode = form.elements.skillMode.value || "all";
+  body.allowedSkills = body.skillMode === "selected"
+    ? Array.from(form.querySelectorAll("[data-skill-checkbox]:checked")).map((input) => ({
+        name: input.dataset.skillName,
+        scope: input.dataset.skillScope,
+      }))
+    : [];
+}
+
 async function updateSelectedAgent(event) {
   event.preventDefault();
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   if (!selected) return;
   const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+  applySkillSelection(body, event.currentTarget);
   applyRoleMetadata(body, selected.metadata || {}, true);
   const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
     method: "PATCH",
@@ -1589,7 +1661,7 @@ function render() {
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
       <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
-      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)}</span>
+      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)} - \${escapeHtml(skillSummary(agent))}</span>
     </button>
   \`).join("") || '<div class="empty">No agents yet. Create one from the Create Agent section.</div>';
   if (agentListHtml !== lastAgentListHtml) {
@@ -1606,7 +1678,7 @@ function render() {
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd}\` : "Create or select an agent to begin.";
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd} - \${skillSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   cancelAgentButton.hidden = !(selected && selected.status === "running");
   cancelAgentButton.disabled = cancelInFlight;
@@ -1681,9 +1753,91 @@ function renderAgentEditor(selected) {
   editAgentForm.elements.reasoningEffort.value = selected.reasoningEffort || "";
   editAgentForm.elements.serviceTier.value = selected.serviceTier || "";
   editAgentForm.elements.cwd.value = selected.cwd || "";
+  editAgentForm.elements.skillMode.value = selected.skillMode || "all";
   editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
   editAgentForm.elements.instructions.value = selected.instructions || "";
   renderModelControls();
+  updateSkillPickerVisibility(editAgentForm);
+  if ((selected.skillMode || "all") === "selected") {
+    void loadSkillOptions(editAgentForm, selected.allowedSkills || []);
+  }
+}
+
+function skillSummary(agent) {
+  if ((agent.skillMode || "all") === "all") return "All skills";
+  const count = Array.isArray(agent.allowedSkills) ? agent.allowedSkills.length : 0;
+  return count + (count === 1 ? " skill" : " skills");
+}
+
+function setupSkillPicker(form) {
+  const mode = form.elements.skillMode;
+  const cwd = form.elements.cwd;
+  const search = form.querySelector("[data-skill-search]");
+  mode.addEventListener("change", () => {
+    updateSkillPickerVisibility(form);
+    if (mode.value === "selected") void loadSkillOptions(form);
+  });
+  cwd.addEventListener("change", () => {
+    if (mode.value === "selected") void loadSkillOptions(form, [], true);
+  });
+  search.addEventListener("input", () => filterSkillOptions(form));
+  updateSkillPickerVisibility(form);
+}
+
+function updateSkillPickerVisibility(form) {
+  form.querySelector("[data-skill-picker]").hidden = form.elements.skillMode.value !== "selected";
+}
+
+async function loadSkillOptions(form, desiredSkills, forceReload = false) {
+  const cwd = String(form.elements.cwd.value || "").trim();
+  const container = form.querySelector("[data-skill-options]");
+  if (!cwd) {
+    container.innerHTML = "<span>Enter a working directory to load skills.</span>";
+    return;
+  }
+  const existing = desiredSkills || Array.from(form.querySelectorAll("[data-skill-checkbox]:checked")).map((input) => ({
+    name: input.dataset.skillName,
+    scope: input.dataset.skillScope,
+  }));
+  const selected = new Set(existing.map((skill) => skill.scope + "\\u0000" + skill.name));
+  container.innerHTML = "<span>Loading skills…</span>";
+  try {
+    let catalog = !forceReload && skillCatalogs.get(cwd);
+    if (!catalog) {
+      const response = await fetch("/api/skill-options?cwd=" + encodeURIComponent(cwd) + (forceReload ? "&forceReload=true" : ""));
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load skills");
+      catalog = body;
+      skillCatalogs.set(cwd, catalog);
+    }
+    const skills = Array.isArray(catalog.skills) ? catalog.skills : [];
+    const identityCounts = new Map();
+    for (const skill of skills) {
+      const key = skill.scope + "\\u0000" + skill.name;
+      identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    }
+    container.innerHTML = skills.map((skill) => {
+      const key = skill.scope + "\\u0000" + skill.name;
+      const description = skill.shortDescription || skill.description || "";
+      const ambiguous = identityCounts.get(key) > 1;
+      const selectable = skill.enabled && !ambiguous;
+      return \`<label class="skill-option" data-skill-row data-search="\${escapeAttr((skill.name + " " + description + " " + skill.scope).toLowerCase())}">
+        <input type="checkbox" data-skill-checkbox data-skill-name="\${escapeAttr(skill.name)}" data-skill-scope="\${escapeAttr(skill.scope)}" \${selected.has(key) && selectable ? "checked" : ""} \${selectable ? "" : "disabled"}>
+        <span><strong>\${escapeHtml(skill.name)}</strong><small>\${escapeHtml(description)}</small></span>
+        <span class="skill-scope">\${escapeHtml(skill.scope)}\${ambiguous ? " · duplicate" : (skill.enabled ? "" : " · off")}</span>
+      </label>\`;
+    }).join("") || "<span>No skills discovered for this working directory.</span>";
+    filterSkillOptions(form);
+  } catch (error) {
+    container.innerHTML = '<span class="error">' + escapeHtml(error.message || String(error)) + "</span>";
+  }
+}
+
+function filterSkillOptions(form) {
+  const query = String(form.querySelector("[data-skill-search]").value || "").trim().toLowerCase();
+  for (const row of form.querySelectorAll("[data-skill-row]")) {
+    row.hidden = Boolean(query) && !row.dataset.search.includes(query);
+  }
 }
 
 function renderPanel() {

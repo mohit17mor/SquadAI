@@ -50,7 +50,23 @@ export type AgentDefinition = {
   sandbox?: "read-only" | "workspace-write" | "danger-full-access" | undefined;
   defaultAskOptions?: AskOptions | undefined;
   dynamicTools?: unknown[] | undefined;
+  skillMode?: "all" | "selected" | undefined;
+  allowedSkills?: AgentSkillReference[] | undefined;
   metadata?: Record<string, unknown> | undefined;
+};
+
+export type AgentSkillScope = "user" | "repo" | "system" | "admin";
+export type AgentSkillReference = { name: string; scope: AgentSkillScope };
+export type AgentSkillMetadata = AgentSkillReference & {
+  description: string;
+  shortDescription?: string;
+  path: string;
+  enabled: boolean;
+};
+export type AgentSkillCatalog = {
+  cwd: string;
+  skills: AgentSkillMetadata[];
+  errors: Array<{ path: string; message: string }>;
 };
 
 export type AgentDefinitionUpdate = {
@@ -104,6 +120,8 @@ export type AgentSnapshot = {
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   serviceTier: string | null;
+  skillMode: "all" | "selected";
+  allowedSkills: AgentSkillReference[];
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -317,8 +335,9 @@ export interface AgentStateStore {
 
 export type CodexControlClientLike = {
   startSession(options: Record<string, unknown>): Promise<CodexSessionLike>;
-  resumeSession(threadId: string): Promise<CodexSessionLike>;
+  resumeSession(threadId: string, options?: Record<string, unknown>): Promise<CodexSessionLike>;
   listModels?(options?: { includeHidden?: boolean }): Promise<AgentModelCatalog>;
+  listSkills?(options: { cwd: string; forceReload?: boolean }): Promise<AgentSkillCatalog>;
   getRuntimeInfo?(): Promise<CodexRuntimeInfo>;
   close(): Promise<void>;
 };

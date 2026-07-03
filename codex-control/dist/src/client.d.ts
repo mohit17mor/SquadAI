@@ -1,5 +1,5 @@
 import { CodexSession } from "./session.js";
-import type { AppServerTransport, ApprovalHandler, AuditSink, CodexRuntimeInfo, ModelListOptions, ModelListResult, SessionStartOptions } from "./types.js";
+import type { AppServerTransport, ApprovalHandler, AuditSink, CodexRuntimeInfo, ModelListOptions, ModelListResult, SessionResumeOptions, SessionStartOptions, SkillListOptions, SkillListResult } from "./types.js";
 export type CodexControlClientOptions = {
     transport?: AppServerTransport;
     requestTimeoutMs?: number;
@@ -18,8 +18,9 @@ export declare class CodexControlClient {
     start(): Promise<void>;
     getRuntimeInfo(): Promise<CodexRuntimeInfo>;
     startSession(options: SessionStartOptions): Promise<CodexSession>;
-    resumeSession(threadId: string): Promise<CodexSession>;
+    resumeSession(threadId: string, options?: SessionResumeOptions): Promise<CodexSession>;
     listModels(options?: ModelListOptions): Promise<ModelListResult>;
+    listSkills(options: SkillListOptions): Promise<SkillListResult>;
     close(): Promise<void>;
     private handleNotification;
 }

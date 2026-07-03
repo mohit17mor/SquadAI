@@ -13,6 +13,7 @@ import type {
   AgentNotification,
   AgentNotificationKind,
   AgentSnapshot,
+  AgentSkillCatalog,
   AgentStateStore,
   AgentStatus,
   AskOptions,
@@ -163,6 +164,19 @@ export class CodexAgentManager extends EventEmitter {
     }
   }
 
+  async listSkillOptions(cwd: string, forceReload = false): Promise<AgentSkillCatalog> {
+    this.assertOpen();
+    const client = this.clientFactory();
+    try {
+      if (!client.listSkills) {
+        throw new CodexAgentManagerError("The configured Codex App Server does not support skill discovery.");
+      }
+      return await client.listSkills({ cwd, forceReload });
+    } finally {
+      await client.close();
+    }
+  }
+
   listCompatibilityApprovals(): CompatibilityApproval[] {
     return this.compatibilityApprovals.map(cloneCompatibilityApproval);
   }
@@ -294,6 +308,8 @@ export class CodexAgentManager extends EventEmitter {
       sandbox: update.sandbox ?? record.definition.sandbox,
       defaultAskOptions: update.defaultAskOptions ?? record.definition.defaultAskOptions,
       dynamicTools: update.dynamicTools ?? record.definition.dynamicTools,
+      skillMode: "skillMode" in update ? update.skillMode : record.definition.skillMode,
+      allowedSkills: "allowedSkills" in update ? update.allowedSkills : record.definition.allowedSkills,
     };
     if (update.metadata !== undefined) {
       nextDefinition.metadata = cloneRecord(update.metadata);
@@ -902,8 +918,12 @@ export class CodexAgentManager extends EventEmitter {
       agentId: record.definition.id,
       approvalHandler: (request) => this.handleApprovalRequest(record.definition.id, request),
     });
+    const skillConfig = await this.resolveSkillConfig(record.definition);
     if (record.threadId) {
-      record.session = await record.client.resumeSession(record.threadId);
+      record.session = await record.client.resumeSession(record.threadId, {
+        cwd: record.definition.cwd,
+        ...(skillConfig ? { config: skillConfig } : {}),
+      });
     } else {
       record.session = await record.client.startSession({
         cwd: record.definition.cwd,
@@ -914,6 +934,7 @@ export class CodexAgentManager extends EventEmitter {
         sandbox: record.definition.sandbox ?? "workspace-write",
         developerInstructions: record.definition.instructions,
         dynamicTools: record.definition.dynamicTools,
+        ...(skillConfig ? { config: skillConfig } : {}),
       });
       record.threadId = record.session.threadId;
     }
@@ -925,6 +946,33 @@ export class CodexAgentManager extends EventEmitter {
       threadId: record.threadId,
     });
     await this.persist();
+  }
+
+  private async resolveSkillConfig(definition: AgentDefinition): Promise<Record<string, unknown> | undefined> {
+    if ((definition.skillMode ?? "all") === "all") return undefined;
+    const catalog = await this.listSkillOptions(definition.cwd, true);
+    if (catalog.errors.length) {
+      throw new CodexAgentManagerError(
+        `Skill discovery failed for ${definition.name}: ${catalog.errors.map((error) => error.message).join("; ")}`,
+      );
+    }
+    const selected = new Set((definition.allowedSkills ?? []).map(skillReferenceKey));
+    for (const reference of definition.allowedSkills ?? []) {
+      const matches = catalog.skills.filter((skill) => skillReferenceKey(skill) === skillReferenceKey(reference));
+      if (matches.length !== 1 || !matches[0]?.enabled) {
+        throw new CodexAgentManagerError(
+          `Selected skill ${reference.scope}:${reference.name} is missing, ambiguous, or globally disabled.`,
+        );
+      }
+    }
+    return {
+      skills: {
+        config: catalog.skills.map((skill) => ({
+          path: skill.path,
+          enabled: skill.enabled && selected.has(skillReferenceKey(skill)),
+        })),
+      },
+    };
   }
 
   private async ensureAgentCompatible(record: RuntimeRecord, forceRefresh = false): Promise<void> {
@@ -1101,6 +1149,8 @@ export class CodexAgentManager extends EventEmitter {
       model: record.definition.model ?? null,
       reasoningEffort: record.definition.reasoningEffort ?? null,
       serviceTier: record.definition.serviceTier ?? null,
+      skillMode: record.definition.skillMode ?? "all",
+      allowedSkills: (record.definition.allowedSkills ?? []).map((skill) => ({ ...skill })),
       metadata: { ...(record.definition.metadata ?? {}) },
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -1668,6 +1718,18 @@ function validateDefinition(definition: AgentDefinition): void {
   if (typeof definition.instructions !== "string" || !definition.instructions.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have instructions.`);
   }
+  if (definition.skillMode !== undefined && definition.skillMode !== "all" && definition.skillMode !== "selected") {
+    throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid skill mode.`);
+  }
+  for (const skill of definition.allowedSkills ?? []) {
+    if (!skill.name.trim() || !["user", "repo", "system", "admin"].includes(skill.scope)) {
+      throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid skill selection.`);
+    }
+  }
+}
+
+function skillReferenceKey(skill: { name: string; scope: string }): string {
+  return `${skill.scope}\u0000${skill.name}`;
 }
 
 function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition): boolean {
@@ -1678,6 +1740,8 @@ function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition):
     previous.serviceTier !== next.serviceTier ||
     previous.approvalPolicy !== next.approvalPolicy ||
     previous.sandbox !== next.sandbox ||
+    (previous.skillMode ?? "all") !== (next.skillMode ?? "all") ||
+    JSON.stringify(previous.allowedSkills ?? []) !== JSON.stringify(next.allowedSkills ?? []) ||
     JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);
 }
 

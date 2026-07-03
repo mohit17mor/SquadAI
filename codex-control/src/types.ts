@@ -40,6 +40,31 @@ export type SessionStartOptions = {
   baseInstructions?: string;
   developerInstructions?: string;
   dynamicTools?: DynamicTool[];
+  config?: Record<string, unknown>;
+};
+
+export type SessionResumeOptions = Partial<Omit<SessionStartOptions, "reasoningEffort" | "dynamicTools">>;
+
+export type CodexSkillScope = "user" | "repo" | "system" | "admin";
+
+export type CodexSkillMetadata = {
+  name: string;
+  description: string;
+  shortDescription?: string;
+  path: string;
+  scope: CodexSkillScope;
+  enabled: boolean;
+};
+
+export type SkillListOptions = {
+  cwd: string;
+  forceReload?: boolean;
+};
+
+export type SkillListResult = {
+  cwd: string;
+  skills: CodexSkillMetadata[];
+  errors: Array<{ path: string; message: string }>;
 };
 
 export type Confirmation = {

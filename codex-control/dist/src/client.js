@@ -67,9 +67,12 @@ export class CodexControlClient {
         this.sessions.set(threadId, session);
         return session;
     }
-    async resumeSession(threadId) {
+    async resumeSession(threadId, options = {}) {
         await this.start();
-        await this.peer.request("thread/resume", { threadId });
+        await this.peer.request("thread/resume", {
+            threadId,
+            ...withoutEmptyCwd(options),
+        });
         const session = new CodexSession(this.peer, this.approvalManager, threadId);
         this.sessions.set(threadId, session);
         return session;
@@ -88,6 +91,23 @@ export class CodexControlClient {
         } while (cursor);
         return { models: models.map(normalizeModelOption) };
     }
+    async listSkills(options) {
+        await this.start();
+        const response = await this.peer.request("skills/list", {
+            cwds: [options.cwd],
+            forceReload: options.forceReload === true,
+        });
+        const entries = (response.data ?? []).filter(isRecord);
+        const entry = entries.find((item) => stringValue(item.cwd) === options.cwd) ?? entries[0];
+        if (!entry) {
+            throw new Error(`App Server did not return skills for ${options.cwd}.`);
+        }
+        return {
+            cwd: stringValue(entry.cwd),
+            skills: Array.isArray(entry.skills) ? entry.skills.map(normalizeSkillMetadata) : [],
+            errors: Array.isArray(entry.errors) ? entry.errors.map(normalizeSkillError) : [],
+        };
+    }
     async close() {
         await this.peer.close();
     }
@@ -104,6 +124,28 @@ export class CodexControlClient {
             }
         }
     }
+}
+function withoutEmptyCwd(options) {
+    const result = { ...options };
+    if (!options.cwd)
+        delete result.cwd;
+    return result;
+}
+function normalizeSkillMetadata(value) {
+    const record = isRecord(value) ? value : {};
+    const scope = record.scope;
+    return {
+        name: stringValue(record.name),
+        description: stringValue(record.description),
+        ...(typeof record.shortDescription === "string" ? { shortDescription: record.shortDescription } : {}),
+        path: stringValue(record.path),
+        scope: scope === "repo" || scope === "system" || scope === "admin" ? scope : "user",
+        enabled: record.enabled === true,
+    };
+}
+function normalizeSkillError(value) {
+    const record = isRecord(value) ? value : {};
+    return { path: stringValue(record.path), message: stringValue(record.message) };
 }
 function normalizeModelOption(value) {
     const record = isRecord(value) ? value : {};
