@@ -764,6 +764,7 @@ function renderHtml(title: string): string {
         <button type="button" class="rail-item active" data-panel="topology">Topology</button>
         <button type="button" class="rail-item" data-panel="jarvis">Jarvis</button>
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
+        <div id="rail-agents" class="rail-agents" aria-label="Agent conversations"></div>
         <button type="button" class="rail-item" data-panel="create">Create Agent</button>
         <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
         <button type="button" class="rail-item" data-panel="events">Event Inbox <span id="event-count">0</span></button>
@@ -852,20 +853,15 @@ function renderHtml(title: string): string {
           <button id="create-agent-button" type="submit">Create Agent</button>
         </form>
       </section>
-      <section id="panel-agents" class="panel-view active">
-        <div class="section-head">
-          <h2>Agents</h2>
-          <span id="agent-panel-count">0</span>
-        </div>
-        <div id="agents" class="agents"></div>
-        <details id="agent-settings" class="agent-editor">
-          <summary class="settings-summary">
-            <span>
-              <strong>Agent Settings</strong>
-              <small id="edit-agent-status">select one</small>
-            </span>
-            <span class="settings-caret" aria-hidden="true">&gt;</span>
-          </summary>
+      <section id="panel-agents" class="panel-view active"></section>
+    </aside>
+    <div id="agent-settings-modal" class="settings-modal" hidden>
+      <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-settings-title">
+        <header>
+          <div><span class="settings-kicker">Topology agent</span><h2 id="agent-settings-title">Edit agent</h2><p id="edit-agent-status">select one</p></div>
+          <button id="close-agent-settings" type="button" class="secondary">Close</button>
+        </header>
+        <div class="settings-dialog-body">
           <form id="edit-agent-form" class="agent-editor-form">
             <label>Name<input name="name" autocomplete="off"></label>
             <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
@@ -889,9 +885,9 @@ function renderHtml(title: string): string {
               <button id="delete-agent-button" type="button" class="danger">Delete</button>
             </div>
           </form>
-        </details>
+        </div>
       </section>
-    </aside>
+    </div>
     <section class="workspace chat-stream">
       <header class="topbar">
         <div>
@@ -956,9 +952,9 @@ button.secondary:hover { border-color: #58a6ff; background: #1c2128; }
 button.danger { background: #21262d; color: #f85149; }
 button.danger:hover { border-color: #f85149; background: #2d1517; }
 .shell { display: grid; grid-template-columns: 220px 360px minmax(0, 1fr); height: 100vh; }
-.shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 220px minmax(0, 1fr); }
-.shell.jarvis-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace, .shell.topology-mode .side-panel, .shell.topology-mode .workspace, .shell.topology-mode .ops-workspace { display: none; }
-.shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace { display: grid; grid-column: 2; }
+.shell.jarvis-mode, .shell.agents-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 220px minmax(0, 1fr); }
+.shell.jarvis-mode .side-panel, .shell.agents-mode .side-panel, .shell.ops-mode .side-panel, .shell.ops-mode .workspace, .shell.topology-mode .side-panel, .shell.topology-mode .workspace, .shell.topology-mode .ops-workspace { display: none; }
+.shell.jarvis-mode .workspace, .shell.agents-mode .workspace, .shell.ops-mode .ops-workspace { display: grid; grid-column: 2; }
 .shell.topology-mode .topology-workspace { display: grid; grid-column: 2; }
 .topology-workspace { display: none; position: relative; grid-template-columns: minmax(0, 1fr) 330px; grid-template-rows: 68px minmax(0, 1fr) 64px; min-width: 0; min-height: 0; overflow: hidden; background: #070a12; }
 .topology-toolbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; min-width: 0; padding: 10px 16px; background: #0c101b; border-bottom: 1px solid #202638; z-index: 4; }
@@ -1043,6 +1039,12 @@ h2 { margin: 0; font-size: 12px; color: #8b949e; text-transform: uppercase; lett
 .rail-item:hover { background: #1c2128; color: #e6edf3; }
 .rail-item.active { background: rgba(88,166,255,.12); color: #58a6ff; font-weight: 700; }
 .rail-item span { min-width: 22px; border-radius: 999px; padding: 1px 7px; background: #0d1117; color: #8b949e; text-align: center; font-size: 11px; }
+.rail-agents { display: grid; gap: 2px; margin: -1px 0 7px; padding: 0 5px 6px 13px; border-bottom: 1px solid rgba(48,54,61,.65); }
+.rail-agent { width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; justify-content: start; gap: 8px; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: #8b949e; text-align: left; font-size: 12px; font-weight: 550; }
+.rail-agent:hover { background: #1c2128; color: #e6edf3; }
+.rail-agent.active { background: rgba(88,166,255,.12); color: #e6edf3; }
+.rail-agent strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-agent .status-dot { width: 6px; height: 6px; }
 .rail-footer { padding: 14px 18px; border-top: 1px solid #30363d; display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 12px; white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 999px; background: #f85149; display: inline-block; }
 .dot.connected { background: #3fb950; }
@@ -1072,25 +1074,19 @@ textarea { resize: vertical; }
 .skill-option strong { display: block; color: #c9d1d9; font-size: 12px; }
 .skill-option small, .skill-options > span { color: #8b949e; font-size: 11px; line-height: 1.35; }
 .skill-scope { color: #6e7681; font-size: 10px; text-transform: uppercase; }
-.agents { display: grid; gap: 8px; }
-.agent-editor { margin-top: 16px; padding-top: 12px; border-top: 1px solid #30363d; }
-.settings-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; cursor: pointer; list-style: none; }
-.settings-summary::-webkit-details-marker { display: none; }
-.settings-summary:hover { border-color: #58a6ff; background: #1c2128; }
-.settings-summary span:first-child { display: grid; gap: 2px; min-width: 0; }
-.settings-summary strong { color: #e6edf3; font-size: 13px; }
-.settings-summary small { color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-caret { color: #8b949e; font-weight: 700; transition: transform .15s ease; }
-.agent-editor[open] .settings-caret { transform: rotate(90deg); }
-.agent-editor-form { padding-top: 12px; }
+.settings-modal { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 22px; background: rgba(1,4,9,.72); backdrop-filter: blur(5px); }
+.settings-modal[hidden] { display: none; }
+.settings-dialog { width: min(680px, 94vw); max-height: min(820px, 92vh); display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; background: #161b22; border: 1px solid #3d444d; border-radius: 14px; box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.settings-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #30363d; }
+.settings-dialog > header h2 { margin: 3px 0 2px; color: #e6edf3; font-size: 18px; text-transform: none; letter-spacing: 0; }
+.settings-dialog > header p { margin: 0; color: #8b949e; font-size: 12px; }
+.settings-kicker { color: #58a6ff; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.settings-dialog-body { min-height: 0; overflow-y: auto; padding: 18px 20px 22px; }
+.agent-editor-form { padding: 0; }
 .agent-editor-form.disabled { opacity: .55; pointer-events: none; }
 .agent-actions { display: flex; gap: 8px; justify-content: space-between; }
 .agent-actions button { flex: 1; }
 .empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
-.agent { width: 100%; background: #0d1117; color: #e6edf3; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; border: 1px solid #30363d; }
-.agent.active { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88,166,255,.3) inset; }
-.agent strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent .sub { grid-column: 1 / -1; color: #8b949e; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-list { display: grid; gap: 7px; }
 .queue-item { border-bottom: 1px solid rgba(48,54,61,.72); padding: 9px 0; background: transparent; display: grid; grid-template-columns: 90px 160px minmax(0, 1fr); gap: 10px; align-items: baseline; }
 .queue-item[role="button"] { cursor: pointer; text-align: left; }
@@ -1236,7 +1232,7 @@ textarea { resize: vertical; }
 .live-activity-line.failed .live-activity-text { color: #f85149; }
 .live-activity-batch { color: #8b949e; }
 .live-activity-batch .live-activity-text { font-weight: 500; }
-@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
+@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.agents-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.agents-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .rail-agents { grid-column: 1 / -1; grid-template-columns: repeat(2,minmax(0,1fr)); padding-left: 5px; } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 78vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
 `;
 }
 
@@ -1289,7 +1285,7 @@ const defaultJarvisInstructions = [
 ].join("\\n");
 
 const shell = document.getElementById("shell");
-const agentList = document.getElementById("agents");
+const agentList = document.getElementById("rail-agents");
 const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
 const selectedMeta = document.getElementById("selected-meta");
@@ -1305,7 +1301,6 @@ const agentCount = document.getElementById("agent-count");
 const notificationCount = document.getElementById("notification-count");
 const eventCount = document.getElementById("event-count");
 const workCount = document.getElementById("work-count");
-const agentPanelCount = document.getElementById("agent-panel-count");
 const notificationPanelCount = document.getElementById("notification-panel-count");
 const eventPanelCount = document.getElementById("event-panel-count");
 const workPanelCount = document.getElementById("work-panel-count");
@@ -1320,6 +1315,9 @@ const agentIdHint = document.getElementById("agent-id-hint");
 const editAgentForm = document.getElementById("edit-agent-form");
 const editAgentStatus = document.getElementById("edit-agent-status");
 const deleteAgentButton = document.getElementById("delete-agent-button");
+const agentSettingsModal = document.getElementById("agent-settings-modal");
+const agentSettingsTitle = document.getElementById("agent-settings-title");
+const closeAgentSettingsButton = document.getElementById("close-agent-settings");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
 const opsTitle = document.getElementById("ops-title");
@@ -1331,6 +1329,7 @@ let createInstructionsTouched = false;
 let editAgentLoadedId = null;
 let editAgentDirty = false;
 let composerAgentId = null;
+let forceLatestMessage = true;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
@@ -1340,6 +1339,7 @@ for (const button of document.querySelectorAll("[data-panel]")) {
     activePanel = button.dataset.panel || "agents";
     if (previousPanel !== activePanel) {
       lastMessagesHtml = "";
+      if (activePanel === "agents" || activePanel === "jarvis") forceLatestMessage = true;
     }
     render();
   });
@@ -1350,8 +1350,19 @@ window.addEventListener("topology:open-agent", (event) => {
   selectedAgentId = agentId;
   activePanel = "agents";
   lastMessagesHtml = "";
+  forceLatestMessage = true;
   editAgentDirty = false;
   render();
+});
+window.addEventListener("topology:edit-agent", (event) => {
+  const agentId = event.detail && event.detail.agentId;
+  const selected = agents.find((agent) => agent.id === agentId);
+  if (!selected) return;
+  selectedAgentId = agentId;
+  editAgentDirty = false;
+  editAgentLoadedId = null;
+  renderAgentEditor(selected);
+  agentSettingsModal.hidden = false;
 });
 window.addEventListener("topology:refresh-main", () => {
   void refresh();
@@ -1378,6 +1389,13 @@ editAgentForm.addEventListener("input", () => {
 });
 editAgentForm.elements.model.addEventListener("change", renderModelControls);
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
+closeAgentSettingsButton.addEventListener("click", closeAgentSettings);
+agentSettingsModal.addEventListener("click", (event) => {
+  if (event.target === agentSettingsModal) closeAgentSettings();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !agentSettingsModal.hidden) closeAgentSettings();
+});
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
 composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
@@ -1449,13 +1467,14 @@ async function refreshAgents() {
   if (!requestedAgentApplied && requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)) {
     selectedAgentId = requestedAgentId;
     requestedAgentApplied = true;
+    forceLatestMessage = true;
   } else if (activePanel === "jarvis") {
     selectedAgentId = jarvisAgent()?.id || null;
   } else if (!selectedAgentId && agents.length) {
     selectedAgentId = agents[0].id;
+    forceLatestMessage = true;
   }
   agentCount.textContent = String(agents.length);
-  agentPanelCount.textContent = String(agents.length);
 }
 
 function jarvisAgent() {
@@ -1474,7 +1493,6 @@ function upsertAgent(agent) {
   }
   lastAgentListHtml = "";
   agentCount.textContent = String(agents.length);
-  agentPanelCount.textContent = String(agents.length);
 }
 
 function renderModelControls() {
@@ -1616,6 +1634,7 @@ async function createAgent(event) {
   upsertAgent(result.agent);
   selectedAgentId = result.agent.id;
   lastMessagesHtml = "";
+  forceLatestMessage = true;
   activePanel = result.agent.metadata?.role === "jarvis" ? "jarvis" : "agents";
   editAgentDirty = false;
   editAgentLoadedId = null;
@@ -1713,6 +1732,7 @@ async function updateSelectedAgent(event) {
   await refreshAgents();
   await refreshEvents();
   render();
+  closeAgentSettings();
   toast(result.agent.threadId ? "Agent updated" : "Agent updated; next turn starts fresh");
 }
 
@@ -1732,6 +1752,8 @@ async function deleteSelectedAgent() {
   }
   agents = agents.filter((agent) => agent.id !== selected.id);
   selectedAgentId = agents[0]?.id || null;
+  closeAgentSettings();
+  forceLatestMessage = true;
   lastAgentListHtml = "";
   lastMessagesHtml = "";
   editAgentDirty = false;
@@ -1900,25 +1922,28 @@ function render() {
     if (selectedAgentId !== jarvis?.id) {
       selectedAgentId = jarvis?.id || null;
       lastMessagesHtml = "";
+      forceLatestMessage = true;
     }
   } else if (activePanel === "agents" && !agents.some((agent) => agent.id === selectedAgentId)) {
     selectedAgentId = agents[0]?.id || null;
     lastMessagesHtml = "";
+    forceLatestMessage = true;
   }
   const agentListHtml = agents.map((agent) => \`
-    <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
+    <button class="rail-agent \${agent.id === selectedAgentId && activePanel === "agents" ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}" title="Open \${escapeAttr(agent.name)} conversation">
+      <i class="status-dot \${escapeAttr(agent.status)}"></i>
       <strong>\${escapeHtml(agent.name)}</strong>
-      <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
-      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)} - \${escapeHtml(skillSummary(agent))} - \${escapeHtml(permissionSummary(agent))}</span>
     </button>
-  \`).join("") || '<div class="empty">No agents yet. Create one from the Create Agent section.</div>';
+  \`).join("") || '<span class="rail-agent-empty">No agents yet</span>';
   if (agentListHtml !== lastAgentListHtml) {
     agentList.innerHTML = agentListHtml;
     lastAgentListHtml = agentListHtml;
-    for (const button of agentList.querySelectorAll(".agent")) {
+    for (const button of agentList.querySelectorAll(".rail-agent")) {
       button.addEventListener("click", () => {
         selectedAgentId = button.dataset.agentId;
+        activePanel = "agents";
         lastMessagesHtml = "";
+        forceLatestMessage = true;
         editAgentDirty = false;
         render();
       });
@@ -1995,6 +2020,7 @@ function renderAgentEditor(selected) {
     return;
   }
   editAgentStatus.textContent = selected.status;
+  agentSettingsTitle.textContent = "Edit " + selected.name;
   if (editAgentDirty && editAgentLoadedId === selected.id) {
     return;
   }
@@ -2151,6 +2177,7 @@ function renderPanel() {
   const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
   const topologyMode = activePanel === "topology";
   shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
+  shell.classList.toggle("agents-mode", activePanel === "agents");
   shell.classList.toggle("ops-mode", opsMode);
   shell.classList.toggle("topology-mode", topologyMode);
   if (opsMode) {
@@ -3260,7 +3287,7 @@ function toast(message, type = "info") {
 function renderMessagesIfChanged(nextHtml) {
   if (nextHtml === lastMessagesHtml) return;
   captureActivityScrollPositions();
-  const shouldStickToBottom = isScrolledNearBottom(messages) && Date.now() > activityInteractionPauseUntil;
+  const shouldStickToBottom = forceLatestMessage || (isScrolledNearBottom(messages) && Date.now() > activityInteractionPauseUntil);
   messages.innerHTML = nextHtml;
   lastMessagesHtml = nextHtml;
   bindApprovalButtons();
@@ -3269,6 +3296,11 @@ function renderMessagesIfChanged(nextHtml) {
   if (shouldStickToBottom) {
     scrollDown();
   }
+  forceLatestMessage = false;
+}
+
+function closeAgentSettings() {
+  agentSettingsModal.hidden = true;
 }
 
 function bindActivityToggles() {
@@ -3330,7 +3362,14 @@ function isScrolledNearBottom(node) {
 }
 
 function scrollDown() {
-  messages.scrollTop = messages.scrollHeight;
+  const applyLatestPosition = () => {
+    messages.scrollTop = messages.scrollHeight;
+    if (window.matchMedia("(max-width: 980px)").matches) {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+    }
+  };
+  applyLatestPosition();
+  requestAnimationFrame(() => requestAnimationFrame(applyLatestPosition));
 }
 
 function escapeHtml(value) {

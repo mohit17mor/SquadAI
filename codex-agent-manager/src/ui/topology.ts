@@ -555,13 +555,16 @@ function startTopology(
       <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? "worker"))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
-      <footer><button type="button" data-open-conversation>Open conversation</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
+      <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
     inspectorElement.querySelector("[data-close-inspector]")?.addEventListener("click", () => {
       selectedAgentId = null;
       updateSelection();
     });
     inspectorElement.querySelector("[data-open-conversation]")?.addEventListener("click", () => {
       window.dispatchEvent(new CustomEvent("topology:open-agent", { detail: { agentId: agent.id } }));
+    });
+    inspectorElement.querySelector("[data-edit-agent]")?.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("topology:edit-agent", { detail: { agentId: agent.id } }));
     });
     inspectorElement.querySelector("[data-pause-agent]")?.addEventListener("click", () => void pauseAgent(agent));
     inspectorElement.querySelector("[data-remove-agent]")?.addEventListener("click", () => void removeAgent(agent));

@@ -701,9 +701,13 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /You are the router agent for the multi-agent Codex command center/);
     assert.match(html, /You are Jarvis, the human-facing agent for the multi-agent Codex command center/);
     assert.match(html, /edit-agent-form/);
-    assert.match(html, /<details id="agent-settings" class="agent-editor">/);
-    assert.match(html, /class="settings-summary"/);
-    assert.doesNotMatch(html, /<details id="agent-settings" class="agent-editor" open>/);
+    assert.match(html, /id="rail-agents"/);
+    assert.match(html, /class="settings-modal"/);
+    assert.match(html, /id="close-agent-settings"/);
+    assert.match(html, /topology:edit-agent/);
+    assert.match(html, /forceLatestMessage/);
+    assert.match(html, /requestAnimationFrame/);
+    assert.doesNotMatch(html, /<details id="agent-settings"/);
     assert.match(html, /Developer instructions/);
     assert.match(html, /updateSelectedAgent/);
     assert.match(html, /deleteSelectedAgent/);
@@ -774,7 +778,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-approval-action="approved"/);
     assert.match(html, /Event Inbox/);
     assert.match(html, /ops-log/);
-    assert.match(html, /\.shell\.jarvis-mode \.workspace, \.shell\.ops-mode \.ops-workspace \{ display: grid; grid-column: 2; \}/);
+    assert.match(html, /\.shell\.jarvis-mode \.workspace, \.shell\.agents-mode \.workspace, \.shell\.ops-mode \.ops-workspace \{ display: grid; grid-column: 2; \}/);
     assert.match(html, /queue-time/);
     assert.match(html, /queue-state/);
     assert.match(html, /queue-message/);
@@ -852,6 +856,8 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /permissionLabel/);
     assert.match(moduleSource, /Automatic risk review/);
     assert.match(moduleSource, /Approval prompts disabled/);
+    assert.match(moduleSource, /data-edit-agent/);
+    assert.match(moduleSource, /topology:edit-agent/);
     assert.match(moduleSource, /\/api\/sensor-events/);
     assert.match(moduleSource, /createSourceNode/);
 
