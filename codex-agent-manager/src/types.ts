@@ -15,6 +15,7 @@ export type AgentEventType =
   | "approval_requested"
   | "approval_resolved"
   | "approval_auto_approved"
+  | "codex_item_started"
   | "codex_item_completed"
   | "codex_turn_retrying"
   | "codex_thread_compacted"

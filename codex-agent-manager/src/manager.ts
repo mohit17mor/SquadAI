@@ -1231,8 +1231,11 @@ export class CodexAgentManager extends EventEmitter {
     if (!session?.on) {
       return;
     }
+    session.on("item.started", (item) => {
+      void this.recordCodexItemLifecycle(record.definition.id, session.threadId, "codex_item_started", item);
+    });
     session.on("item.completed", (item) => {
-      void this.recordCodexItemCompleted(record.definition.id, session.threadId, item);
+      void this.recordCodexItemLifecycle(record.definition.id, session.threadId, "codex_item_completed", item);
     });
     session.on("turn.retrying", (params) => {
       void this.recordEvent(record.definition.id, "codex_turn_retrying", "Codex is reconnecting.", {
@@ -1248,13 +1251,14 @@ export class CodexAgentManager extends EventEmitter {
     });
   }
 
-  private async recordCodexItemCompleted(
+  private async recordCodexItemLifecycle(
     agentId: string,
     threadId: string,
+    eventType: "codex_item_started" | "codex_item_completed",
     item: unknown,
   ): Promise<void> {
     const summary = summarizeCodexItem(item);
-    await this.recordEvent(agentId, "codex_item_completed", summary.title, {
+    await this.recordEvent(agentId, eventType, summary.title, {
       threadId,
       ...summary,
       item: cloneUnknown(item),

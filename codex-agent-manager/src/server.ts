@@ -1167,6 +1167,15 @@ textarea { resize: vertical; }
 .commentary-entry:first-child { border-top: 0; }
 .commentary-entry time { color: #6e7681; font-size: 11px; font-variant-numeric: tabular-nums; }
 .commentary-entry span { color: #c9d1d9; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-row.live-activity { align-self: flex-start; align-items: stretch; width: min(760px, 90%); max-width: min(760px, 90%); gap: 0; }
+.live-activity-line { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 11px; align-items: baseline; padding: 5px 2px; color: #9aa4b0; font-size: 13px; line-height: 1.45; }
+.live-activity-kind { color: #6e7681; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.live-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-activity-line.running .live-activity-text { color: #c9d1d9; }
+.live-activity-line.running .live-activity-text::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
+.live-activity-line.failed .live-activity-text { color: #f85149; }
+.live-activity-batch { color: #8b949e; }
+.live-activity-batch .live-activity-text { font-weight: 500; }
 @media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
 `;
 }
@@ -1774,10 +1783,12 @@ function render() {
   const commentaryEventIds = new Set(commentarySummaries.flatMap((summary) => summary.eventIds));
   const activitySummaries = summarizeActivityEvents(visibleEvents, resolvedApprovals);
   const activityEventIds = new Set(activitySummaries.flatMap((summary) => summary.eventIds));
+  const liveTurnMessages = activeTurnPending ? liveTurnToTimelineMessages(visibleEvents) : [];
   const timelineMessages = [
     ...workSummaries.map(workSummaryToTimelineMessage).filter(shouldShowTimelineInChat),
-    ...commentarySummaries.flatMap(commentarySummaryToTimelineMessages),
-    ...activitySummaries.map(activitySummaryToTimelineMessage),
+    ...commentarySummaries.filter((summary) => summary.status !== "running").flatMap(commentarySummaryToTimelineMessages),
+    ...activitySummaries.filter((summary) => summary.status !== "running").map(activitySummaryToTimelineMessage),
+    ...liveTurnMessages,
   ].filter(Boolean);
   const persistedMessages = visibleEvents
     .filter((event) => !workEventIds.has(event.id))
@@ -1795,7 +1806,7 @@ function render() {
       { kind: "status", meta: "", text: "Agent is working", pending: true },
     ]);
   const workingMessage = activeTurnPending && !localMessages.some((item) => item.pending)
-    && !timelineMessages.some((message) => message.status === "running")
+    && !liveTurnMessages.length
     ? [{ kind: "status", meta: "", text: "Agent is working", pending: true }]
     : [];
   const rendered = [
@@ -2454,6 +2465,178 @@ function commentarySummaryToTimelineMessages(summary) {
   }];
 }
 
+function liveTurnToTimelineMessages(visibleEvents) {
+  let activeTurnStart = -1;
+  for (let index = 0; index < visibleEvents.length; index += 1) {
+    const event = visibleEvents[index];
+    if (event.type === "turn_started") activeTurnStart = index;
+    if (event.type === "turn_completed" || event.type === "turn_failed") activeTurnStart = -1;
+  }
+  if (activeTurnStart < 0) return [];
+
+  const messages = [];
+  let activityBatch = [];
+  const flushActivity = (collapsed) => {
+    if (!activityBatch.length) return;
+    if (collapsed) {
+      messages.push({
+        kind: "liveActivityBatch",
+        text: summarizeLiveActivityBatch(activityBatch),
+        time: activityBatch[activityBatch.length - 1].time,
+      });
+    } else {
+      messages.push(...activityBatch.map((entry) => ({ kind: "liveActivity", ...entry })));
+    }
+    activityBatch = [];
+  };
+
+  for (const event of visibleEvents.slice(activeTurnStart + 1)) {
+    if (isCommentaryEvent(event)) {
+      flushActivity(true);
+      const text = String(event.payload?.item?.text || event.payload?.summary || "").trim();
+      if (text) {
+        messages.push({
+          kind: "commentary",
+          meta: "Agent update",
+          text,
+          time: event.createdAt,
+          status: "running",
+        });
+      }
+      continue;
+    }
+    if (isDisplayableActivityEvent(event)) {
+      const entry = liveActivityEntry(event);
+      const existingIndex = activityBatch.findIndex((candidate) => candidate.itemId === entry.itemId);
+      if (existingIndex >= 0) activityBatch[existingIndex] = entry;
+      else activityBatch.push(entry);
+      continue;
+    }
+    if (event.type === "codex_turn_retrying") {
+      activityBatch.push({
+        category: "status",
+        text: "Reconnecting - " + retryingSummary(event.payload || {}),
+        time: event.createdAt,
+        failed: false,
+        itemType: "connection",
+      });
+      continue;
+    }
+    if (event.type === "codex_thread_compacted") {
+      activityBatch.push({
+        category: "memory",
+        text: "Compacted conversation history",
+        time: event.createdAt,
+        failed: false,
+        itemType: "contextCompaction",
+      });
+    }
+  }
+  flushActivity(false);
+  if (messages[messages.length - 1]?.kind === "commentary") {
+    messages.push({
+      kind: "liveActivity",
+      category: "status",
+      text: "Working",
+      time: messages[messages.length - 1].time,
+      running: true,
+      failed: false,
+    });
+  }
+  return messages;
+}
+
+function isDisplayableActivityEvent(event) {
+  if (event.type !== "codex_item_started" && event.type !== "codex_item_completed") return false;
+  const itemType = String(event.payload?.itemType || event.payload?.item?.type || "");
+  return itemType === "commandExecution" ||
+    itemType === "mcpToolCall" ||
+    itemType === "fileChange" ||
+    itemType === "contextCompaction";
+}
+
+function liveActivityEntry(event) {
+  const payload = event.payload || {};
+  const item = payload.item && typeof payload.item === "object" ? payload.item : {};
+  const itemType = String(payload.itemType || item.type || "item");
+  const status = String(item.status || "completed");
+  const running = event.type !== "codex_item_completed" && status !== "failed";
+  const failed = status === "failed" || Boolean(item.error);
+  const itemId = String(item.id || event.id);
+  if (itemType === "commandExecution") {
+    const command = String(payload.command || item.command || payload.summary || "command");
+    return {
+      category: "run",
+      text: (running ? "Running " : "Ran ") + truncateText(command, 220),
+      time: event.createdAt,
+      failed,
+      running,
+      itemId,
+      itemType,
+    };
+  }
+  if (itemType === "mcpToolCall") {
+    const tool = friendlyActivityToolName(item.tool || payload.toolName || payload.title || "tool");
+    return {
+      category: "tool",
+      text: (failed ? "Failed " : running ? "Using " : "Used ") + tool,
+      time: event.createdAt,
+      failed,
+      running,
+      itemId,
+      itemType,
+    };
+  }
+  if (itemType === "fileChange") {
+    const count = Array.isArray(item.changes) ? item.changes.length : 1;
+    return {
+      category: "edit",
+      text: (running ? "Editing " : "Edited ") + count + (count === 1 ? " file" : " files"),
+      time: event.createdAt,
+      failed,
+      running,
+      itemId,
+      itemType,
+      fileCount: count,
+    };
+  }
+  return {
+    category: "memory",
+    text: "Compacted conversation history",
+    time: event.createdAt,
+    failed,
+    running,
+    itemId,
+    itemType,
+  };
+}
+
+function friendlyActivityToolName(value) {
+  const raw = String(value || "tool");
+  const leaf = raw.split(/[/.]/).filter(Boolean).pop() || raw;
+  return leaf.replace(/^mcp__/, "").replace(/[_-]+/g, " ");
+}
+
+function summarizeLiveActivityBatch(entries) {
+  if (entries.length === 1) return entries[0].text;
+  const commandCount = entries.filter((entry) => entry.itemType === "commandExecution").length;
+  const toolCount = entries.filter((entry) => entry.itemType === "mcpToolCall").length;
+  const fileCount = entries.reduce((total, entry) => total + Number(entry.fileCount || 0), 0);
+  const otherCount = entries.length - commandCount - toolCount - entries.filter((entry) => entry.itemType === "fileChange").length;
+  const parts = [];
+  if (fileCount) parts.push("Edited " + fileCount + (fileCount === 1 ? " file" : " files"));
+  if (toolCount) parts.push("Used " + toolCount + (toolCount === 1 ? " tool" : " tools"));
+  if (commandCount) parts.push("Ran " + commandCount + (commandCount === 1 ? " command" : " commands"));
+  if (otherCount) parts.push("Completed " + otherCount + (otherCount === 1 ? " step" : " steps"));
+  return joinActivityPhrases(parts);
+}
+
+function joinActivityPhrases(parts) {
+  if (parts.length < 2) return parts[0] || "Completed activity";
+  if (parts.length === 2) return parts[0] + " and " + parts[1].toLowerCase();
+  return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1].toLowerCase();
+}
+
 function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
   const summaries = [];
   let current = null;
@@ -2474,8 +2657,11 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
       };
       continue;
     }
+    if (event.type === "codex_item_started") {
+      continue;
+    }
     if (event.type === "codex_item_completed") {
-      if (isAgentMessageEvent(event)) {
+      if (!isDisplayableActivityEvent(event)) {
         continue;
       }
       if (!current) {
@@ -2648,7 +2834,9 @@ function eventToMessages(event, state) {
   if (event.type === "approval_auto_approved") {
     return [];
   }
-  if (event.type === "codex_item_completed" || event.type === "codex_thread_compacted") {
+  if (event.type === "codex_item_started" ||
+      event.type === "codex_item_completed" ||
+      event.type === "codex_thread_compacted") {
     return [];
   }
   if (event.type === "codex_turn_retrying") {
@@ -2685,6 +2873,17 @@ function retryingSummary(payload) {
 }
 
 function renderMessage(message) {
+  if (message.kind === "liveActivity" || message.kind === "liveActivityBatch") {
+    const isBatch = message.kind === "liveActivityBatch";
+    return \`
+      <article class="message-row live-activity">
+        <div class="live-activity-line \${isBatch ? "live-activity-batch" : ""} \${message.running ? "running" : ""} \${message.failed ? "failed" : ""}">
+          <span class="live-activity-kind">\${escapeHtml(isBatch ? "Activity" : message.category || "Step")}</span>
+          <span class="live-activity-text" title="\${escapeAttr(message.text)}">\${escapeHtml(message.text)}</span>
+        </div>
+      </article>
+    \`;
+  }
   if (message.kind === "commentary") {
     const meta = message.time
       ? \`\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}\`

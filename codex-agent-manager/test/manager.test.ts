@@ -85,6 +85,12 @@ class FakeCodexSession {
     }
   }
 
+  emitItemStarted(item: Record<string, unknown>): void {
+    for (const handler of this.handlers.get("item.started") ?? []) {
+      handler(item);
+    }
+  }
+
   emitThreadCompacted(params: Record<string, unknown>): void {
     for (const handler of this.handlers.get("thread.compacted") ?? []) {
       handler(params);
@@ -1401,7 +1407,15 @@ test("records command execution details in Codex activity summaries", async () =
   const session = clients[0]?.session("thread-1");
   assert.ok(session);
 
+  session.emitItemStarted({
+    id: "command-1",
+    type: "commandExecution",
+    command: ["npm", "test"],
+    cwd: "/tmp/ops-poc",
+    status: "inProgress",
+  });
   session.emitItemCompleted({
+    id: "command-1",
     type: "commandExecution",
     command: ["npm", "test"],
     cwd: "/tmp/ops-poc",
@@ -1413,6 +1427,10 @@ test("records command execution details in Codex activity summaries", async () =
   await waitFor(
     () => manager.listEvents("maintenance").some((event) => event.type === "codex_item_completed"),
     "command item event",
+  );
+  assert.equal(
+    manager.listEvents("maintenance").filter((event) => event.type === "codex_item_started").length,
+    1,
   );
   const itemEvent = manager
     .listEvents("maintenance")
