@@ -864,6 +864,11 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /topology:edit-agent/);
     assert.match(moduleSource, /\/api\/sensor-events/);
     assert.match(moduleSource, /createSourceNode/);
+    assert.match(moduleSource, /jarvis\.topology\.viewport\.v1/);
+    assert.match(moduleSource, /panning-view/);
+    assert.match(moduleSource, /setCameraDistance/);
+    assert.match(moduleSource, /route-selected/);
+    assert.doesNotMatch(moduleSource, /sensorSources\.slice\(0, 5\)/);
 
     const vendorResponse = await fetch(`${baseUrl}/vendor/three.module.js`);
     assert.equal(vendorResponse.status, 200);

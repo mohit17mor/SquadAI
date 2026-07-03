@@ -985,7 +985,7 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 #topology-canvas { display: block; width: 100%; height: 100%; cursor: grab; outline: none; touch-action: none; }
 #topology-canvas:active { cursor: grabbing; }
 #topology-canvas.over-agent { cursor: move; }
-#topology-canvas.dragging-node { cursor: grabbing; }
+#topology-canvas.dragging-node, #topology-canvas.panning-view { cursor: grabbing; }
 .topology-agent-list { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .topology-label { position: absolute; left: 0; top: 0; min-width: 108px; display: grid; gap: 2px; padding: 7px 10px; pointer-events: none; color: #e8edff; background: rgba(10,14,25,.88); border: 1px solid rgba(116,132,183,.36); border-radius: 8px; box-shadow: 0 10px 22px rgba(0,0,0,.22); transition: border-color .16s, background .16s, opacity .16s; }
 .topology-label:hover, .topology-label.selected { background: rgba(20,27,48,.96); border-color: #7589f6; }
@@ -996,6 +996,8 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .topology-label.status-blocked span { color: #f5aa42; }
 .topology-source-label { pointer-events: none; border-color: rgba(75,220,244,.35); background: rgba(7,24,34,.86); }
 .topology-source-label span { color: #56cfe7; }
+.topology-source-label.route-selected { color: #f2fbff; border-color: rgba(103,216,255,.95); background: rgba(8,37,52,.96); box-shadow: 0 0 0 1px rgba(103,216,255,.18), 0 10px 28px rgba(20,181,226,.18); }
+.topology-source-label.route-muted { opacity: .38 !important; }
 .topology-legend { position: absolute; left: 18px; top: 18px; display: flex; gap: 13px; padding: 7px 9px; color: #7f8aa4; background: rgba(7,10,18,.76); border: 1px solid #20273a; border-radius: 7px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .topology-legend span { display: flex; align-items: center; gap: 5px; }
 .legend-signal { width: 7px; height: 7px; border-radius: 999px; background: #6879ed; }

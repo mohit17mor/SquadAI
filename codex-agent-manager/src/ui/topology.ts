@@ -40,6 +40,7 @@ type NodeRecord = {
 };
 
 type SourceRecord = {
+  source: string;
   group: THREE.Group;
   label: HTMLDivElement;
 };
@@ -48,6 +49,10 @@ type ConnectionRecord = {
   line: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   from: THREE.Vector3;
   to: THREE.Vector3;
+  baseOpacity: number;
+  fromAgentId?: string;
+  toAgentId?: string;
+  sourceName?: string;
 };
 
 type NodeDrag = {
@@ -57,6 +62,7 @@ type NodeDrag = {
 };
 
 const TOPOLOGY_LAYOUT_KEY = "jarvis.topology.agent-positions.v1";
+const TOPOLOGY_VIEW_KEY = "jarvis.topology.viewport.v1";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#topology-canvas");
 const workspace = document.querySelector<HTMLElement>("#topology-workspace");
@@ -97,22 +103,23 @@ function startTopology(
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x070a12, 0.036);
-  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-  camera.position.set(0, 4.8, 12.5);
-  camera.lookAt(0, 0, 0);
+  scene.fog = new THREE.FogExp2(0x070a12, 0.012);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 240);
 
   const world = new THREE.Group();
+  const savedView = loadSavedView();
+  world.position.copy(savedView?.position ?? new THREE.Vector3());
   scene.add(world);
+  setCameraDistance(savedView?.distance ?? 12.5);
   scene.add(new THREE.HemisphereLight(0xaabfff, 0x10131e, 2.4));
   const keyLight = new THREE.DirectionalLight(0xffffff, 3.2);
   keyLight.position.set(4, 8, 7);
   scene.add(keyLight);
 
-  const floor = new THREE.GridHelper(28, 36, 0x29304a, 0x151a29);
+  const floor = new THREE.GridHelper(600, 300, 0x29304a, 0x151a29);
   floor.position.y = -2.3;
   floor.material.transparent = true;
-  floor.material.opacity = 0.2;
+  floor.material.opacity = 0.16;
   scene.add(floor);
 
   const nodes = new Map<string, NodeRecord>();
@@ -127,7 +134,7 @@ function startTopology(
   let sensorEvents: SensorEventSnapshot[] = [];
   let routingMode = "explicit";
   let selectedAgentId: string | null = null;
-  let rotating = false;
+  let panning = false;
   let nodeDrag: NodeDrag | null = null;
   let lastPointer = { x: 0, y: 0 };
   let dragOrigin = { x: 0, y: 0 };
@@ -163,7 +170,8 @@ function startTopology(
       };
       canvasElement.classList.add("dragging-node");
     } else {
-      rotating = true;
+      panning = true;
+      canvasElement.classList.add("panning-view");
     }
     canvasElement.setPointerCapture(event.pointerId);
   });
@@ -180,16 +188,14 @@ function startTopology(
       needsRender = true;
       return;
     }
-    if (!rotating) {
+    if (!panning) {
       canvasElement.classList.toggle("over-agent", Boolean(nodeFromPointer(event)));
       return;
     }
-    world.rotation.y += (event.clientX - lastPointer.x) * 0.004;
-    world.rotation.x = THREE.MathUtils.clamp(
-      world.rotation.x + (event.clientY - lastPointer.y) * 0.002,
-      -0.25,
-      0.35,
-    );
+    const rect = canvasElement.getBoundingClientRect();
+    const scale = (camera.position.z / Math.max(rect.height, 1)) * 1.62;
+    world.position.x += (event.clientX - lastPointer.x) * scale;
+    world.position.y -= (event.clientY - lastPointer.y) * scale;
     lastPointer = { x: event.clientX, y: event.clientY };
     needsRender = true;
   });
@@ -199,23 +205,25 @@ function startTopology(
       savedPositions.set(nodeDrag.node.agent.id, nodeDrag.node.group.position.clone());
       savePositions(savedPositions);
     }
-    const wasRotating = rotating;
-    rotating = false;
+    const wasPanning = panning;
+    panning = false;
     nodeDrag = null;
-    canvasElement.classList.remove("dragging-node");
+    canvasElement.classList.remove("dragging-node", "panning-view");
     if (canvasElement.hasPointerCapture(event.pointerId)) {
       canvasElement.releasePointerCapture(event.pointerId);
     }
-    if (wasRotating && moved < 3) selectFromPointer(event);
+    if (wasPanning) saveView(world.position, camera.position.z);
+    if (wasPanning && moved < 3) selectFromPointer(event);
   };
   canvasElement.addEventListener("pointerup", finishPointerInteraction);
   canvasElement.addEventListener("pointercancel", finishPointerInteraction);
   canvasElement.addEventListener("pointerleave", () => {
-    if (!nodeDrag && !rotating) canvasElement.classList.remove("over-agent");
+    if (!nodeDrag && !panning) canvasElement.classList.remove("over-agent");
   });
   canvasElement.addEventListener("wheel", (event) => {
     event.preventDefault();
-    camera.position.z = THREE.MathUtils.clamp(camera.position.z + event.deltaY * 0.008, 7, 20);
+    setCameraDistance(camera.position.z * Math.exp(event.deltaY * 0.00115));
+    saveView(world.position, camera.position.z);
     needsRender = true;
   }, { passive: false });
 
@@ -242,15 +250,29 @@ function startTopology(
     document.querySelector<HTMLButtonElement>('[data-panel="create"]')?.click();
   });
   const fitView = (): void => {
-    world.rotation.set(0, 0, 0);
-    camera.position.set(0, 4.8, 12.5);
-    camera.lookAt(0, 0, 0);
+    const positions = [
+      ...Array.from(nodes.values(), (node) => node.group.position),
+      ...Array.from(sourceNodes.values(), (source) => source.group.position),
+    ];
+    if (!positions.length) {
+      world.position.set(0, 0, 0);
+      setCameraDistance(12.5);
+    } else {
+      const bounds = new THREE.Box3().setFromPoints(positions);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
+      world.position.set(-center.x, -center.y, -center.z);
+      const verticalSpan = Math.max(size.y + 4, (size.x + 5) / Math.max(camera.aspect, 0.5));
+      setCameraDistance(THREE.MathUtils.clamp(verticalSpan * 1.55, 8, 120));
+    }
+    saveView(world.position, camera.position.z);
     needsRender = true;
   };
   document.querySelector("#topology-fit")?.addEventListener("click", fitView);
   document.querySelector("#topology-fit-secondary")?.addEventListener("click", fitView);
   document.querySelector("#topology-zoom-out")?.addEventListener("click", () => {
-    camera.position.z = THREE.MathUtils.clamp(camera.position.z + 1.4, 7, 20);
+    setCameraDistance(camera.position.z * 1.18);
+    saveView(world.position, camera.position.z);
     needsRender = true;
   });
 
@@ -289,11 +311,12 @@ function startTopology(
     agents = Array.isArray(body.agents) ? body.agents : [];
     sensorEvents = Array.isArray(sensorBody.events) ? sensorBody.events : [];
     routingMode = routingBody.mode ?? "explicit";
-    sensorSources = Array.from(new Set(
-      sensorEvents
-        .map((event) => event.source.trim())
-        .filter(Boolean),
-    ));
+    const agentIds = new Set(agents.map((agent) => agent.id));
+    sensorSources = Array.from(new Set(sensorEvents
+      .filter((event) => routingMode !== "explicit"
+        || (Boolean(event.targetAgentId) && agentIds.has(event.targetAgentId as string)))
+      .map((event) => event.source.trim())
+      .filter(Boolean)));
     rebuildScene();
     workspaceElement.setAttribute("aria-busy", "false");
   }
@@ -329,8 +352,9 @@ function startTopology(
       labelsElement.appendChild(node.label);
     });
 
-    sensorSources.slice(0, 5).forEach((source, index) => {
-      const record = createSourceNode(source, index, sensorSources.length);
+    const leftmostAgent = Math.min(...Array.from(nodes.values(), (node) => node.group.position.x), 0);
+    sensorSources.forEach((source, index) => {
+      const record = createSourceNode(source, index, sensorSources.length, leftmostAgent - 4);
       sourceNodes.set(source, record);
       world.add(record.group);
       labelsElement.appendChild(record.label);
@@ -345,7 +369,10 @@ function startTopology(
       for (const targetId of targetIds) {
         const targetPosition = nodes.get(targetId)?.group.position;
         if (targetPosition) {
-          addConnectionPositions(source.group.position, targetPosition, 0x255d73, 0.62);
+          addConnectionPositions(source.group.position, targetPosition, 0x255d73, 0.62, {
+            sourceName,
+            toAgentId: targetId,
+          });
         }
       }
     }
@@ -358,7 +385,10 @@ function startTopology(
             (event) => event.source === sourceName && event.targetAgentId,
           );
           if (!hasDirectTarget) {
-            addConnectionPositions(source.group.position, routerPosition, 0x255d73, 0.62);
+            addConnectionPositions(source.group.position, routerPosition, 0x255d73, 0.62, {
+              sourceName,
+              toAgentId: router.id,
+            });
           }
         }
       }
@@ -374,11 +404,10 @@ function startTopology(
     needsRender = true;
   }
 
-  function createSourceNode(source: string, index: number, count: number): SourceRecord {
+  function createSourceNode(source: string, index: number, count: number, x: number): SourceRecord {
     const group = new THREE.Group();
-    const spread = Math.max(1, Math.min(count, 5));
-    const spacing = spread <= 2 ? 3.85 : 1.35;
-    group.position.set(-5.15, (index - (spread - 1) / 2) * spacing, -0.4);
+    const spacing = count <= 2 ? 3.4 : 2.15;
+    group.position.set(x, (index - (count - 1) / 2) * spacing, -0.4);
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(0.34, 28, 18),
       new THREE.MeshPhysicalMaterial({
@@ -400,7 +429,7 @@ function startTopology(
     const label = document.createElement("div");
     label.className = "topology-label topology-source-label";
     label.innerHTML = `<strong>${escapeHtml(source)}</strong><span>event source</span>`;
-    return { group, label };
+    return { source, group, label };
   }
 
   function createNode(agent: AgentSnapshot, position: THREE.Vector3): NodeRecord {
@@ -449,7 +478,7 @@ function startTopology(
     const from = nodes.get(fromId)?.group.position;
     const to = nodes.get(toId)?.group.position;
     if (!from || !to) return;
-    addConnectionPositions(from, to, color, 0.48);
+    addConnectionPositions(from, to, color, 0.48, { fromAgentId: fromId, toAgentId: toId });
   }
 
   function addConnectionPositions(
@@ -457,6 +486,7 @@ function startTopology(
     to: THREE.Vector3,
     color: number,
     opacity: number,
+    metadata: Pick<ConnectionRecord, "fromAgentId" | "toAgentId" | "sourceName"> = {},
   ): void {
     const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
     const line = new THREE.Line(
@@ -465,7 +495,7 @@ function startTopology(
     );
     line.renderOrder = -1;
     world.add(line);
-    connections.push({ line, from, to });
+    connections.push({ line, from, to, baseOpacity: opacity, ...metadata });
   }
 
   function updateConnections(): void {
@@ -540,6 +570,20 @@ function startTopology(
       node.label.classList.toggle("selected", selected);
       node.halo.scale.setScalar(selected ? 1.22 : 1);
       node.halo.material.opacity = selected ? 1 : 0.72;
+    }
+    const relatedSources = new Set<string>();
+    for (const connection of connections) {
+      const related = Boolean(selectedAgentId)
+        && (connection.fromAgentId === selectedAgentId || connection.toAgentId === selectedAgentId);
+      connection.line.material.opacity = selectedAgentId
+        ? (related ? Math.max(connection.baseOpacity, 0.95) : 0.1)
+        : connection.baseOpacity;
+      if (related && connection.sourceName) relatedSources.add(connection.sourceName);
+    }
+    for (const source of sourceNodes.values()) {
+      const hasSelectedRoute = relatedSources.has(source.source);
+      source.label.classList.toggle("route-selected", hasSelectedRoute);
+      source.label.classList.toggle("route-muted", Boolean(selectedAgentId) && !hasSelectedRoute);
     }
     const agent = agents.find((item) => item.id === selectedAgentId) ?? null;
     renderInspector(agent);
@@ -649,6 +693,13 @@ function startTopology(
       source.label.style.opacity = position.z > 1 ? "0" : "1";
     }
   }
+
+  function setCameraDistance(distance: number): void {
+    const next = THREE.MathUtils.clamp(distance, 4.5, 120);
+    camera.position.set(0, next * 0.384, next);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+  }
 }
 
 function nodePosition(
@@ -661,9 +712,12 @@ function nodePosition(
   if (agent.metadata.role === "jarvis") return new THREE.Vector3(0, 2.6, -0.7);
   const workerIndex = routerActive ? Math.max(0, index - 1) : index;
   const workerCount = Math.max(1, routerActive ? count - 1 : count);
-  const angle = (workerIndex / workerCount) * Math.PI * 2 - Math.PI / 2;
-  const radius = 3.7 + (workerIndex % 2) * 0.45;
-  return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * 2.35, Math.sin(angle) * 0.45);
+  const ringIndex = Math.floor(workerIndex / 8);
+  const indexInRing = workerIndex % 8;
+  const ringCount = Math.min(8, workerCount - ringIndex * 8);
+  const angle = (indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2;
+  const radius = 3.8 + ringIndex * 3.15;
+  return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.68, Math.sin(angle) * 0.45);
 }
 
 function loadSavedPositions(): Map<string, THREE.Vector3> {
@@ -692,6 +746,32 @@ function savePositions(positions: Map<string, THREE.Vector3>): void {
     )));
   } catch {
     // Dragging remains available for this session when storage is unavailable.
+  }
+}
+
+function loadSavedView(): { position: THREE.Vector3; distance: number } | null {
+  try {
+    const raw = window.localStorage.getItem(TOPOLOGY_VIEW_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { position?: unknown; distance?: unknown };
+    if (!Array.isArray(parsed.position) || parsed.position.length !== 3) return null;
+    const position = parsed.position.map(Number);
+    const distance = Number(parsed.distance);
+    if (!position.every(Number.isFinite) || !Number.isFinite(distance)) return null;
+    return { position: new THREE.Vector3(position[0], position[1], position[2]), distance };
+  } catch {
+    return null;
+  }
+}
+
+function saveView(position: THREE.Vector3, distance: number): void {
+  try {
+    window.localStorage.setItem(TOPOLOGY_VIEW_KEY, JSON.stringify({
+      position: position.toArray(),
+      distance,
+    }));
+  } catch {
+    // Panning and zooming remain available for this session when storage is unavailable.
   }
 }
 
