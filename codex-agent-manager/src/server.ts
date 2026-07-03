@@ -428,6 +428,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
     "workspace-write",
     "danger-full-access",
   ]);
+  const approvalsReviewer = optionalEnum(value.approvalsReviewer, ["user", "auto_review"]);
+  const permissionMode = optionalEnum(value.permissionMode, ["ask", "auto-review", "full-access"]);
   const metadata = asOptionalRecord(value.metadata);
   const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
   const serviceTier = optionalString(value.serviceTier);
@@ -444,10 +446,15 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   }
   if (skillMode) definition.skillMode = skillMode;
   if (allowedSkills) definition.allowedSkills = allowedSkills;
-  if (approvalPolicy) {
+  if (permissionMode) {
+    Object.assign(definition, permissionSettingsForMode(permissionMode));
+  } else if (approvalPolicy) {
     definition.approvalPolicy = approvalPolicy;
   }
-  if (sandbox) {
+  if (!permissionMode && approvalsReviewer) {
+    definition.approvalsReviewer = approvalsReviewer;
+  }
+  if (!permissionMode && sandbox) {
     definition.sandbox = sandbox;
   }
   if (metadata) {
@@ -492,6 +499,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
     "workspace-write",
     "danger-full-access",
   ]);
+  const approvalsReviewer = optionalEnum(value.approvalsReviewer, ["user", "auto_review"]);
+  const permissionMode = optionalEnum(value.permissionMode, ["ask", "auto-review", "full-access"]);
   const metadata = asOptionalRecord(value.metadata);
   const reasoningEffort = optionalEnum(value.reasoningEffort, REASONING_EFFORTS);
   const serviceTier = optionalString(value.serviceTier);
@@ -517,16 +526,36 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   }
   if ("skillMode" in value) update.skillMode = skillMode;
   if ("allowedSkills" in value) update.allowedSkills = allowedSkills ?? [];
-  if (approvalPolicy) {
+  if (permissionMode) {
+    Object.assign(update, permissionSettingsForMode(permissionMode));
+  } else if (approvalPolicy) {
     update.approvalPolicy = approvalPolicy;
   }
-  if (sandbox) {
+  if (!permissionMode && approvalsReviewer) {
+    update.approvalsReviewer = approvalsReviewer;
+  }
+  if (!permissionMode && sandbox) {
     update.sandbox = sandbox;
   }
   if (metadata) {
     update.metadata = metadata;
   }
   return update;
+}
+
+function permissionSettingsForMode(mode: "ask" | "auto-review" | "full-access"): Pick<AgentDefinition, "approvalPolicy" | "approvalsReviewer" | "sandbox"> {
+  if (mode === "full-access") {
+    return {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "danger-full-access",
+    };
+  }
+  return {
+    approvalPolicy: "on-request",
+    approvalsReviewer: mode === "auto-review" ? "auto_review" : "user",
+    sandbox: "workspace-write",
+  };
 }
 
 function parseSkillReferences(value: unknown): AgentSkillReference[] | undefined {
@@ -809,6 +838,8 @@ function renderHtml(title: string): string {
           <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
           <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
           <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
+          <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
+          <div class="field-hint">Controls sandbox access and who reviews actions that require escalation.</div>
           <div class="field-group"><label for="create-agent-cwd">Working directory</label><div class="path-field"><input id="create-agent-cwd" name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
           <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
           <div class="skill-picker" data-skill-picker hidden>
@@ -841,6 +872,8 @@ function renderHtml(title: string): string {
             <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
             <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
             <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
+            <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
+            <div class="field-hint">Permission changes apply on the next turn without replacing this thread.</div>
             <div class="field-group"><label for="edit-agent-cwd">Working directory</label><div class="path-field"><input id="edit-agent-cwd" name="cwd" autocomplete="off"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
             <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
             <div class="skill-picker" data-skill-picker hidden>
@@ -1520,6 +1553,7 @@ async function createAgent(event) {
   const body = Object.fromEntries(form.entries());
   applySkillSelection(body, event.currentTarget);
   applyRoleMetadata(body);
+  if (!confirmFullAccess(body)) return;
   const button = document.getElementById("create-agent-button");
   button.disabled = true;
   button.textContent = "Creating";
@@ -1604,6 +1638,13 @@ function applySkillSelection(body, form) {
     : [];
 }
 
+function confirmFullAccess(body, currentAgent = null) {
+  if (body.permissionMode !== "full-access" || permissionModeForAgent(currentAgent || {}) === "full-access") {
+    return true;
+  }
+  return window.confirm("Enable full access? This agent can edit any file and run commands with network access without approval.");
+}
+
 async function updateSelectedAgent(event) {
   event.preventDefault();
   const selected = agents.find((agent) => agent.id === selectedAgentId);
@@ -1611,6 +1652,7 @@ async function updateSelectedAgent(event) {
   const body = Object.fromEntries(new FormData(event.currentTarget).entries());
   applySkillSelection(body, event.currentTarget);
   applyRoleMetadata(body, selected.metadata || {}, true);
+  if (!confirmFullAccess(body, selected)) return;
   const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1746,7 +1788,7 @@ function render() {
     <button class="agent \${agent.id === selectedAgentId ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}">
       <strong>\${escapeHtml(agent.name)}</strong>
       <span class="status-pill \${escapeAttr(agent.status)}">\${escapeHtml(agent.status)}</span>
-      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)} - \${escapeHtml(skillSummary(agent))}</span>
+      <span class="sub">\${escapeHtml(agent.id)} - \${escapeHtml(agent.cwd)} - \${escapeHtml(skillSummary(agent))} - \${escapeHtml(permissionSummary(agent))}</span>
     </button>
   \`).join("") || '<div class="empty">No agents yet. Create one from the Create Agent section.</div>';
   if (agentListHtml !== lastAgentListHtml) {
@@ -1763,7 +1805,7 @@ function render() {
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd} - \${skillSummary(selected)}\` : "Create or select an agent to begin.";
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   cancelAgentButton.hidden = !(selected && selected.status === "running");
   cancelAgentButton.disabled = cancelInFlight;
@@ -1843,6 +1885,7 @@ function renderAgentEditor(selected) {
   editAgentForm.elements.model.value = selected.model || "";
   editAgentForm.elements.reasoningEffort.value = selected.reasoningEffort || "";
   editAgentForm.elements.serviceTier.value = selected.serviceTier || "";
+  editAgentForm.elements.permissionMode.value = permissionModeForAgent(selected);
   editAgentForm.elements.cwd.value = selected.cwd || "";
   editAgentForm.elements.skillMode.value = selected.skillMode || "all";
   editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
@@ -1858,6 +1901,19 @@ function skillSummary(agent) {
   if ((agent.skillMode || "all") === "all") return "All skills";
   const count = Array.isArray(agent.allowedSkills) ? agent.allowedSkills.length : 0;
   return count + (count === 1 ? " skill" : " skills");
+}
+
+function permissionModeForAgent(agent) {
+  if (agent.sandbox === "danger-full-access" || agent.approvalPolicy === "never") return "full-access";
+  if (agent.approvalsReviewer === "auto_review") return "auto-review";
+  return "ask";
+}
+
+function permissionSummary(agent) {
+  const mode = permissionModeForAgent(agent);
+  if (mode === "auto-review") return "Approve for me";
+  if (mode === "full-access") return "Full access";
+  return "Ask for approval";
 }
 
 function setupSkillPicker(form) {

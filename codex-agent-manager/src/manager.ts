@@ -31,6 +31,7 @@ import type {
   PersistedAgentManagerState,
   RoutingMode,
   RoutingDecision,
+  SandboxPolicy,
   SensorEvent,
   SensorEventInput,
   SendResult,
@@ -305,6 +306,7 @@ export class CodexAgentManager extends EventEmitter {
         : record.definition.reasoningEffort,
       serviceTier: "serviceTier" in update ? update.serviceTier : record.definition.serviceTier,
       approvalPolicy: update.approvalPolicy ?? record.definition.approvalPolicy,
+      approvalsReviewer: update.approvalsReviewer ?? record.definition.approvalsReviewer,
       sandbox: update.sandbox ?? record.definition.sandbox,
       defaultAskOptions: update.defaultAskOptions ?? record.definition.defaultAskOptions,
       dynamicTools: update.dynamicTools ?? record.definition.dynamicTools,
@@ -860,6 +862,9 @@ export class CodexAgentManager extends EventEmitter {
 
     const { internal: _defaultInternal, ...defaultAskOptions } = record.definition.defaultAskOptions ?? {};
     const result = await session.ask(input, {
+      approvalPolicy: record.definition.approvalPolicy ?? "on-request",
+      approvalsReviewer: record.definition.approvalsReviewer ?? "user",
+      sandboxPolicy: sandboxPolicyForMode(record.definition.sandbox ?? "workspace-write"),
       ...defaultAskOptions,
       ...turnOptions,
     });
@@ -931,6 +936,7 @@ export class CodexAgentManager extends EventEmitter {
         reasoningEffort: record.definition.reasoningEffort,
         serviceTier: record.definition.serviceTier,
         approvalPolicy: record.definition.approvalPolicy ?? "on-request",
+        approvalsReviewer: record.definition.approvalsReviewer ?? "user",
         sandbox: record.definition.sandbox ?? "workspace-write",
         developerInstructions: record.definition.instructions,
         dynamicTools: record.definition.dynamicTools,
@@ -1149,6 +1155,9 @@ export class CodexAgentManager extends EventEmitter {
       model: record.definition.model ?? null,
       reasoningEffort: record.definition.reasoningEffort ?? null,
       serviceTier: record.definition.serviceTier ?? null,
+      approvalPolicy: record.definition.approvalPolicy ?? "on-request",
+      approvalsReviewer: record.definition.approvalsReviewer ?? "user",
+      sandbox: record.definition.sandbox ?? "workspace-write",
       skillMode: record.definition.skillMode ?? "all",
       allowedSkills: (record.definition.allowedSkills ?? []).map((skill) => ({ ...skill })),
       metadata: { ...(record.definition.metadata ?? {}) },
@@ -1722,6 +1731,9 @@ function validateDefinition(definition: AgentDefinition): void {
   if (typeof definition.instructions !== "string" || !definition.instructions.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have instructions.`);
   }
+  if (definition.approvalsReviewer !== undefined && !["user", "auto_review"].includes(definition.approvalsReviewer)) {
+    throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid approvals reviewer.`);
+  }
   if (definition.skillMode !== undefined && definition.skillMode !== "all" && definition.skillMode !== "selected") {
     throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid skill mode.`);
   }
@@ -1742,11 +1754,21 @@ function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition):
     previous.model !== next.model ||
     previous.reasoningEffort !== next.reasoningEffort ||
     previous.serviceTier !== next.serviceTier ||
-    previous.approvalPolicy !== next.approvalPolicy ||
-    previous.sandbox !== next.sandbox ||
     (previous.skillMode ?? "all") !== (next.skillMode ?? "all") ||
     JSON.stringify(previous.allowedSkills ?? []) !== JSON.stringify(next.allowedSkills ?? []) ||
     JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);
+}
+
+function sandboxPolicyForMode(mode: NonNullable<AgentDefinition["sandbox"]>): SandboxPolicy {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly", networkAccess: false };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
 }
 
 function approvalGrantForRequest(

@@ -10,6 +10,9 @@ type AgentSnapshot = {
   model: string | null;
   reasoningEffort: string | null;
   serviceTier: string | null;
+  approvalPolicy: "untrusted" | "on-failure" | "on-request" | "never";
+  approvalsReviewer: "user" | "auto_review";
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
   cwd: string;
   metadata: Record<string, unknown>;
 };
@@ -549,9 +552,9 @@ function startTopology(
     }
     inspectorElement.innerHTML = `
       <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(agent.status)}"></i>${escapeHtml(agent.status)}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
-      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? "worker"))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div></dl></section>
+      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? "worker"))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
-      <section><h3>Permissions</h3><ul class="topology-permissions"><li>Workspace access</li><li>Approval gates active</li><li>Tool activity recorded</li></ul></section>
+      <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
       <footer><button type="button" data-open-conversation>Open conversation</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
     inspectorElement.querySelector("[data-close-inspector]")?.addEventListener("click", () => {
       selectedAgentId = null;
@@ -562,6 +565,19 @@ function startTopology(
     });
     inspectorElement.querySelector("[data-pause-agent]")?.addEventListener("click", () => void pauseAgent(agent));
     inspectorElement.querySelector("[data-remove-agent]")?.addEventListener("click", () => void removeAgent(agent));
+  }
+
+  function permissionLabel(agent: AgentSnapshot): string {
+    if (agent.sandbox === "danger-full-access" || agent.approvalPolicy === "never") return "Full access";
+    if (agent.approvalsReviewer === "auto_review") return "Approve for me";
+    return "Ask for approval";
+  }
+
+  function permissionDetails(agent: AgentSnapshot): string[] {
+    const label = permissionLabel(agent);
+    if (label === "Full access") return ["Unrestricted filesystem and network", "Approval prompts disabled", "Tool activity recorded"];
+    if (label === "Approve for me") return ["Workspace access", "Automatic risk review", "Tool activity recorded"];
+    return ["Workspace access", "Human approval for escalations", "Tool activity recorded"];
   }
 
   async function pauseAgent(agent: AgentSnapshot): Promise<void> {

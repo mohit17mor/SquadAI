@@ -1,4 +1,15 @@
 export type AgentStatus = "idle" | "starting" | "running" | "failed" | "blocked" | "stopped";
+export type ApprovalsReviewer = "user" | "auto_review";
+export type SandboxPolicy =
+  | { type: "readOnly"; networkAccess?: boolean }
+  | {
+      type: "workspaceWrite";
+      writableRoots?: string[];
+      networkAccess?: boolean;
+      excludeTmpdirEnvVar?: boolean;
+      excludeSlashTmp?: boolean;
+    }
+  | { type: "dangerFullAccess" };
 export type ReasoningEffort =
   | "none"
   | "minimal"
@@ -48,6 +59,7 @@ export type AgentDefinition = {
   reasoningEffort?: ReasoningEffort | undefined;
   serviceTier?: string | undefined;
   approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | undefined;
+  approvalsReviewer?: ApprovalsReviewer | undefined;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access" | undefined;
   defaultAskOptions?: AskOptions | undefined;
   dynamicTools?: unknown[] | undefined;
@@ -76,6 +88,9 @@ export type AgentDefinitionUpdate = {
 
 export type AskOptions = {
   timeoutMs?: number;
+  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never";
+  approvalsReviewer?: ApprovalsReviewer;
+  sandboxPolicy?: SandboxPolicy;
   externalWrites?: "deny" | "allow";
   shellCommands?: "deny" | "allow";
   fileWrites?: "deny" | "allow";
@@ -121,6 +136,9 @@ export type AgentSnapshot = {
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   serviceTier: string | null;
+  approvalPolicy: "untrusted" | "on-failure" | "on-request" | "never";
+  approvalsReviewer: ApprovalsReviewer;
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
   skillMode: "all" | "selected";
   allowedSkills: AgentSkillReference[];
   metadata: Record<string, unknown>;

@@ -129,8 +129,7 @@ test("command center API creates agents, lists them, sends messages, and exposes
         model: "gpt-test",
         reasoningEffort: "high",
         serviceTier: "fast",
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
+        permissionMode: "auto-review",
         metadata: { routingDescription: "Debugs maintenance tickets." },
       },
     });
@@ -138,6 +137,9 @@ test("command center API creates agents, lists them, sends messages, and exposes
     assert.equal(created.agent.model, "gpt-test");
     assert.equal(created.agent.reasoningEffort, "high");
     assert.equal(created.agent.serviceTier, "fast");
+    assert.equal(created.agent.approvalPolicy, "on-request");
+    assert.equal(created.agent.approvalsReviewer, "auto_review");
+    assert.equal(created.agent.sandbox, "workspace-write");
     assert.equal(created.agent.metadata.routingDescription, "Debugs maintenance tickets.");
 
     const modelOptions = await jsonFetch(`${baseUrl}/api/model-options`);
@@ -328,11 +330,15 @@ test("command center API updates and deletes agents", async () => {
         name: "Postmortem Writer",
         cwd: "/tmp/ops-poc",
         instructions: "You write incident postmortems.",
+        permissionMode: "full-access",
         metadata: { routingDescription: "Writes postmortems." },
       },
     });
     assert.equal(updated.agent.name, "Postmortem Writer");
     assert.equal(updated.agent.instructions, "You write incident postmortems.");
+    assert.equal(updated.agent.approvalPolicy, "never");
+    assert.equal(updated.agent.approvalsReviewer, "user");
+    assert.equal(updated.agent.sandbox, "danger-full-access");
     assert.equal(updated.agent.metadata.routingDescription, "Writes postmortems.");
 
     const deleted = await jsonFetch(`${baseUrl}/api/agents/maintenance`, {
@@ -659,6 +665,15 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-reasoning-select/);
     assert.match(html, /name="serviceTier"/);
     assert.match(html, /data-service-tier-select/);
+    assert.match(html, /name="permissionMode"/);
+    assert.match(html, /Ask for approval/);
+    assert.match(html, /Approve for me/);
+    assert.match(html, /Full access/);
+    assert.match(html, /permissionModeForAgent/);
+    assert.match(html, /permissionSummary/);
+    assert.match(html, /confirmFullAccess/);
+    assert.match(html, /Enable full access\?/);
+    assert.match(html, /Permission changes apply on the next turn without replacing this thread/);
     assert.match(html, /refreshModelOptions/);
     assert.match(html, /renderModelControls/);
     assert.match(html, /serviceTierOptions/);
@@ -827,6 +842,9 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /from "three"/);
     assert.match(moduleSource, /SphereGeometry/);
     assert.match(moduleSource, /prefers-reduced-motion/);
+    assert.match(moduleSource, /permissionLabel/);
+    assert.match(moduleSource, /Automatic risk review/);
+    assert.match(moduleSource, /Approval prompts disabled/);
     assert.match(moduleSource, /\/api\/sensor-events/);
     assert.match(moduleSource, /createSourceNode/);
 

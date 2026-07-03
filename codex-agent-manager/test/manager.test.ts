@@ -274,6 +274,7 @@ test("starts named agents lazily and sends plain text to the matching session", 
     reasoningEffort: undefined,
     serviceTier: undefined,
     approvalPolicy: "on-request",
+    approvalsReviewer: "user",
     sandbox: "workspace-write",
     developerInstructions: "You specialize in read-only maintenance debugging.",
     dynamicTools: undefined,
@@ -288,7 +289,19 @@ test("starts named agents lazily and sends plain text to the matching session", 
   assert.equal(manager.getAgent("maintenance").status, "idle");
   assert.deepEqual(clients[0]?.session("thread-1").asks[0], {
     input: "Please inspect this incident.",
-    options: { timeoutMs: 1234, network: "allow" },
+    options: {
+      timeoutMs: 1234,
+      network: "allow",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    },
   });
 });
 
@@ -321,6 +334,7 @@ test("passes model, reasoning, and speed settings to new Codex sessions", async 
     reasoningEffort: "high",
     serviceTier: "fast",
     approvalPolicy: "on-request",
+    approvalsReviewer: "user",
     sandbox: "workspace-write",
     developerInstructions: "You specialize in read-only maintenance debugging.",
     dynamicTools: undefined,
@@ -908,6 +922,7 @@ test("updates agent instructions by clearing the existing Codex session", async 
     reasoningEffort: undefined,
     serviceTier: undefined,
     approvalPolicy: "on-request",
+    approvalsReviewer: "user",
     sandbox: "workspace-write",
     developerInstructions: "You now specialize in postmortem drafting.",
     dynamicTools: undefined,
@@ -940,6 +955,45 @@ test("updates routing metadata without clearing the worker session", async () =>
       .listEvents("maintenance")
       .some((event) => event.type === "agent_updated" && event.payload.restartNeeded === false),
   );
+});
+
+test("updates permissions on the next turn without replacing the thread", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: fakeFactory(clients),
+  });
+
+  const first = manager.sendToAgent("maintenance", "hello");
+  await waitFor(() => clients.length === 1, "permission update client");
+  const session = clients[0]?.session("thread-1");
+  assert.ok(session);
+  session.complete("first");
+  await first;
+
+  const updated = await manager.updateAgent("maintenance", {
+    approvalPolicy: "never",
+    approvalsReviewer: "user",
+    sandbox: "danger-full-access",
+  });
+  assert.equal(updated.threadId, "thread-1");
+  assert.equal(clients[0]?.closeCalls.length, 0);
+  assert.ok(
+    manager
+      .listEvents("maintenance")
+      .some((event) => event.type === "agent_updated" && event.payload.restartNeeded === false),
+  );
+
+  const second = manager.sendToAgent("maintenance", "continue");
+  await waitFor(() => session.asks.length === 2, "next turn permission settings");
+  assert.deepEqual(session.asks[1]?.options, {
+    timeoutMs: 1_800_000,
+    approvalPolicy: "never",
+    approvalsReviewer: "user",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  });
+  session.complete("second");
+  assert.equal((await second).threadId, "thread-1");
 });
 
 test("deletes idle agents and persists removal", async () => {
