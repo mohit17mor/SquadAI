@@ -904,8 +904,15 @@ function renderHtml(title: string): string {
       <form id="message-form" class="composer">
         <textarea id="message" rows="1" placeholder="Message the selected agent"></textarea>
         <div class="composer-row">
-          <label><input id="allow-network" type="checkbox" checked> Network</label>
-          <button type="submit">Send</button>
+          <div class="composer-left">
+            <label class="network-toggle"><input id="allow-network" type="checkbox" checked> Network</label>
+          </div>
+          <div class="composer-settings" aria-label="Turn settings">
+            <label class="composer-select permission"><span>Permissions</span><select id="composer-permission" aria-label="Approval policy"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
+            <label class="composer-select model"><span>Model</span><select id="composer-model" aria-label="Model"><option value="">Default model</option></select></label>
+            <label class="composer-select reasoning"><span>Thinking</span><select id="composer-reasoning" aria-label="Reasoning effort"><option value="">Default</option></select></label>
+            <button class="composer-send" type="submit" aria-label="Send message">Send</button>
+          </div>
         </div>
       </form>
     </section>
@@ -1172,11 +1179,31 @@ textarea { resize: vertical; }
 .pending-message { color: #8b949e; font-size: 13px; padding: 4px 10px; }
 .pending-message::after { content: ""; animation: dots 1.2s steps(4,end) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
-.composer { background: #161b22; border-top: 1px solid #30363d; padding: 13px 22px; }
-.composer textarea { min-height: 44px; max-height: 150px; resize: none; }
-.composer-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 12px; }
-.composer-row label { display: flex; grid-template-columns: none; align-items: center; gap: 7px; margin: 0; font-size: 13px; }
+.composer { margin: 0 18px 16px; padding: 12px 13px 10px; background: #161b22; border: 1px solid #30363d; border-radius: 18px; box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+.composer textarea { min-height: 46px; max-height: 150px; resize: none; border: 0; background: transparent; padding: 4px 7px 8px; box-shadow: none; font-size: 14px; line-height: 1.5; }
+.composer textarea:focus { border-color: transparent; box-shadow: none; }
+.composer-row { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; gap: 12px; }
+.composer-left, .composer-settings { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.composer-row label { display: flex; grid-template-columns: none; align-items: center; gap: 7px; margin: 0; font-size: 12px; }
 .composer-row input { width: auto; accent-color: #58a6ff; }
+.network-toggle { color: #8b949e; padding: 6px 7px; }
+.composer-select { position: relative; color: #8b949e; }
+.composer-select > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.composer-select select { min-width: 0; width: auto; max-width: 190px; height: 32px; padding: 5px 25px 5px 9px; border: 1px solid transparent; border-radius: 9px; background-color: transparent; color: #c9d1d9; font-size: 12px; font-weight: 600; box-shadow: none; cursor: pointer; }
+.composer-select select:hover, .composer-select select:focus { background-color: #21262d; border-color: #3d444d; }
+.composer-select.permission select { color: #58a6ff; max-width: 145px; }
+.composer-select.model select { max-width: 170px; }
+.composer-select.reasoning select { max-width: 105px; color: #8b949e; }
+.composer-select select:disabled { opacity: .45; cursor: not-allowed; }
+.composer.updating .composer-select { opacity: .55; }
+.composer-send { min-width: 54px; height: 34px; padding: 6px 12px; border-radius: 10px; background: #f0f6fc; color: #0d1117; font-weight: 700; }
+.composer-send:hover { background: #fff; border-color: #fff; }
+@media (max-width: 860px) {
+  .composer { margin: 0 10px 10px; }
+  .composer-row { align-items: flex-end; }
+  .composer-settings { flex-wrap: wrap; justify-content: flex-end; }
+  .composer-select.model select { max-width: 140px; }
+}
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
@@ -1229,6 +1256,12 @@ let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
 let activePanel = "topology";
+const previewParams = new URLSearchParams(window.location.search);
+const requestedPanel = previewParams.get("panel");
+const requestedAgentId = previewParams.get("agent");
+const validPanels = ["topology", "jarvis", "agents", "create", "notifications", "events", "work"];
+if (validPanels.includes(requestedPanel)) activePanel = requestedPanel;
+let requestedAgentApplied = false;
 let lastAgentListHtml = "";
 let lastMessagesHtml = "";
 const activityOpenState = new Map();
@@ -1265,6 +1298,9 @@ const connection = document.getElementById("connection");
 const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message");
+const composerPermission = document.getElementById("composer-permission");
+const composerModel = document.getElementById("composer-model");
+const composerReasoning = document.getElementById("composer-reasoning");
 const agentCount = document.getElementById("agent-count");
 const notificationCount = document.getElementById("notification-count");
 const eventCount = document.getElementById("event-count");
@@ -1294,6 +1330,7 @@ let agentIdTouched = false;
 let createInstructionsTouched = false;
 let editAgentLoadedId = null;
 let editAgentDirty = false;
+let composerAgentId = null;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
@@ -1343,6 +1380,9 @@ editAgentForm.elements.model.addEventListener("change", renderModelControls);
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
+composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
+composerModel.addEventListener("change", () => void updateModelFromComposer());
+composerReasoning.addEventListener("change", () => void updateAgentFromComposer({ reasoningEffort: composerReasoning.value }));
 agentNameInput.addEventListener("input", updateDerivedAgentId);
 agentIdInput.addEventListener("input", () => {
   agentIdTouched = true;
@@ -1359,7 +1399,7 @@ messageInput.addEventListener("input", () => {
   messageInput.style.height = Math.min(messageInput.scrollHeight, 150) + "px";
 });
 window.addEventListener("pageshow", () => {
-  activePanel = "topology";
+  activePanel = validPanels.includes(requestedPanel) ? requestedPanel : "topology";
   lastMessagesHtml = "";
   render();
 }, { once: true });
@@ -1406,7 +1446,10 @@ async function refreshAgents() {
   const response = await fetch("/api/agents");
   const body = await response.json();
   agents = body.agents;
-  if (activePanel === "jarvis") {
+  if (!requestedAgentApplied && requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)) {
+    selectedAgentId = requestedAgentId;
+    requestedAgentApplied = true;
+  } else if (activePanel === "jarvis") {
     selectedAgentId = jarvisAgent()?.id || null;
   } else if (!selectedAgentId && agents.length) {
     selectedAgentId = agents[0].id;
@@ -1439,6 +1482,7 @@ function renderModelControls() {
   updateModelSelect(editAgentForm.elements.model);
   updateModelDependentSelects(agentForm);
   updateModelDependentSelects(editAgentForm);
+  syncComposerControls(agents.find((agent) => agent.id === selectedAgentId) || null, true);
 }
 
 function updateModelSelect(select) {
@@ -1772,6 +1816,83 @@ async function sendMessage(event) {
   await refresh();
 }
 
+async function updatePermissionFromComposer() {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected) return;
+  const body = { permissionMode: composerPermission.value };
+  if (!confirmFullAccess(body, selected)) {
+    syncComposerControls(selected, true);
+    return;
+  }
+  await updateAgentFromComposer(body);
+}
+
+async function updateModelFromComposer() {
+  const selectedModel = modelOptions.find((model) => model.model === composerModel.value || model.id === composerModel.value)
+    || modelOptions.find((model) => model.isDefault)
+    || null;
+  updateReasoningSelect(composerReasoning, selectedModel);
+  await updateAgentFromComposer({
+    model: composerModel.value,
+    reasoningEffort: composerReasoning.value,
+  });
+}
+
+async function updateAgentFromComposer(body) {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || selected.status === "running" || selected.status === "starting") {
+    syncComposerControls(selected || null, true);
+    return;
+  }
+  messageForm.classList.add("updating");
+  setComposerDisabled(true);
+  const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  messageForm.classList.remove("updating");
+  if (!response.ok) {
+    toast(result.error || "Could not update agent settings", "error");
+    syncComposerControls(selected, true);
+    return;
+  }
+  upsertAgent(result.agent);
+  editAgentDirty = false;
+  composerAgentId = null;
+  render();
+  toast("Agent settings updated");
+}
+
+function setComposerDisabled(disabled) {
+  composerPermission.disabled = disabled;
+  composerModel.disabled = disabled;
+  composerReasoning.disabled = disabled;
+}
+
+function syncComposerControls(selected, force = false) {
+  const unavailable = !selected || selected.status === "running" || selected.status === "starting";
+  setComposerDisabled(unavailable);
+  if (!selected) {
+    composerAgentId = null;
+    composerPermission.value = "ask";
+    composerModel.value = "";
+    updateReasoningSelect(composerReasoning, modelOptions.find((model) => model.isDefault) || null);
+    return;
+  }
+  if (!force && composerAgentId === selected.id) return;
+  composerAgentId = selected.id;
+  updateModelSelect(composerModel);
+  composerModel.value = selected.model || "";
+  const selectedModel = modelOptions.find((model) => model.model === selected.model || model.id === selected.model)
+    || modelOptions.find((model) => model.isDefault)
+    || null;
+  updateReasoningSelect(composerReasoning, selectedModel);
+  composerReasoning.value = selected.reasoningEffort || "";
+  composerPermission.value = permissionModeForAgent(selected);
+}
+
 function render() {
   renderPanel();
   if (activePanel === "jarvis") {
@@ -1807,6 +1928,7 @@ function render() {
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
   selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
+  syncComposerControls(selected || null);
   cancelAgentButton.hidden = !(selected && selected.status === "running");
   cancelAgentButton.disabled = cancelInFlight;
   cancelAgentButton.textContent = cancelInFlight ? "Cancelling" : "Cancel";

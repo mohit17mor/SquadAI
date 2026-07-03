@@ -88,6 +88,9 @@ export type AgentDefinitionUpdate = {
 
 export type AskOptions = {
   timeoutMs?: number;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  serviceTier?: string;
   approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never";
   approvalsReviewer?: ApprovalsReviewer;
   sandboxPolicy?: SandboxPolicy;

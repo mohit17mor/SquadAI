@@ -292,6 +292,9 @@ test("starts named agents lazily and sends plain text to the matching session", 
     options: {
       timeoutMs: 1234,
       network: "allow",
+      model: undefined,
+      reasoningEffort: undefined,
+      serviceTier: undefined,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandboxPolicy: {
@@ -988,10 +991,56 @@ test("updates permissions on the next turn without replacing the thread", async 
   await waitFor(() => session.asks.length === 2, "next turn permission settings");
   assert.deepEqual(session.asks[1]?.options, {
     timeoutMs: 1_800_000,
+    model: undefined,
+    reasoningEffort: undefined,
+    serviceTier: undefined,
     approvalPolicy: "never",
     approvalsReviewer: "user",
     sandboxPolicy: { type: "dangerFullAccess" },
   });
+  session.complete("second");
+  assert.equal((await second).threadId, "thread-1");
+});
+
+test("updates model and reasoning on the next turn without replacing the thread", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent()],
+    clientFactory: catalogFactory({
+      models: [{
+        id: "gpt-new",
+        model: "gpt-new",
+        displayName: "GPT New",
+        description: "Current model",
+        hidden: false,
+        supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Thorough" }],
+        defaultReasoningEffort: "high",
+        additionalSpeedTiers: [],
+        serviceTiers: [],
+        isDefault: true,
+      }],
+    }, clients),
+  });
+
+  const first = manager.sendToAgent("maintenance", "hello");
+  await waitFor(() => clients.some((client) => client.startCalls.length === 1), "model update client");
+  const workerClient = clients.find((client) => client.startCalls.length === 1);
+  const session = workerClient?.session("thread-1");
+  assert.ok(session);
+  session.complete("first");
+  await first;
+
+  const updated = await manager.updateAgent("maintenance", {
+    model: "gpt-new",
+    reasoningEffort: "high",
+  });
+  assert.equal(updated.threadId, "thread-1");
+  assert.equal(workerClient?.closeCalls.length, 0);
+
+  const second = manager.sendToAgent("maintenance", "continue");
+  await waitFor(() => session.asks.length === 2, "next turn model settings");
+  assert.equal(session.asks[1]?.options.model, "gpt-new");
+  assert.equal(session.asks[1]?.options.reasoningEffort, "high");
   session.complete("second");
   assert.equal((await second).threadId, "thread-1");
 });

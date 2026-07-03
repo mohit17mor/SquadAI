@@ -862,6 +862,9 @@ export class CodexAgentManager extends EventEmitter {
 
     const { internal: _defaultInternal, ...defaultAskOptions } = record.definition.defaultAskOptions ?? {};
     const result = await session.ask(input, {
+      model: record.definition.model,
+      reasoningEffort: record.definition.reasoningEffort,
+      serviceTier: record.definition.serviceTier,
       approvalPolicy: record.definition.approvalPolicy ?? "on-request",
       approvalsReviewer: record.definition.approvalsReviewer ?? "user",
       sandboxPolicy: sandboxPolicyForMode(record.definition.sandbox ?? "workspace-write"),
@@ -1751,9 +1754,6 @@ function skillReferenceKey(skill: { name: string; scope: string }): string {
 function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition): boolean {
   return previous.cwd !== next.cwd ||
     previous.instructions !== next.instructions ||
-    previous.model !== next.model ||
-    previous.reasoningEffort !== next.reasoningEffort ||
-    previous.serviceTier !== next.serviceTier ||
     (previous.skillMode ?? "all") !== (next.skillMode ?? "all") ||
     JSON.stringify(previous.allowedSkills ?? []) !== JSON.stringify(next.allowedSkills ?? []) ||
     JSON.stringify(previous.dynamicTools ?? null) !== JSON.stringify(next.dynamicTools ?? null);
