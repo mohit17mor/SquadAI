@@ -675,10 +675,14 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /Enable full access\?/);
     assert.match(html, /Permission changes apply on the next turn without replacing this thread/);
     assert.match(html, /id="composer-permission"/);
-    assert.match(html, /id="composer-model"/);
-    assert.match(html, /id="composer-reasoning"/);
+    assert.match(html, /id="composer-runtime-toggle"/);
+    assert.match(html, /id="composer-runtime-menu"/);
+    assert.match(html, /id="composer-reasoning-options"/);
+    assert.match(html, /id="composer-model-options"/);
     assert.match(html, /updatePermissionFromComposer/);
     assert.match(html, /updateModelFromComposer/);
+    assert.match(html, /updateReasoningFromComposer/);
+    assert.match(html, /renderComposerRuntimeMenu/);
     assert.match(html, /updateAgentFromComposer/);
     assert.match(html, /Agent settings updated/);
     assert.match(html, /refreshModelOptions/);

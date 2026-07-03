@@ -905,8 +905,21 @@ function renderHtml(title: string): string {
           </div>
           <div class="composer-settings" aria-label="Turn settings">
             <label class="composer-select permission"><span>Permissions</span><select id="composer-permission" aria-label="Approval policy"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
-            <label class="composer-select model"><span>Model</span><select id="composer-model" aria-label="Model"><option value="">Default model</option></select></label>
-            <label class="composer-select reasoning"><span>Thinking</span><select id="composer-reasoning" aria-label="Reasoning effort"><option value="">Default</option></select></label>
+            <div class="composer-runtime">
+              <button id="composer-runtime-toggle" class="composer-runtime-toggle" type="button" aria-haspopup="menu" aria-expanded="false"><span id="composer-runtime-label">Default · Default</span></button>
+              <div id="composer-runtime-menu" class="composer-runtime-menu" role="menu" hidden>
+                <div id="composer-reasoning-view">
+                  <span class="runtime-menu-heading">Reasoning</span>
+                  <div id="composer-reasoning-options" class="runtime-menu-options"></div>
+                  <button id="composer-model-view-button" class="runtime-model-row" type="button"><span>Model</span><strong id="composer-current-model">Default</strong></button>
+                </div>
+                <div id="composer-model-view" hidden>
+                  <button id="composer-runtime-back" class="runtime-menu-back" type="button">Reasoning</button>
+                  <span class="runtime-menu-heading">Model</span>
+                  <div id="composer-model-options" class="runtime-menu-options"></div>
+                </div>
+              </div>
+            </div>
             <button class="composer-send" type="submit" aria-label="Send message">Send</button>
           </div>
         </div>
@@ -1188,17 +1201,31 @@ textarea { resize: vertical; }
 .composer-select select { min-width: 0; width: auto; max-width: 190px; height: 32px; padding: 5px 25px 5px 9px; border: 1px solid transparent; border-radius: 9px; background-color: transparent; color: #c9d1d9; font-size: 12px; font-weight: 600; box-shadow: none; cursor: pointer; }
 .composer-select select:hover, .composer-select select:focus { background-color: #21262d; border-color: #3d444d; }
 .composer-select.permission select { color: #58a6ff; max-width: 145px; }
-.composer-select.model select { max-width: 170px; }
-.composer-select.reasoning select { max-width: 105px; color: #8b949e; }
 .composer-select select:disabled { opacity: .45; cursor: not-allowed; }
-.composer.updating .composer-select { opacity: .55; }
+.composer.updating .composer-select, .composer.updating .composer-runtime { opacity: .55; }
+.composer-runtime { position: relative; }
+.composer-runtime-toggle { height: 32px; max-width: 230px; padding: 5px 9px; overflow: hidden; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #c9d1d9; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.composer-runtime-toggle:hover, .composer-runtime-toggle[aria-expanded="true"] { background: #21262d; border-color: #3d444d; }
+.composer-runtime-menu { position: absolute; right: 0; bottom: calc(100% + 9px); z-index: 20; width: 250px; max-height: min(410px, 70vh); overflow-y: auto; padding: 8px; background: #f6f7f9; border: 1px solid #d0d4da; border-radius: 14px; box-shadow: 0 18px 45px rgba(0,0,0,.38); color: #1f2328; }
+.composer-runtime-menu[hidden] { display: none; }
+.runtime-menu-heading { display: block; padding: 6px 10px 5px; color: #7d8590; font-size: 12px; font-weight: 500; }
+.runtime-menu-options { display: grid; gap: 2px; }
+.runtime-menu-option, .runtime-model-row, .runtime-menu-back { width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: #1f2328; text-align: left; font-size: 13px; font-weight: 500; }
+.runtime-menu-option:hover, .runtime-model-row:hover, .runtime-menu-back:hover { background: #e9ecf1; color: #111418; }
+.runtime-menu-option.selected { background: #e4e8ef; font-weight: 700; }
+.runtime-menu-option small { color: #6e7781; font-size: 11px; }
+.runtime-model-row { margin-top: 6px; padding-top: 10px; border-top: 1px solid #d8dce2; border-radius: 0 0 8px 8px; }
+.runtime-model-row strong { overflow: hidden; color: #3f4751; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.runtime-menu-back { justify-content: flex-start; color: #57606a; font-size: 12px; }
+.composer-runtime-toggle:disabled { opacity: .45; cursor: not-allowed; }
 .composer-send { min-width: 54px; height: 34px; padding: 6px 12px; border-radius: 10px; background: #f0f6fc; color: #0d1117; font-weight: 700; }
 .composer-send:hover { background: #fff; border-color: #fff; }
 @media (max-width: 860px) {
   .composer { margin: 0 10px 10px; }
   .composer-row { align-items: flex-end; }
   .composer-settings { flex-wrap: wrap; justify-content: flex-end; }
-  .composer-select.model select { max-width: 140px; }
+  .composer-runtime-toggle { max-width: 190px; }
+  .composer-runtime-menu { width: min(250px, calc(100vw - 28px)); }
 }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
@@ -1295,8 +1322,16 @@ const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message");
 const composerPermission = document.getElementById("composer-permission");
-const composerModel = document.getElementById("composer-model");
-const composerReasoning = document.getElementById("composer-reasoning");
+const composerRuntimeToggle = document.getElementById("composer-runtime-toggle");
+const composerRuntimeLabel = document.getElementById("composer-runtime-label");
+const composerRuntimeMenu = document.getElementById("composer-runtime-menu");
+const composerReasoningView = document.getElementById("composer-reasoning-view");
+const composerReasoningOptions = document.getElementById("composer-reasoning-options");
+const composerModelViewButton = document.getElementById("composer-model-view-button");
+const composerCurrentModel = document.getElementById("composer-current-model");
+const composerModelView = document.getElementById("composer-model-view");
+const composerModelOptions = document.getElementById("composer-model-options");
+const composerRuntimeBack = document.getElementById("composer-runtime-back");
 const agentCount = document.getElementById("agent-count");
 const notificationCount = document.getElementById("notification-count");
 const eventCount = document.getElementById("event-count");
@@ -1395,12 +1430,17 @@ agentSettingsModal.addEventListener("click", (event) => {
 });
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !agentSettingsModal.hidden) closeAgentSettings();
+  if (event.key === "Escape" && !composerRuntimeMenu.hidden) closeComposerRuntimeMenu();
 });
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 messageForm.addEventListener("submit", sendMessage);
 composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
-composerModel.addEventListener("change", () => void updateModelFromComposer());
-composerReasoning.addEventListener("change", () => void updateAgentFromComposer({ reasoningEffort: composerReasoning.value }));
+composerRuntimeToggle.addEventListener("click", toggleComposerRuntimeMenu);
+composerModelViewButton.addEventListener("click", () => setComposerRuntimeView("model"));
+composerRuntimeBack.addEventListener("click", () => setComposerRuntimeView("reasoning"));
+document.addEventListener("pointerdown", (event) => {
+  if (!composerRuntimeMenu.hidden && !event.target.closest(".composer-runtime")) closeComposerRuntimeMenu();
+});
 agentNameInput.addEventListener("input", updateDerivedAgentId);
 agentIdInput.addEventListener("input", () => {
   agentIdTouched = true;
@@ -1849,15 +1889,28 @@ async function updatePermissionFromComposer() {
   await updateAgentFromComposer(body);
 }
 
-async function updateModelFromComposer() {
-  const selectedModel = modelOptions.find((model) => model.model === composerModel.value || model.id === composerModel.value)
+async function updateModelFromComposer(modelValue) {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected) return;
+  const selectedModel = modelOptions.find((model) => model.model === modelValue || model.id === modelValue)
     || modelOptions.find((model) => model.isDefault)
     || null;
-  updateReasoningSelect(composerReasoning, selectedModel);
+  const supported = Array.isArray(selectedModel?.supportedReasoningEfforts)
+    ? selectedModel.supportedReasoningEfforts.map((effort) => effort.reasoningEffort)
+    : [];
+  const reasoningEffort = supported.includes(selected.reasoningEffort)
+    ? selected.reasoningEffort
+    : (selectedModel?.defaultReasoningEffort || "");
+  closeComposerRuntimeMenu();
   await updateAgentFromComposer({
-    model: composerModel.value,
-    reasoningEffort: composerReasoning.value,
+    model: modelValue,
+    reasoningEffort,
   });
+}
+
+async function updateReasoningFromComposer(reasoningEffort) {
+  closeComposerRuntimeMenu();
+  await updateAgentFromComposer({ reasoningEffort });
 }
 
 async function updateAgentFromComposer(body) {
@@ -1889,8 +1942,8 @@ async function updateAgentFromComposer(body) {
 
 function setComposerDisabled(disabled) {
   composerPermission.disabled = disabled;
-  composerModel.disabled = disabled;
-  composerReasoning.disabled = disabled;
+  composerRuntimeToggle.disabled = disabled;
+  if (disabled) closeComposerRuntimeMenu();
 }
 
 function syncComposerControls(selected, force = false) {
@@ -1899,20 +1952,79 @@ function syncComposerControls(selected, force = false) {
   if (!selected) {
     composerAgentId = null;
     composerPermission.value = "ask";
-    composerModel.value = "";
-    updateReasoningSelect(composerReasoning, modelOptions.find((model) => model.isDefault) || null);
+    composerRuntimeLabel.textContent = "Default · Default";
+    composerReasoningOptions.innerHTML = "";
+    composerModelOptions.innerHTML = "";
     return;
   }
   if (!force && composerAgentId === selected.id) return;
   composerAgentId = selected.id;
-  updateModelSelect(composerModel);
-  composerModel.value = selected.model || "";
+  composerPermission.value = permissionModeForAgent(selected);
+  renderComposerRuntimeMenu(selected);
+}
+
+function toggleComposerRuntimeMenu() {
+  if (composerRuntimeToggle.disabled) return;
+  const opening = composerRuntimeMenu.hidden;
+  if (opening) {
+    const selected = agents.find((agent) => agent.id === selectedAgentId);
+    if (!selected) return;
+    renderComposerRuntimeMenu(selected);
+    setComposerRuntimeView("reasoning");
+  }
+  composerRuntimeMenu.hidden = !opening;
+  composerRuntimeToggle.setAttribute("aria-expanded", String(opening));
+}
+
+function closeComposerRuntimeMenu() {
+  composerRuntimeMenu.hidden = true;
+  composerRuntimeToggle.setAttribute("aria-expanded", "false");
+  setComposerRuntimeView("reasoning");
+}
+
+function setComposerRuntimeView(view) {
+  composerReasoningView.hidden = view === "model";
+  composerModelView.hidden = view !== "model";
+}
+
+function renderComposerRuntimeMenu(selected) {
   const selectedModel = modelOptions.find((model) => model.model === selected.model || model.id === selected.model)
     || modelOptions.find((model) => model.isDefault)
     || null;
-  updateReasoningSelect(composerReasoning, selectedModel);
-  composerReasoning.value = selected.reasoningEffort || "";
-  composerPermission.value = permissionModeForAgent(selected);
+  const modelName = modelDisplayName(selectedModel) || selected.model || "Default";
+  const reasoningEffort = selected.reasoningEffort || selectedModel?.defaultReasoningEffort || "";
+  composerRuntimeLabel.textContent = modelName + " · " + reasoningDisplayName(reasoningEffort || "default");
+  composerCurrentModel.textContent = modelName;
+
+  const efforts = Array.isArray(selectedModel?.supportedReasoningEfforts) && selectedModel.supportedReasoningEfforts.length
+    ? selectedModel.supportedReasoningEfforts
+    : ["low", "medium", "high", "xhigh"].map((value) => ({ reasoningEffort: value }));
+  composerReasoningOptions.innerHTML = efforts.map((effort) => {
+    const value = effort.reasoningEffort || "";
+    const selectedClass = value === reasoningEffort ? " selected" : "";
+    return \`<button type="button" class="runtime-menu-option\${selectedClass}" data-runtime-reasoning="\${escapeAttr(value)}" role="menuitemradio" aria-checked="\${value === reasoningEffort}"><span>\${escapeHtml(reasoningDisplayName(value))}</span></button>\`;
+  }).join("");
+  for (const button of composerReasoningOptions.querySelectorAll("[data-runtime-reasoning]")) {
+    button.addEventListener("click", () => void updateReasoningFromComposer(button.dataset.runtimeReasoning));
+  }
+
+  composerModelOptions.innerHTML = modelOptions.map((model) => {
+    const value = model.model || model.id || "";
+    const isSelected = selected.model ? value === selected.model : Boolean(model.isDefault);
+    return \`<button type="button" class="runtime-menu-option\${isSelected ? " selected" : ""}" data-runtime-model="\${escapeAttr(value)}" role="menuitemradio" aria-checked="\${isSelected}"><span>\${escapeHtml(modelDisplayName(model))}</span>\${model.isDefault ? '<small>Default</small>' : ""}</button>\`;
+  }).join("") || '<span class="runtime-menu-heading">No models available</span>';
+  for (const button of composerModelOptions.querySelectorAll("[data-runtime-model]")) {
+    button.addEventListener("click", () => void updateModelFromComposer(button.dataset.runtimeModel));
+  }
+}
+
+function modelDisplayName(model) {
+  return model?.displayName || model?.model || model?.id || "";
+}
+
+function reasoningDisplayName(value) {
+  const labels = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra high", minimal: "Minimal", none: "None", default: "Default" };
+  return labels[value] || String(value || "Default").replace(/(^|[-_])([a-z])/g, (_, prefix, letter) => (prefix ? " " : "") + letter.toUpperCase());
 }
 
 function render() {
