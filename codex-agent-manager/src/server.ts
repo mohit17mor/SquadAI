@@ -1147,7 +1147,98 @@ textarea { resize: vertical; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
-@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
+
+/* Light command-center shell. The topology canvas deliberately keeps its dark visual language. */
+body { color: #242424; background: #f5f5f3; }
+html { color-scheme: light; }
+button { border-color: #d6d6d1; background: #242424; color: #fff; }
+button:hover { background: #3a3a3a; }
+button.secondary { background: #fff; color: #343434; }
+button.secondary:hover { border-color: #a7a7a0; background: #f3f3f1; }
+button.danger { background: #fff; color: #b42318; }
+button.danger:hover { border-color: #d92d20; background: #fff5f4; }
+.command-rail { background: #f7f7f5; border-color: #deded9; }
+.brand { border-color: #deded9; }
+.brand h1 { color: #202020; }
+.rail-item { color: #6b6b67; }
+.rail-item:hover { background: #ececea; color: #242424; }
+.rail-item.active { background: #e7e7e4; color: #202020; }
+.rail-item span { background: #ededeb; color: #74746f; }
+.rail-footer { border-color: #deded9; color: #777772; }
+.side-panel { background: #f2f2ef; border-color: #deded9; }
+.panel-header, .topbar, .ops-header { background: rgba(255,255,255,.94); border-color: #deded9; }
+.panel-header h2, .topbar h2, .ops-header h2 { color: #222; }
+.panel-header p, .topbar p, .ops-header p { color: #73736e; }
+.panel-view { scrollbar-color: #c9c9c4 transparent; }
+h2, label, .section-head span { color: #74746f; }
+input, textarea, select { border-color: #d5d5d0; background: #fff; color: #292929; }
+input:focus, textarea:focus, select:focus { border-color: #8b8b85; box-shadow: 0 0 0 3px rgba(36,36,36,.06); }
+.field-hint, .skill-option small, .skill-options > span, .skill-scope { color: #85857f; }
+.skill-picker { border-color: #d9d9d4; background: #fafaf8; }
+.skill-option:hover { background: #eeeeeb; }
+.skill-option strong { color: #343434; }
+.agent-editor { border-color: #d9d9d4; }
+.settings-summary { border-color: #d5d5d0; background: #fff; }
+.settings-summary:hover { border-color: #a5a59f; background: #fafaf8; }
+.settings-summary strong { color: #2d2d2d; }
+.settings-summary small, .settings-caret { color: #777772; }
+.empty { color: #7b7b76; border-color: #cfcfca; }
+.agent { background: #fff; color: #2b2b2b; border-color: #d9d9d4; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+.agent:hover { background: #fafaf8; border-color: #bdbdb7; }
+.agent.active { border-color: #8e8e88; box-shadow: 0 0 0 1px rgba(36,36,36,.08) inset; }
+.agent .sub { color: #7a7a75; }
+.status-pill { background: #efefec; color: #71716c; }
+.status-pill.running, .status-pill.starting { background: #fff4d8; color: #8a5a00; }
+.status-pill.idle { background: #e8f6ed; color: #237a45; }
+.status-pill.failed { background: #fff0ef; color: #b42318; }
+.workspace { background: #f7f7f5; }
+.message-list { padding: 28px clamp(22px, 5vw, 72px); }
+.message-list::-webkit-scrollbar-thumb, .commentary-detail-list::-webkit-scrollbar-thumb { background: #c9c9c4; }
+.message-meta { color: #85857f; }
+.message-bubble { color: #2c2c2c; }
+.message-bubble.user { background: #e7e7e4; color: #242424; border-bottom-right-radius: 4px; }
+.message-bubble.agent { background: #fff; border-color: #deded9; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+.message-bubble.system { color: #8a5a00; }
+.message-row.commentary { align-self: flex-start; align-items: flex-start; max-width: min(720px, 88%); }
+.commentary-live { display: grid; gap: 6px; padding: 7px 2px 7px 13px; border-left: 2px solid #b8b8b2; color: #555550; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.commentary-sequence, .activity-sequence { width: min(660px, 82vw); max-width: 100%; border-color: #d9d9d4; background: rgba(255,255,255,.72); color: #72726d; }
+.commentary-sequence[open], .activity-sequence[open] { background: #fff; }
+.commentary-sequence.failed, .activity-sequence.failed { border-color: #e8aaa5; }
+.commentary-sequence.running, .activity-sequence.running { border-color: #d8c38f; }
+.commentary-toggle, .activity-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 11px; cursor: pointer; list-style: none; font-size: 12px; }
+.commentary-toggle::-webkit-details-marker { display: none; }
+.commentary-toggle strong, .activity-toggle strong { color: #4a4a46; font-weight: 600; }
+.commentary-count, .activity-count { color: #85857f; font-size: 11px; }
+.commentary-detail-list, .activity-detail-list { border-color: #e2e2de; }
+.commentary-detail-list { padding: 4px 12px 12px; display: grid; gap: 0; max-height: 300px; overflow-y: auto; }
+.commentary-entry { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid #eeeeeb; }
+.commentary-entry:first-child { border-top: 0; }
+.commentary-entry time { color: #92928c; font-size: 11px; font-variant-numeric: tabular-nums; }
+.commentary-entry span { color: #4f4f4b; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-row strong { color: #666661; }
+.activity-row span { color: #4f4f4b; }
+.activity-muted, .pending-message { color: #7b7b76; }
+.approval-card { background: #fff; border-color: #d5a72f; box-shadow: 0 10px 30px rgba(35,35,30,.09); }
+.approval-title { color: #292929; }
+.approval-detail { color: #50504c; }
+.approval-actions button[data-approval-action="declined"] { background: #fff; color: #b42318; }
+.composer { margin: 0 clamp(16px, 4vw, 56px) 20px; padding: 10px; background: #fff; border: 1px solid #d9d9d4; border-radius: 14px; box-shadow: 0 8px 28px rgba(35,35,30,.08); }
+.composer textarea { border: 0; box-shadow: none; background: transparent; }
+.composer textarea:focus { border: 0; box-shadow: none; }
+.composer-row { padding: 0 2px 1px 5px; }
+.composer-row label { color: #6f6f6a; }
+.ops-workspace { background: #f7f7f5; }
+.ops-body { color: #373733; }
+.log-row, .queue-item { border-color: #e0e0dc; }
+.log-summary:hover, .queue-item[role="button"]:hover { background: #efefec; }
+.log-time, .queue-time { color: #8a8a85; }
+.log-message, .queue-item strong { color: #373733; }
+.log-detail { color: #6e6e69; background: #fff; border-color: #d6d6d1; }
+.log-detail strong { color: #3b3b38; }
+.log-actions select { background: #fff; color: #2d2d2d; border-color: #d5d5d0; }
+.log-empty { color: #7c7c77; border-color: #cecec9; }
+.toast { background: #fff; border-color: #d6d6d1; border-left-color: #555; color: #292929; box-shadow: 0 8px 24px rgba(35,35,30,.12); }
+@media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #deded9; } .workspace { min-height: 70vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
 `;
 }
 
@@ -1750,14 +1841,18 @@ function render() {
   const resolvedApprovals = approvalResolutionMap(visibleEvents);
   const workSummaries = summarizeWorkEvents(visibleEvents);
   const workEventIds = new Set(workSummaries.flatMap((summary) => summary.eventIds));
+  const commentarySummaries = summarizeCommentaryEvents(visibleEvents);
+  const commentaryEventIds = new Set(commentarySummaries.flatMap((summary) => summary.eventIds));
   const activitySummaries = summarizeActivityEvents(visibleEvents, resolvedApprovals);
   const activityEventIds = new Set(activitySummaries.flatMap((summary) => summary.eventIds));
   const timelineMessages = [
-    ...workSummaries.map(workSummaryToTimelineMessage),
+    ...workSummaries.map(workSummaryToTimelineMessage).filter(shouldShowTimelineInChat),
+    ...commentarySummaries.flatMap(commentarySummaryToTimelineMessages),
     ...activitySummaries.map(activitySummaryToTimelineMessage),
-  ].filter(Boolean).filter(shouldShowTimelineInChat);
+  ].filter(Boolean);
   const persistedMessages = visibleEvents
     .filter((event) => !workEventIds.has(event.id))
+    .filter((event) => !commentaryEventIds.has(event.id))
     .filter((event) => !activityEventIds.has(event.id))
     .flatMap((event) => eventToMessages(event, {
     hasCompletion,
@@ -2356,6 +2451,80 @@ function workSummaryToTimelineMessage(summary) {
   };
 }
 
+function summarizeCommentaryEvents(visibleEvents) {
+  const summaries = [];
+  let current = null;
+  for (const event of visibleEvents) {
+    if (event.type === "turn_started") {
+      if (current && current.entries.length) summaries.push(current);
+      current = {
+        commentaryId: "commentary-" + event.id,
+        eventIds: [],
+        entries: [],
+        status: "running",
+        createdAt: event.createdAt,
+        updatedAt: event.createdAt,
+      };
+      continue;
+    }
+    if (event.type === "codex_item_completed" && isCommentaryEvent(event)) {
+      if (!current) {
+        current = {
+          commentaryId: "commentary-" + event.id,
+          eventIds: [],
+          entries: [],
+          status: "running",
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+      }
+      const text = String(event.payload?.item?.text || event.payload?.summary || "").trim();
+      current.eventIds.push(event.id);
+      current.updatedAt = event.createdAt;
+      if (text) current.entries.push({ text, time: event.createdAt });
+      continue;
+    }
+    if (event.type === "turn_completed" || event.type === "turn_failed") {
+      if (current && current.entries.length) {
+        current.status = event.type === "turn_completed" ? "done" : "failed";
+        summaries.push(current);
+      }
+      current = null;
+    }
+  }
+  if (current && current.entries.length) summaries.push(current);
+  return summaries;
+}
+
+function isAgentMessageEvent(event) {
+  return event.type === "codex_item_completed" &&
+    String(event.payload?.itemType || event.payload?.item?.type || "") === "agentMessage";
+}
+
+function isCommentaryEvent(event) {
+  return isAgentMessageEvent(event) && String(event.payload?.item?.phase || "") === "commentary";
+}
+
+function commentarySummaryToTimelineMessages(summary) {
+  if (summary.status === "running") {
+    return summary.entries.map((entry) => ({
+      kind: "commentary",
+      meta: "Agent update",
+      text: entry.text,
+      time: entry.time,
+      status: "running",
+    }));
+  }
+  return [{
+    kind: "commentarySummary",
+    commentaryId: summary.commentaryId,
+    meta: "Commentary",
+    status: summary.status,
+    entries: summary.entries,
+    time: summary.updatedAt,
+  }];
+}
+
 function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
   const summaries = [];
   let current = null;
@@ -2377,6 +2546,9 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
       continue;
     }
     if (event.type === "codex_item_completed") {
+      if (isAgentMessageEvent(event)) {
+        continue;
+      }
       if (!current) {
         current = {
           activityId: "activity-" + event.id,
@@ -2474,7 +2646,6 @@ function summarizeActivityEvents(visibleEvents, resolvedApprovals) {
     if (event.type === "turn_completed" || event.type === "turn_failed") {
       if (current && current.entries.length) {
         current.status = event.type === "turn_completed" ? "done" : "failed";
-        current.updatedAt = event.createdAt;
         summaries.push(current);
         current = null;
       }
@@ -2585,6 +2756,38 @@ function retryingSummary(payload) {
 }
 
 function renderMessage(message) {
+  if (message.kind === "commentary") {
+    const meta = message.time
+      ? \`\${escapeHtml(message.meta)} · \${escapeHtml(new Date(message.time).toLocaleTimeString())}\`
+      : escapeHtml(message.meta);
+    return \`
+      <article class="message-row commentary">
+        <div class="message-meta">\${meta}</div>
+        <div class="commentary-live">\${escapeHtml(message.text)}</div>
+      </article>
+    \`;
+  }
+  if (message.kind === "commentarySummary") {
+    const commentaryId = message.commentaryId || "commentary-" + String(message.time || "");
+    const open = activityOpenState.get(commentaryId) ? " open" : "";
+    const rows = message.entries.map((entry) => \`
+      <div class="commentary-entry">
+        <time>\${escapeHtml(new Date(entry.time).toLocaleTimeString())}</time>
+        <span>\${escapeHtml(entry.text)}</span>
+      </div>
+    \`).join("");
+    return \`
+      <article class="message-row system">
+        <details class="commentary-sequence \${escapeAttr(message.status || "done")}" data-commentary-id="\${escapeAttr(commentaryId)}"\${open}>
+          <summary class="commentary-toggle">
+            <strong>Commentary</strong>
+            <span class="commentary-count">\${escapeHtml(message.entries.length)} updates</span>
+          </summary>
+          <div class="commentary-detail-list">\${rows}</div>
+        </details>
+      </article>
+    \`;
+  }
   if (message.kind === "timeline") {
     const rows = message.entries.map((entry) => \`
       <div class="activity-row">
@@ -2764,8 +2967,8 @@ function renderMessagesIfChanged(nextHtml) {
 
 function bindActivityToggles() {
   const presentActivityIds = new Set();
-  for (const details of messages.querySelectorAll("[data-activity-id]")) {
-    const activityId = details.dataset.activityId;
+  for (const details of messages.querySelectorAll("[data-activity-id], [data-commentary-id]")) {
+    const activityId = details.dataset.activityId || details.dataset.commentaryId;
     if (!activityId) continue;
     presentActivityIds.add(activityId);
     details.addEventListener("toggle", () => {
@@ -2773,7 +2976,7 @@ function bindActivityToggles() {
       markActivityInteraction();
     });
     details.addEventListener("pointerdown", markActivityInteraction);
-    const detailList = details.querySelector(".activity-detail-list");
+    const detailList = details.querySelector(".activity-detail-list, .commentary-detail-list");
     if (detailList) {
       detailList.addEventListener("scroll", () => {
         activityScrollState.set(activityId, detailList.scrollTop);
@@ -2791,9 +2994,9 @@ function bindActivityToggles() {
 }
 
 function captureActivityScrollPositions() {
-  for (const details of messages.querySelectorAll("[data-activity-id]")) {
-    const activityId = details.dataset.activityId;
-    const detailList = details.querySelector(".activity-detail-list");
+  for (const details of messages.querySelectorAll("[data-activity-id], [data-commentary-id]")) {
+    const activityId = details.dataset.activityId || details.dataset.commentaryId;
+    const detailList = details.querySelector(".activity-detail-list, .commentary-detail-list");
     if (activityId && detailList) {
       activityScrollState.set(activityId, detailList.scrollTop);
     }
@@ -2801,9 +3004,9 @@ function captureActivityScrollPositions() {
 }
 
 function restoreActivityScrollPositions() {
-  for (const details of messages.querySelectorAll("[data-activity-id]")) {
-    const activityId = details.dataset.activityId;
-    const detailList = details.querySelector(".activity-detail-list");
+  for (const details of messages.querySelectorAll("[data-activity-id], [data-commentary-id]")) {
+    const activityId = details.dataset.activityId || details.dataset.commentaryId;
+    const detailList = details.querySelector(".activity-detail-list, .commentary-detail-list");
     if (!activityId || !detailList) continue;
     const scrollTop = activityScrollState.get(activityId);
     if (typeof scrollTop === "number") {

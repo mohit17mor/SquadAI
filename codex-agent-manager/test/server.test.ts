@@ -693,6 +693,16 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /approval-card/);
     assert.match(html, /activity-sequence/);
     assert.match(html, /activity-toggle/);
+    assert.match(html, /commentary-sequence/);
+    assert.match(html, /commentary-live/);
+    assert.match(html, /data-commentary-id/);
+    assert.match(html, /summarizeCommentaryEvents/);
+    assert.match(html, /commentarySummaryToTimelineMessages/);
+    assert.match(html, /isCommentaryEvent/);
+    assert.match(html, /payload\?\.item\?\.phase \|\| ""\) === "commentary"/);
+    assert.match(html, /String\(event\.payload\?\.itemType \|\| event\.payload\?\.item\?\.type \|\| ""\) === "agentMessage"/);
+    assert.match(html, /Light command-center shell/);
+    assert.match(html, /body \{ color: #242424; background: #f5f5f3; \}/);
     assert.match(html, /activityOpenState/);
     assert.match(html, /activityScrollState/);
     assert.match(html, /captureActivityScrollPositions/);
