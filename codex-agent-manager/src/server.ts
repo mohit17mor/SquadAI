@@ -35,6 +35,7 @@ export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   title?: string;
   directoryPicker?: (initialPath: string) => Promise<string | null>;
+  workspaceOpener?: (workspacePath: string) => Promise<void>;
   automation?: {
     enabled?: boolean;
     routerAgentId?: string;
@@ -217,6 +218,18 @@ export class CommandCenterServer {
           decodeURIComponent(workspaceMatch[1]),
         );
         this.json(response, { agent });
+        return;
+      }
+
+      const workspaceOpenMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace\/open$/);
+      if (request.method === "POST" && workspaceOpenMatch?.[1]) {
+        const agentId = decodeURIComponent(workspaceOpenMatch[1]);
+        const workspace = await this.options.manager.inspectAgentWorkspace(agentId);
+        if (!workspace || workspace.removed) {
+          throw new Error(`Agent ${agentId} does not have an available managed worktree.`);
+        }
+        await (this.options.workspaceOpener ?? openWorkspaceInVisualStudioCode)(workspace.worktreePath);
+        this.json(response, { agentId, workspace, opened: true });
         return;
       }
 
@@ -788,6 +801,26 @@ async function pickNativeDirectory(initialPath: string): Promise<string | null> 
   }
 }
 
+async function openWorkspaceInVisualStudioCode(workspacePath: string): Promise<void> {
+  const resolvedPath = await realpath(workspacePath);
+  try {
+    if (process.platform === "darwin") {
+      await execFileAsync("open", ["-a", "Visual Studio Code", resolvedPath], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      return;
+    }
+    await execFileAsync("code", ["--new-window", resolvedPath], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not open the workspace in Visual Studio Code: ${details}`, { cause: error });
+  }
+}
+
 function renderHtml(title: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -938,6 +971,7 @@ function renderHtml(title: string): string {
           <p id="selected-meta">Create or select an agent to begin.</p>
         </div>
         <div class="topbar-actions">
+          <button id="workspace-open-button" type="button" class="secondary" hidden>Open in VS Code</button>
           <button id="instance-done-button" type="button" class="secondary" hidden>Mark done</button>
           <button id="instance-cancel-button" type="button" class="danger" hidden>Cancel task</button>
           <button id="workspace-cleanup-button" type="button" class="secondary" hidden>Clean up</button>
@@ -1340,6 +1374,7 @@ let sendInFlight = false;
 let cancelInFlight = false;
 let instanceResolutionInFlight = false;
 let workspaceCleanupInFlight = false;
+let workspaceOpenInFlight = false;
 let selectedWorkspaceStatus = null;
 let activePanel = "topology";
 const previewParams = new URLSearchParams(window.location.search);
@@ -1383,6 +1418,7 @@ const cancelAgentButton = document.getElementById("cancel-agent-button");
 const instanceDoneButton = document.getElementById("instance-done-button");
 const instanceCancelButton = document.getElementById("instance-cancel-button");
 const workspaceCleanupButton = document.getElementById("workspace-cleanup-button");
+const workspaceOpenButton = document.getElementById("workspace-open-button");
 const connection = document.getElementById("connection");
 const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
@@ -1504,6 +1540,7 @@ cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 instanceDoneButton.addEventListener("click", () => resolveSelectedInstance("done"));
 instanceCancelButton.addEventListener("click", () => resolveSelectedInstance("cancelled"));
 workspaceCleanupButton.addEventListener("click", cleanupSelectedWorkspace);
+workspaceOpenButton.addEventListener("click", openSelectedWorkspace);
 messageForm.addEventListener("submit", sendMessage);
 composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
 composerRuntimeToggle.addEventListener("click", toggleComposerRuntimeMenu);
@@ -2005,6 +2042,27 @@ async function cleanupSelectedWorkspace() {
   }
 }
 
+async function openSelectedWorkspace() {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || workspaceOpenInFlight) return;
+  workspaceOpenInFlight = true;
+  render();
+  try {
+    const response = await fetch("/api/agents/" + encodeURIComponent(selected.id) + "/workspace/open", {
+      method: "POST",
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      toast(result.error || "Could not open worktree", "error");
+      return;
+    }
+    toast("Opened worktree in VS Code");
+  } finally {
+    workspaceOpenInFlight = false;
+    render();
+  }
+}
+
 function deriveAgentId(name) {
   return String(name)
     .toLowerCase()
@@ -2282,6 +2340,9 @@ function render() {
   workspaceCleanupButton.hidden = !isTerminalInstance || !currentWorkspace || currentWorkspace.removed;
   workspaceCleanupButton.disabled = workspaceCleanupInFlight;
   workspaceCleanupButton.textContent = workspaceCleanupInFlight ? "Cleaning up" : "Clean up";
+  workspaceOpenButton.hidden = !currentWorkspace || currentWorkspace.removed;
+  workspaceOpenButton.disabled = workspaceOpenInFlight;
+  workspaceOpenButton.textContent = workspaceOpenInFlight ? "Opening" : "Open in VS Code";
   messageInput.disabled = isTerminalInstance;
   messageForm.querySelector(".composer-send").disabled = isTerminalInstance;
   if (isTerminalInstance) messageInput.placeholder = "This task instance is " + instanceLifecycle + ".";

@@ -291,6 +291,54 @@ test("command center API delegates workspace selection to the native picker", as
   }
 });
 
+test("command center API opens the selected agent worktree in VS Code", async () => {
+  let openedPath = "";
+  const workspacePath = "/tmp/agent-worktree";
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+    workspaceManager: {
+      async prepareBase(definition) { return definition; },
+      async prepareInstance(_base, instance) { return instance; },
+      async inspect() {
+        return {
+          kind: "git-worktree",
+          repositoryRoot: "/tmp/repository",
+          worktreePath: workspacePath,
+          branch: "codex/task-example",
+          sourceBranch: "main",
+          dirty: true,
+          removed: false,
+        };
+      },
+      async cleanup(definition) { return definition; },
+    },
+  });
+  const server = createCommandCenterServer({
+    manager,
+    workspaceOpener: async (path) => { openedPath = path; },
+  });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    await jsonFetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      body: { name: "Worktree agent", cwd: "/tmp/repository", instructions: "Test agent." },
+    });
+    const response = await jsonFetch(`${baseUrl}/api/agents/worktree-agent/workspace/open`, {
+      method: "POST",
+      body: {},
+    });
+    assert.equal(openedPath, workspacePath);
+    assert.equal(response.opened, true);
+    assert.equal(response.workspace.worktreePath, workspacePath);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center API derives an agent id from name when id is omitted", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -649,6 +697,8 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /instance-done-button/);
     assert.match(html, /instance-cancel-button/);
     assert.match(html, /workspace-cleanup-button/);
+    assert.match(html, /workspace-open-button/);
+    assert.match(html, /Open in VS Code/);
     assert.match(html, /needs you/);
     assert.match(html, /activePanel = "topology"/);
     assert.match(html, /class="shell topology-mode"/);
