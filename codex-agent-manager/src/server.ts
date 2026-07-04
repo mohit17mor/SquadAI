@@ -297,7 +297,15 @@ export class CommandCenterServer {
 
       if (request.method === "GET" && url.pathname === "/api/events") {
         const agentId = url.searchParams.get("agentId") ?? undefined;
-        this.json(response, { events: this.options.manager.listEvents(agentId) });
+        const beforeIdValue = url.searchParams.get("beforeId");
+        const limitValue = url.searchParams.get("limit");
+        const beforeId = beforeIdValue ? Number(beforeIdValue) : undefined;
+        const limit = limitValue ? Number(limitValue) : 500;
+        this.json(response, this.options.manager.listEventPage({
+          ...(agentId ? { agentId } : {}),
+          ...(beforeId !== undefined && Number.isFinite(beforeId) ? { beforeId } : {}),
+          limit: Number.isFinite(limit) ? limit : 500,
+        }));
         return;
       }
 
@@ -1153,6 +1161,9 @@ textarea { resize: vertical; }
 .message-list { overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 13px; }
 .message-list::-webkit-scrollbar { width: 6px; }
 .message-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+.load-older-events { align-self: center; padding: 7px 12px; border: 1px solid #30363d; border-radius: 999px; background: #161b22; color: #8b949e; font-size: 12px; }
+.load-older-events:hover { color: #e6edf3; border-color: #58a6ff; }
+.load-older-events:disabled { cursor: wait; opacity: .65; }
 .message-row { display: flex; flex-direction: column; max-width: 78%; gap: 4px; }
 .message-row.user { align-self: flex-end; align-items: flex-end; }
 .message-row.agent, .message-row.system { align-self: flex-start; align-items: flex-start; }
@@ -1270,6 +1281,9 @@ function js(): string {
 let agents = [];
 let selectedAgentId = null;
 let events = [];
+let eventHasMore = false;
+let eventNextBeforeId = null;
+let eventLoadingOlder = false;
 let sensorEvents = [];
 let workItems = [];
 let notifications = [];
@@ -1379,6 +1393,7 @@ for (const button of document.querySelectorAll("[data-panel]")) {
       if (activePanel === "agents" || activePanel === "jarvis") forceLatestMessage = true;
     }
     render();
+    if (activePanel === "agents" || activePanel === "jarvis") void refreshEvents().then(render);
   });
 }
 window.addEventListener("topology:open-agent", (event) => {
@@ -1390,6 +1405,7 @@ window.addEventListener("topology:open-agent", (event) => {
   forceLatestMessage = true;
   editAgentDirty = false;
   render();
+  void refreshEvents().then(render);
 });
 window.addEventListener("topology:edit-agent", (event) => {
   const agentId = event.detail && event.detail.agentId;
@@ -1474,7 +1490,8 @@ stream.onerror = () => {
   connectionDot.classList.remove("connected");
 };
 stream.addEventListener("agent-event", (message) => {
-  events.push(JSON.parse(message.data));
+  const event = JSON.parse(message.data);
+  if (!selectedAgentId || event.agentId === selectedAgentId) events.push(event);
   void refreshAgents();
   void refreshQueues();
   void refreshNotifications();
@@ -1482,8 +1499,8 @@ stream.addEventListener("agent-event", (message) => {
 });
 
 async function refresh() {
+  await refreshAgents();
   await Promise.all([
-    refreshAgents(),
     refreshEvents(),
     refreshQueues(),
     refreshNotifications(),
@@ -1608,9 +1625,52 @@ function serviceTierOptions(model) {
 }
 
 async function refreshEvents() {
-  const response = await fetch("/api/events");
+  const params = new URLSearchParams({ limit: "500" });
+  if (selectedAgentId) params.set("agentId", selectedAgentId);
+  const response = await fetch("/api/events?" + params.toString());
   const body = await response.json();
-  events = body.events;
+  events = Array.isArray(body.events) ? body.events : [];
+  eventHasMore = Boolean(body.hasMore);
+  eventNextBeforeId = body.nextBeforeId ?? null;
+}
+
+async function loadOlderEvents() {
+  if (eventLoadingOlder || !eventHasMore || eventNextBeforeId === null) return;
+  const requestedAgentId = selectedAgentId;
+  eventLoadingOlder = true;
+  render();
+  const previousHeight = messages.scrollHeight;
+  try {
+    const params = new URLSearchParams({
+      limit: "500",
+      beforeId: String(eventNextBeforeId),
+    });
+    if (requestedAgentId) params.set("agentId", requestedAgentId);
+    const response = await fetch("/api/events?" + params.toString());
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load older history");
+    if (selectedAgentId !== requestedAgentId) {
+      eventLoadingOlder = false;
+      return;
+    }
+    const olderEvents = Array.isArray(body.events) ? body.events : [];
+    events = [...olderEvents, ...events];
+    eventHasMore = Boolean(body.hasMore);
+    eventNextBeforeId = body.nextBeforeId ?? null;
+    eventLoadingOlder = false;
+    render();
+    requestAnimationFrame(() => {
+      messages.scrollTop += messages.scrollHeight - previousHeight;
+    });
+  } catch (error) {
+    if (selectedAgentId !== requestedAgentId) {
+      eventLoadingOlder = false;
+      return;
+    }
+    eventLoadingOlder = false;
+    render();
+    toast(error instanceof Error ? error.message : String(error), "error");
+  }
 }
 
 async function refreshQueues() {
@@ -2060,6 +2120,7 @@ function render() {
         forceLatestMessage = true;
         editAgentDirty = false;
         render();
+        void refreshEvents().then(render);
       });
     }
   }
@@ -2120,7 +2181,10 @@ function render() {
   ].sort((left, right) => {
     return Date.parse(left.time || "") - Date.parse(right.time || "");
   });
-  renderMessagesIfChanged(rendered.map(renderMessage).join("") || '<div class="empty">Create or select an agent to begin.</div>');
+  const historyControl = eventHasMore
+    ? '<button type="button" class="load-older-events" data-load-older' + (eventLoadingOlder ? ' disabled' : '') + '>' + (eventLoadingOlder ? 'Loading older history...' : 'Load older history') + '</button>'
+    : '';
+  renderMessagesIfChanged(historyControl + (rendered.map(renderMessage).join("") || '<div class="empty">Create or select an agent to begin.</div>'));
   renderQueues();
 }
 
@@ -3406,6 +3470,7 @@ function renderMessagesIfChanged(nextHtml) {
   lastMessagesHtml = nextHtml;
   bindApprovalButtons();
   bindActivityToggles();
+  messages.querySelector("[data-load-older]")?.addEventListener("click", loadOlderEvents);
   restoreActivityScrollPositions();
   if (shouldStickToBottom) {
     scrollDown();

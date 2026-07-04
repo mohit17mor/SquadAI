@@ -170,6 +170,16 @@ test("command center API creates agents, lists them, sends messages, and exposes
     const events = await jsonFetch(`${baseUrl}/api/events`);
     assert.ok(events.events.some((event: { type: string }) => event.type === "turn_completed"));
 
+    const latestEventPage = await jsonFetch(`${baseUrl}/api/events?agentId=maintenance&limit=1`);
+    assert.equal(latestEventPage.events.length, 1);
+    assert.equal(latestEventPage.hasMore, true);
+    assert.equal(latestEventPage.nextBeforeId, latestEventPage.events[0].id);
+    const olderEventPage = await jsonFetch(
+      `${baseUrl}/api/events?agentId=maintenance&limit=1&beforeId=${latestEventPage.nextBeforeId}`,
+    );
+    assert.equal(olderEventPage.events.length, 1);
+    assert.ok(olderEventPage.events[0].id < latestEventPage.events[0].id);
+
     const page = await fetch(`${baseUrl}/`);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Jarvis Command Center/);

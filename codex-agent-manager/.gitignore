@@ -1,6 +1,9 @@
 node_modules/
 dist/
 *.state.json
+*.db
+*.db-shm
+*.db-wal
 *.tmp
 .DS_Store
 npm-debug.log*

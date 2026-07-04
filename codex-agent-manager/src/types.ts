@@ -350,9 +350,30 @@ export type PersistedAgentManagerState = {
   compatibilityApprovals?: CompatibilityApproval[];
 };
 
+export type AgentEventQuery = {
+  agentId?: string;
+  beforeId?: number;
+  limit?: number;
+};
+
+export type AgentEventPage = {
+  events: AgentEvent[];
+  hasMore: boolean;
+  nextBeforeId: number | null;
+};
+
+export type AgentEventCursor = {
+  maxEventId: number;
+  maxApprovalId: number;
+};
+
 export interface AgentStateStore {
   load(): Promise<PersistedAgentManagerState>;
   save(state: PersistedAgentManagerState): Promise<void>;
+  appendEvent?(event: AgentEvent): Promise<void>;
+  queryEvents?(query?: AgentEventQuery): AgentEventPage;
+  eventCursor?(): AgentEventCursor;
+  close?(): Promise<void>;
 }
 
 export type CodexControlClientLike = {

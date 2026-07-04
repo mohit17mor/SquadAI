@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { CodexAgentManager } from "./manager.js";
 import { createCommandCenterServer } from "./server.js";
-import { JsonFileAgentStateStore } from "./stateStore.js";
+import { SqliteAgentStateStore } from "./stateStore.js";
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
@@ -21,6 +21,9 @@ const host = args.get("host") ?? process.env.CODEX_AGENT_MANAGER_HOST ?? "127.0.
 const statePath = resolve(
   args.get("state") ?? process.env.CODEX_AGENT_MANAGER_STATE ?? "./codex-agents.state.json",
 );
+const databasePath = resolve(
+  args.get("database") ?? process.env.CODEX_AGENT_MANAGER_DATABASE ?? "./command-center.db",
+);
 const codexBinary = args.get("codex-binary");
 const routingMode = parseRoutingMode(
   args.get("routing-mode") ?? process.env.CODEX_AGENT_MANAGER_ROUTING_MODE ?? "explicit",
@@ -31,7 +34,7 @@ if (codexBinary) {
 
 const manager = new CodexAgentManager({
   agents: [],
-  stateStore: new JsonFileAgentStateStore(statePath),
+  stateStore: new SqliteAgentStateStore(databasePath, { legacyJsonPath: statePath }),
   routingMode,
 });
 const server = createCommandCenterServer({ manager });
@@ -39,7 +42,8 @@ const server = createCommandCenterServer({ manager });
 await manager.start();
 await server.listen(port, host);
 console.log(`Jarvis Command Center listening at http://${host}:${server.port}`);
-console.log(`State: ${statePath}`);
+console.log(`Database: ${databasePath}`);
+console.log(`Legacy state backup: ${statePath}`);
 console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);
 console.log(`Routing mode: ${routingMode}`);
 

@@ -8,6 +8,8 @@ import type {
   AgentDefinition,
   AgentDefinitionUpdate,
   AgentEvent,
+  AgentEventPage,
+  AgentEventQuery,
   AgentEventType,
   AgentModelCatalog,
   AgentNotification,
@@ -364,10 +366,29 @@ export class CodexAgentManager extends EventEmitter {
   }
 
   listEvents(agentId?: string): AgentEvent[] {
+    if (this.stateStore.queryEvents) {
+      return this.stateStore.queryEvents(agentId ? { agentId } : {}).events;
+    }
     const events = agentId
       ? this.events.filter((event) => event.agentId === agentId)
       : this.events;
     return events.map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
+
+  listEventPage(query: AgentEventQuery = {}): AgentEventPage {
+    if (this.stateStore.queryEvents) return this.stateStore.queryEvents(query);
+    const filtered = this.events.filter((event) => (
+      (!query.agentId || event.agentId === query.agentId)
+      && (query.beforeId === undefined || event.id < query.beforeId)
+    ));
+    const limit = query.limit === undefined ? filtered.length : Math.max(1, Math.floor(query.limit));
+    const hasMore = filtered.length > limit;
+    const events = filtered.slice(-limit).map((event) => ({ ...event, payload: { ...event.payload } }));
+    return {
+      events,
+      hasMore,
+      nextBeforeId: hasMore && events.length ? events[0]?.id ?? null : null,
+    };
   }
 
   listNotifications(): AgentNotification[] {
@@ -798,6 +819,7 @@ export class CodexAgentManager extends EventEmitter {
       .map((record) => record.client)
       .filter((client): client is CodexControlClientLike => client !== null);
     await Promise.all(clients.map((client) => client.close()));
+    await this.stateStore.close?.();
   }
 
   private async runTurn(
@@ -1091,9 +1113,13 @@ export class CodexAgentManager extends EventEmitter {
     this.workItems = (state.workItems ?? []).map(cloneWorkItem);
     this.notifications = (state.notifications ?? []).map(normalizeNotification);
     this.compatibilityApprovals = (state.compatibilityApprovals ?? []).map(cloneCompatibilityApproval);
-    this.nextEventId =
-      this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
-    this.nextApprovalId = nextApprovalEventId(this.events);
+    const eventCursor = this.stateStore.eventCursor?.();
+    this.nextEventId = eventCursor
+      ? eventCursor.maxEventId + 1
+      : this.events.reduce((max, event) => Math.max(max, event.id), 0) + 1;
+    this.nextApprovalId = eventCursor
+      ? eventCursor.maxApprovalId + 1
+      : nextApprovalEventId(this.events);
     this.nextSensorEventId = nextNumericId(this.sensorEvents, "sensor");
     this.nextWorkItemId = nextNumericId(this.workItems, "work");
     this.nextNotificationId = nextNumericId(this.notifications, "notif");
@@ -1190,7 +1216,11 @@ export class CodexAgentManager extends EventEmitter {
       payload: { ...payload },
       createdAt: this.now(),
     };
-    this.events.push(event);
+    if (this.stateStore.appendEvent) {
+      await this.stateStore.appendEvent(event);
+    } else {
+      this.events.push(event);
+    }
     this.applyNotificationPolicy(event);
     this.emit("event", event);
     await this.persist();
@@ -1564,7 +1594,7 @@ export class CodexAgentManager extends EventEmitter {
     await this.stateStore.save({
       version: 1,
       agents,
-      events: this.events,
+      ...(this.stateStore.appendEvent ? {} : { events: this.events }),
       sensorEvents: this.sensorEvents,
       workItems: this.workItems,
       notifications: this.notifications,
