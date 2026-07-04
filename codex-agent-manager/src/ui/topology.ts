@@ -595,9 +595,13 @@ function startTopology(
       inspectorElement.innerHTML = '<div class="topology-inspector-empty"><strong>No agent selected</strong><span>Add or select an agent to inspect it.</span></div>';
       return;
     }
+    const workspace = agent.metadata.commandCenterWorkspace && typeof agent.metadata.commandCenterWorkspace === "object"
+      ? agent.metadata.commandCenterWorkspace as Record<string, unknown>
+      : null;
+    const branch = workspace && typeof workspace.branch === "string" ? workspace.branch : null;
     inspectorElement.innerHTML = `
       <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(instanceVisualStatus(agent))}"></i>${escapeHtml(displayState(agent))}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
-      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
+      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div>${branch ? `<div><dt>Branch</dt><dd>${escapeHtml(branch)}</dd></div>` : ""}<div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
       <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { CompatibilityGuardian } from "./compatibility.js";
+import { GitWorkspaceManager } from "./gitWorkspace.js";
 import { MemoryAgentStateStore } from "./stateStore.js";
 import type {
   AgentDefinition,
@@ -20,6 +21,8 @@ import type {
   AgentSkillCatalog,
   AgentStateStore,
   AgentStatus,
+  AgentWorkspaceManager,
+  AgentWorkspaceStatus,
   AskOptions,
   ApprovalRequest,
   ApprovalResponse,
@@ -99,6 +102,7 @@ export class CodexAgentManager extends EventEmitter {
   private readonly routingMode: RoutingMode;
   private readonly maxConcurrentInstancesPerAgent: number;
   private readonly maxOpenInstancesPerAgent: number;
+  private readonly workspaceManager: AgentWorkspaceManager;
   private events: AgentEvent[] = [];
   private sensorEvents: SensorEvent[] = [];
   private workItems: WorkItem[] = [];
@@ -131,6 +135,7 @@ export class CodexAgentManager extends EventEmitter {
       this.maxConcurrentInstancesPerAgent,
       Math.floor(options.maxOpenInstancesPerAgent ?? 5),
     );
+    this.workspaceManager = options.workspaceManager ?? new GitWorkspaceManager();
     this.compatibilityGuardian = new CompatibilityGuardian({ now: () => this.clock().getTime() });
 
     for (const definition of options.agents) {
@@ -297,7 +302,16 @@ export class CodexAgentManager extends EventEmitter {
     if (this.records.has(definition.id)) {
       throw new CodexAgentManagerError(`Agent already exists: ${definition.id}`);
     }
-    const record = this.addRecord(definition);
+    const preparedDefinition = await this.workspaceManager.prepareBase(cloneUnknown(definition));
+    validateDefinition(preparedDefinition);
+    const record = this.addRecord(preparedDefinition);
+    if (preparedDefinition.cwd !== definition.cwd) {
+      await this.recordEvent(preparedDefinition.id, "agent_workspace_created", "Git worktree created for agent.", {
+        originalCwd: definition.cwd,
+        cwd: preparedDefinition.cwd,
+        workspace: preparedDefinition.metadata?.commandCenterWorkspace,
+      });
+    }
     this.invalidateRouterRosters();
     await this.persist();
     return this.snapshot(record);
@@ -337,8 +351,15 @@ export class CodexAgentManager extends EventEmitter {
     } else if (record.definition.metadata !== undefined) {
       nextDefinition.metadata = record.definition.metadata;
     }
-    validateDefinition(nextDefinition);
-    const restartNeeded = requiresFreshSession(record.definition, nextDefinition);
+    if (update.cwd !== undefined && update.cwd !== record.definition.cwd && nextDefinition.metadata) {
+      nextDefinition.metadata = cloneRecord(nextDefinition.metadata);
+      delete nextDefinition.metadata.commandCenterWorkspace;
+    }
+    const preparedDefinition = this.instanceBaseAgentId(agentId)
+      ? nextDefinition
+      : await this.workspaceManager.prepareBase(nextDefinition);
+    validateDefinition(preparedDefinition);
+    const restartNeeded = requiresFreshSession(record.definition, preparedDefinition);
     if (restartNeeded) {
       await this.closeRecordClient(record);
       record.session = null;
@@ -346,9 +367,9 @@ export class CodexAgentManager extends EventEmitter {
       record.status = "idle";
       record.lastError = null;
     }
-    record.definition = nextDefinition;
+    record.definition = preparedDefinition;
     record.updatedAt = this.now();
-    this.definitions.set(agentId, nextDefinition);
+    this.definitions.set(agentId, preparedDefinition);
     this.invalidateRouterRosters();
     await this.recordEvent(agentId, "agent_updated", "Agent updated.", {
       restartNeeded,
@@ -436,6 +457,33 @@ export class CodexAgentManager extends EventEmitter {
     });
     await this.persist();
     void this.dispatchQueuedWork();
+    return this.snapshot(record);
+  }
+
+  async inspectAgentWorkspace(agentId: string): Promise<AgentWorkspaceStatus | null> {
+    this.assertOpen();
+    await this.start();
+    return this.workspaceManager.inspect(this.requireRecord(agentId).definition);
+  }
+
+  async cleanupAgentWorkspace(agentId: string): Promise<AgentSnapshot> {
+    this.assertOpen();
+    await this.start();
+    const record = this.requireRecord(agentId);
+    const lifecycle = record.definition.metadata?.instanceLifecycle;
+    if (lifecycle !== "done" && lifecycle !== "cancelled") {
+      throw new CodexAgentManagerError("Only done or cancelled task instances can be cleaned up.");
+    }
+    record.definition = await this.workspaceManager.cleanup(record.definition);
+    record.updatedAt = this.now();
+    this.definitions.set(agentId, record.definition);
+    await this.closeRecordClient(record);
+    record.session = null;
+    record.threadId = null;
+    await this.recordEvent(agentId, "agent_workspace_removed", "Managed Git worktree removed.", {
+      workspace: record.definition.metadata?.commandCenterWorkspace,
+    });
+    await this.persist();
     return this.snapshot(record);
   }
 
@@ -1689,7 +1737,7 @@ export class CodexAgentManager extends EventEmitter {
     if (this.openInstanceCount(baseAgentId) >= this.maxOpenInstancesPerAgent) {
       return baseAgentId;
     }
-    const definition = cloneUnknown(base.definition);
+    let definition = cloneUnknown(base.definition);
     const metadata = cloneRecord(definition.metadata);
     delete metadata.role;
     definition.id = instanceAgentId;
@@ -1701,6 +1749,7 @@ export class CodexAgentManager extends EventEmitter {
       instanceExecutionPolicy: "new",
       instanceLifecycle: "active",
     };
+    definition = await this.workspaceManager.prepareInstance(base.definition, definition);
     validateDefinition(definition);
     this.addRecord(definition);
     await this.recordEvent(instanceAgentId, "agent_instantiated", "Agent instance created for sensor event.", {

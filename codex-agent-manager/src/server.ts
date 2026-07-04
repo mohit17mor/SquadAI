@@ -205,6 +205,21 @@ export class CommandCenterServer {
         return;
       }
 
+      const workspaceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace$/);
+      if (request.method === "GET" && workspaceMatch?.[1]) {
+        const agentId = decodeURIComponent(workspaceMatch[1]);
+        const workspace = await this.options.manager.inspectAgentWorkspace(agentId);
+        this.json(response, { agentId, workspace });
+        return;
+      }
+      if (request.method === "POST" && workspaceMatch?.[1]) {
+        const agent = await this.options.manager.cleanupAgentWorkspace(
+          decodeURIComponent(workspaceMatch[1]),
+        );
+        this.json(response, { agent });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/sensor-events") {
         this.json(response, { events: this.options.manager.listSensorEvents() });
         return;
@@ -925,6 +940,7 @@ function renderHtml(title: string): string {
         <div class="topbar-actions">
           <button id="instance-done-button" type="button" class="secondary" hidden>Mark done</button>
           <button id="instance-cancel-button" type="button" class="danger" hidden>Cancel task</button>
+          <button id="workspace-cleanup-button" type="button" class="secondary" hidden>Clean up</button>
           <button id="cancel-agent-button" type="button" class="danger" hidden>Stop turn</button>
         </div>
       </header>
@@ -1323,6 +1339,8 @@ let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
 let instanceResolutionInFlight = false;
+let workspaceCleanupInFlight = false;
+let selectedWorkspaceStatus = null;
 let activePanel = "topology";
 const previewParams = new URLSearchParams(window.location.search);
 const requestedPanel = previewParams.get("panel");
@@ -1364,6 +1382,7 @@ const selectedMeta = document.getElementById("selected-meta");
 const cancelAgentButton = document.getElementById("cancel-agent-button");
 const instanceDoneButton = document.getElementById("instance-done-button");
 const instanceCancelButton = document.getElementById("instance-cancel-button");
+const workspaceCleanupButton = document.getElementById("workspace-cleanup-button");
 const connection = document.getElementById("connection");
 const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
@@ -1484,6 +1503,7 @@ window.addEventListener("keydown", (event) => {
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
 instanceDoneButton.addEventListener("click", () => resolveSelectedInstance("done"));
 instanceCancelButton.addEventListener("click", () => resolveSelectedInstance("cancelled"));
+workspaceCleanupButton.addEventListener("click", cleanupSelectedWorkspace);
 messageForm.addEventListener("submit", sendMessage);
 composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
 composerRuntimeToggle.addEventListener("click", toggleComposerRuntimeMenu);
@@ -1660,11 +1680,25 @@ function serviceTierOptions(model) {
 async function refreshEvents() {
   const params = new URLSearchParams({ limit: "500" });
   if (selectedAgentId) params.set("agentId", selectedAgentId);
-  const response = await fetch("/api/events?" + params.toString());
+  const selectedAtRequest = selectedAgentId;
+  const [response, workspaceResponse] = await Promise.all([
+    fetch("/api/events?" + params.toString()),
+    selectedAtRequest
+      ? fetch("/api/agents/" + encodeURIComponent(selectedAtRequest) + "/workspace")
+      : Promise.resolve(null),
+  ]);
   const body = await response.json();
   events = Array.isArray(body.events) ? body.events : [];
   eventHasMore = Boolean(body.hasMore);
   eventNextBeforeId = body.nextBeforeId ?? null;
+  if (workspaceResponse && selectedAgentId === selectedAtRequest) {
+    const workspaceBody = await workspaceResponse.json();
+    selectedWorkspaceStatus = workspaceResponse.ok
+      ? { agentId: selectedAtRequest, workspace: workspaceBody.workspace }
+      : null;
+  } else if (!selectedAtRequest) {
+    selectedWorkspaceStatus = null;
+  }
 }
 
 async function loadOlderEvents() {
@@ -1945,6 +1979,32 @@ async function resolveSelectedInstance(resolution) {
   }
 }
 
+async function cleanupSelectedWorkspace() {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || workspaceCleanupInFlight) return;
+  const confirmed = window.confirm(
+    "Remove this clean worktree? The Git branch will be preserved. Dirty worktrees are never removed.",
+  );
+  if (!confirmed) return;
+  workspaceCleanupInFlight = true;
+  render();
+  try {
+    const response = await fetch("/api/agents/" + encodeURIComponent(selected.id) + "/workspace", {
+      method: "POST",
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      toast(result.error || "Could not clean up worktree", "error");
+      return;
+    }
+    toast("Worktree removed; branch preserved");
+    await refresh();
+  } finally {
+    workspaceCleanupInFlight = false;
+    render();
+  }
+}
+
 function deriveAgentId(name) {
   return String(name)
     .toLowerCase()
@@ -2197,8 +2257,15 @@ function render() {
     }
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
+  const currentWorkspace = selectedWorkspaceStatus?.agentId === selected?.id
+    ? selectedWorkspaceStatus.workspace
+    : null;
+  const configuredWorkspace = selected?.metadata?.commandCenterWorkspace;
+  const workspaceLabel = currentWorkspace
+    ? currentWorkspace.branch + (currentWorkspace.dirty ? " · modified" : " · clean")
+    : configuredWorkspace?.branch || "";
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} - \${instanceLifecycleText(selected)} - \${selected.cwd} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${instanceLifecycleText(selected)} - \${selected.cwd}\${workspaceLabel ? " - " + workspaceLabel : ""} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   syncComposerControls(selected || null);
   cancelAgentButton.hidden = !(selected && selected.status === "running");
@@ -2212,6 +2279,9 @@ function render() {
   instanceCancelButton.hidden = !isInstance || isTerminalInstance;
   instanceDoneButton.disabled = instanceResolutionInFlight || selected?.status === "running";
   instanceCancelButton.disabled = instanceResolutionInFlight;
+  workspaceCleanupButton.hidden = !isTerminalInstance || !currentWorkspace || currentWorkspace.removed;
+  workspaceCleanupButton.disabled = workspaceCleanupInFlight;
+  workspaceCleanupButton.textContent = workspaceCleanupInFlight ? "Cleaning up" : "Clean up";
   messageInput.disabled = isTerminalInstance;
   messageForm.querySelector(".composer-send").disabled = isTerminalInstance;
   if (isTerminalInstance) messageInput.placeholder = "This task instance is " + instanceLifecycle + ".";

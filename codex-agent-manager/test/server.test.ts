@@ -151,6 +151,9 @@ test("command center API creates agents, lists them, sends messages, and exposes
     const listed = await jsonFetch(`${baseUrl}/api/agents`);
     assert.equal(listed.agents.length, 1);
     assert.equal(listed.agents[0].status, "idle");
+    const workspace = await jsonFetch(`${baseUrl}/api/agents/maintenance/workspace`);
+    assert.equal(workspace.agentId, "maintenance");
+    assert.equal(workspace.workspace, null);
 
     const sent = await jsonFetch(`${baseUrl}/api/agents/maintenance/messages`, {
       method: "POST",
@@ -645,6 +648,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /notification-count/);
     assert.match(html, /instance-done-button/);
     assert.match(html, /instance-cancel-button/);
+    assert.match(html, /workspace-cleanup-button/);
     assert.match(html, /needs you/);
     assert.match(html, /activePanel = "topology"/);
     assert.match(html, /class="shell topology-mode"/);

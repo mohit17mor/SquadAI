@@ -48,6 +48,8 @@ export type AgentEventType =
   | "agent_instantiated"
   | "agent_instance_needs_attention"
   | "agent_instance_resolved"
+  | "agent_workspace_created"
+  | "agent_workspace_removed"
   | "agent_deleted"
   | "agent_failed"
   | "compatibility_blocked"
@@ -154,6 +156,23 @@ export type AgentSnapshot = {
   updatedAt: string;
   lastError: string | null;
   compatibilityIssue: CompatibilityIssue | null;
+};
+
+export type AgentWorkspaceStatus = {
+  kind: "git-worktree";
+  repositoryRoot: string;
+  worktreePath: string;
+  branch: string;
+  sourceBranch: string;
+  dirty: boolean;
+  removed: boolean;
+};
+
+export type AgentWorkspaceManager = {
+  prepareBase(definition: AgentDefinition): Promise<AgentDefinition>;
+  prepareInstance(base: AgentDefinition, instance: AgentDefinition): Promise<AgentDefinition>;
+  inspect(definition: AgentDefinition): Promise<AgentWorkspaceStatus | null>;
+  cleanup(definition: AgentDefinition): Promise<AgentDefinition>;
 };
 
 export type AgentEvent = {
@@ -426,6 +445,7 @@ export type CodexAgentManagerOptions = {
   routingMode?: RoutingMode;
   maxConcurrentInstancesPerAgent?: number;
   maxOpenInstancesPerAgent?: number;
+  workspaceManager?: AgentWorkspaceManager;
 };
 
 export class CodexAgentManagerError extends Error {
