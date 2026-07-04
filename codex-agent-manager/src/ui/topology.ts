@@ -327,7 +327,7 @@ function startTopology(
     const current = Array.isArray(body.agents) ? body.agents : [];
     if (fallback) {
       fallback.innerHTML = current.length
-        ? current.map((agent) => `<button type="button" data-fallback-agent="${escapeHtml(agent.id)}"><strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(agent.status)}</span></button>`).join("")
+        ? current.map((agent) => `<button type="button" data-fallback-agent="${escapeHtml(agent.id)}"><strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(displayState(agent))}</span></button>`).join("")
         : "<p>No agents yet. Add an agent to begin.</p>";
     }
   }
@@ -435,7 +435,8 @@ function startTopology(
   function createNode(agent: AgentSnapshot, position: THREE.Vector3): NodeRecord {
     const group = new THREE.Group();
     group.position.copy(position);
-    const color = statusColor(agent.status);
+    const visualStatus = instanceVisualStatus(agent);
+    const color = statusColor(visualStatus);
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(agent.metadata.role === "router" ? 0.72 : 0.58, 36, 24),
       new THREE.MeshPhysicalMaterial({
@@ -467,9 +468,9 @@ function startTopology(
 
     const label = document.createElement("button");
     label.type = "button";
-    label.className = `topology-label status-${agent.status}`;
+    label.className = `topology-label status-${visualStatus}`;
     label.dataset.agentId = agent.id;
-    label.innerHTML = `<strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(agent.status)}</span>`;
+    label.innerHTML = `<strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(displayState(agent))}</span>`;
     label.addEventListener("click", () => selectAgent(agent.id));
     return { agent, group, sphere, halo, label };
   }
@@ -595,8 +596,8 @@ function startTopology(
       return;
     }
     inspectorElement.innerHTML = `
-      <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(agent.status)}"></i>${escapeHtml(agent.status)}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
-      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? "worker"))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
+      <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(instanceVisualStatus(agent))}"></i>${escapeHtml(displayState(agent))}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
+      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div><div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
       <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
@@ -773,6 +774,22 @@ function saveView(position: THREE.Vector3, distance: number): void {
   } catch {
     // Panning and zooming remain available for this session when storage is unavailable.
   }
+}
+
+function displayState(agent: AgentSnapshot): string {
+  const lifecycle = agent.metadata.instanceLifecycle;
+  if (lifecycle === "needs_attention") return "needs you";
+  if (lifecycle === "active") return "active task";
+  if (lifecycle === "done") return "done";
+  if (lifecycle === "cancelled") return "cancelled";
+  return agent.status;
+}
+
+function instanceVisualStatus(agent: AgentSnapshot): AgentStatus {
+  const lifecycle = agent.metadata.instanceLifecycle;
+  if (lifecycle === "needs_attention") return "blocked";
+  if (lifecycle === "done" || lifecycle === "cancelled") return "stopped";
+  return agent.status;
 }
 
 function statusColor(status: AgentStatus): number {

@@ -189,6 +189,22 @@ export class CommandCenterServer {
         return;
       }
 
+      const instanceResolveMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/instance\/resolve$/);
+      if (request.method === "POST" && instanceResolveMatch?.[1]) {
+        const body = asRecord(await readJson(request));
+        const resolution = optionalEnum(body.resolution, ["done", "cancelled"]);
+        if (!resolution) {
+          throw new Error("Field resolution must be done or cancelled.");
+        }
+        const agent = await this.options.manager.resolveAgentInstance(
+          decodeURIComponent(instanceResolveMatch[1]),
+          resolution,
+        );
+        this.kickAutomation();
+        this.json(response, { agent });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/sensor-events") {
         this.json(response, { events: this.options.manager.listSensorEvents() });
         return;
@@ -649,6 +665,7 @@ function parseSensorEvent(body: unknown): SensorEventInput {
   const url = optionalString(value.url);
   const dedupeKey = optionalString(value.dedupeKey);
   const targetAgentId = optionalString(value.targetAgentId);
+  const executionPolicy = optionalEnum(value.executionPolicy, ["reuse", "new"]);
   const priority = optionalEnum(value.priority, ["low", "normal", "high"]);
   const metadata = asOptionalRecord(value.metadata);
   if (title) {
@@ -662,6 +679,9 @@ function parseSensorEvent(body: unknown): SensorEventInput {
   }
   if (targetAgentId) {
     event.targetAgentId = targetAgentId;
+  }
+  if (executionPolicy) {
+    event.executionPolicy = executionPolicy;
   }
   if (priority) {
     event.priority = priority;
@@ -902,7 +922,11 @@ function renderHtml(title: string): string {
           <h2 id="selected-title">No agent selected</h2>
           <p id="selected-meta">Create or select an agent to begin.</p>
         </div>
-        <button id="cancel-agent-button" type="button" class="danger" hidden>Cancel</button>
+        <div class="topbar-actions">
+          <button id="instance-done-button" type="button" class="secondary" hidden>Mark done</button>
+          <button id="instance-cancel-button" type="button" class="danger" hidden>Cancel task</button>
+          <button id="cancel-agent-button" type="button" class="danger" hidden>Stop turn</button>
+        </div>
       </header>
       <section class="message-list" id="messages"></section>
       <form id="message-form" class="composer">
@@ -1063,11 +1087,13 @@ h2 { margin: 0; font-size: 12px; color: #8b949e; text-transform: uppercase; lett
 .rail-item.active { background: rgba(88,166,255,.12); color: #58a6ff; font-weight: 700; }
 .rail-item span { min-width: 22px; border-radius: 999px; padding: 1px 7px; background: #0d1117; color: #8b949e; text-align: center; font-size: 11px; }
 .rail-agents { display: grid; gap: 2px; margin: -1px 0 7px; padding: 0 5px 6px 13px; border-bottom: 1px solid rgba(48,54,61,.65); }
-.rail-agent { width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; justify-content: start; gap: 8px; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: #8b949e; text-align: left; font-size: 12px; font-weight: 550; }
+.rail-agent { width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; justify-content: start; gap: 8px; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: #8b949e; text-align: left; font-size: 12px; font-weight: 550; }
 .rail-agent:hover { background: #1c2128; color: #e6edf3; }
 .rail-agent.active { background: rgba(88,166,255,.12); color: #e6edf3; }
 .rail-agent strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-agent .status-dot { width: 6px; height: 6px; }
+.rail-agent-state { color: #d29922; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.rail-agent-state.terminal { color: #6e7681; }
 .rail-footer { padding: 14px 18px; border-top: 1px solid #30363d; display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 12px; white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 999px; background: #f85149; display: inline-block; }
 .dot.connected { background: #3fb950; }
@@ -1139,9 +1165,10 @@ textarea { resize: vertical; }
 .log-time { color: #6e7681; font-variant-numeric: tabular-nums; }
 .log-source { color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-status { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-status.queued, .log-status.pending, .log-status.routing, .log-status.running { color: #d29922; }
+.log-status.queued, .log-status.pending, .log-status.routing, .log-status.running, .log-status.waiting { color: #d29922; }
 .log-status.completed, .log-status.routed { color: #3fb950; }
 .log-status.failed { color: #f85149; }
+.log-status.cancelled { color: #6e7681; }
 .log-message { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-detail { margin: 0 0 8px 250px; padding: 8px 10px; border-left: 2px solid #30363d; color: #8b949e; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(22,27,34,.65); border-radius: 0 6px 6px 0; }
 .log-detail strong { color: #c9d1d9; }
@@ -1158,6 +1185,7 @@ textarea { resize: vertical; }
 .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 16px 22px; background: #161b22; border-bottom: 1px solid #30363d; }
 .topbar h2 { text-transform: none; letter-spacing: 0; color: #e6edf3; font-size: 18px; margin: 0; }
 .topbar p { margin: 4px 0 0; color: #8b949e; font-size: 13px; overflow-wrap: anywhere; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
 .message-list { overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 13px; }
 .message-list::-webkit-scrollbar { width: 6px; }
 .message-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
@@ -1294,6 +1322,7 @@ const skillCatalogs = new Map();
 let pendingMessages = [];
 let sendInFlight = false;
 let cancelInFlight = false;
+let instanceResolutionInFlight = false;
 let activePanel = "topology";
 const previewParams = new URLSearchParams(window.location.search);
 const requestedPanel = previewParams.get("panel");
@@ -1333,6 +1362,8 @@ const messages = document.getElementById("messages");
 const selectedTitle = document.getElementById("selected-title");
 const selectedMeta = document.getElementById("selected-meta");
 const cancelAgentButton = document.getElementById("cancel-agent-button");
+const instanceDoneButton = document.getElementById("instance-done-button");
+const instanceCancelButton = document.getElementById("instance-cancel-button");
 const connection = document.getElementById("connection");
 const connectionDot = document.getElementById("connection-dot");
 const messageForm = document.getElementById("message-form");
@@ -1451,6 +1482,8 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !composerRuntimeMenu.hidden) closeComposerRuntimeMenu();
 });
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
+instanceDoneButton.addEventListener("click", () => resolveSelectedInstance("done"));
+instanceCancelButton.addEventListener("click", () => resolveSelectedInstance("cancelled"));
 messageForm.addEventListener("submit", sendMessage);
 composerPermission.addEventListener("change", () => void updatePermissionFromComposer());
 composerRuntimeToggle.addEventListener("click", toggleComposerRuntimeMenu);
@@ -1888,6 +1921,30 @@ async function cancelSelectedAgent() {
   }
 }
 
+async function resolveSelectedInstance(resolution) {
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || typeof selected.metadata?.instanceOfAgentId !== "string" || instanceResolutionInFlight) return;
+  instanceResolutionInFlight = true;
+  render();
+  try {
+    const response = await fetch("/api/agents/" + encodeURIComponent(selected.id) + "/instance/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resolution }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      toast(result.error || "Could not resolve task instance", "error");
+      return;
+    }
+    toast(resolution === "done" ? "Task marked done" : "Task cancelled");
+    await refresh();
+  } finally {
+    instanceResolutionInFlight = false;
+    render();
+  }
+}
+
 function deriveAgentId(name) {
   return String(name)
     .toLowerCase()
@@ -2089,6 +2146,20 @@ function reasoningDisplayName(value) {
   return labels[value] || String(value || "Default").replace(/(^|[-_])([a-z])/g, (_, prefix, letter) => (prefix ? " " : "") + letter.toUpperCase());
 }
 
+function instanceLifecycleText(agent) {
+  const lifecycle = agent?.metadata?.instanceLifecycle
+    || (typeof agent?.metadata?.instanceOfAgentId === "string" ? "active" : undefined);
+  const labels = { active: "active task", needs_attention: "needs you", done: "done", cancelled: "cancelled" };
+  return labels[lifecycle] || agent?.status || "idle";
+}
+
+function instanceLifecycleBadge(agent) {
+  if (typeof agent?.metadata?.instanceOfAgentId !== "string") return "";
+  const lifecycle = agent.metadata.instanceLifecycle || "active";
+  const terminal = lifecycle === "done" || lifecycle === "cancelled";
+  return '<span class="rail-agent-state' + (terminal ? ' terminal' : '') + '">' + escapeHtml(instanceLifecycleText(agent)) + '</span>';
+}
+
 function render() {
   renderPanel();
   if (activePanel === "jarvis") {
@@ -2107,6 +2178,7 @@ function render() {
     <button class="rail-agent \${agent.id === selectedAgentId && activePanel === "agents" ? "active" : ""}" data-agent-id="\${escapeAttr(agent.id)}" title="Open \${escapeAttr(agent.name)} conversation">
       <i class="status-dot \${escapeAttr(agent.status)}"></i>
       <strong>\${escapeHtml(agent.name)}</strong>
+      \${instanceLifecycleBadge(agent)}
     </button>
   \`).join("") || '<span class="rail-agent-empty">No agents yet</span>';
   if (agentListHtml !== lastAgentListHtml) {
@@ -2126,12 +2198,23 @@ function render() {
   }
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} - \${selected.status} - \${selected.cwd} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${instanceLifecycleText(selected)} - \${selected.cwd} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   syncComposerControls(selected || null);
   cancelAgentButton.hidden = !(selected && selected.status === "running");
   cancelAgentButton.disabled = cancelInFlight;
-  cancelAgentButton.textContent = cancelInFlight ? "Cancelling" : "Cancel";
+  cancelAgentButton.textContent = cancelInFlight ? "Stopping" : "Stop turn";
+  const instanceLifecycle = selected?.metadata?.instanceLifecycle
+    || (typeof selected?.metadata?.instanceOfAgentId === "string" ? "active" : undefined);
+  const isInstance = typeof selected?.metadata?.instanceOfAgentId === "string";
+  const isTerminalInstance = instanceLifecycle === "done" || instanceLifecycle === "cancelled";
+  instanceDoneButton.hidden = !isInstance || isTerminalInstance || instanceLifecycle !== "needs_attention";
+  instanceCancelButton.hidden = !isInstance || isTerminalInstance;
+  instanceDoneButton.disabled = instanceResolutionInFlight || selected?.status === "running";
+  instanceCancelButton.disabled = instanceResolutionInFlight;
+  messageInput.disabled = isTerminalInstance;
+  messageForm.querySelector(".composer-send").disabled = isTerminalInstance;
+  if (isTerminalInstance) messageInput.placeholder = "This task instance is " + instanceLifecycle + ".";
   renderAgentEditor(selected);
   const visibleEvents = selected
     ? events.filter((item) => item.agentId === selected.id && eventBelongsToAgentInstance(item, selected))
@@ -2397,12 +2480,16 @@ function renderSensorEventLog(items) {
     const detail = [
       event.body ? ["Body", event.body] : null,
       event.url ? ["URL", event.url] : null,
+      event.executionPolicy ? ["Execution", event.executionPolicy === "new" ? "New agent instance" : "Reuse base agent"] : null,
+      event.targetAgentId ? ["Target agent", agentName(event.targetAgentId)] : null,
       event.workItemId ? ["Work item", event.workItemId] : null,
       event.failureReason ? ["Failure", event.failureReason] : null,
       hasKeys(event.metadata) ? ["Metadata", JSON.stringify(event.metadata, null, 2)] : null,
     ].filter(Boolean);
     const assignableAgents = agents.filter(
       (agent) => agent.metadata?.role !== "router" && agent.metadata?.role !== "jarvis",
+    ).filter(
+      (agent) => typeof agent.metadata?.instanceOfAgentId !== "string",
     );
     const actionsHtml = event.status === "unassigned" ? \`
       <select data-sensor-event-target="\${escapeAttr(event.id)}" aria-label="Assign event to agent">
@@ -2426,8 +2513,10 @@ function renderSensorEventLog(items) {
 function renderWorkItemLog(items) {
   return [...items].reverse().map((item) => {
     const agent = agentName(item.targetAgentId);
+    const waitingForInstance = item.metadata?.pendingInstantiation === true;
     const detail = [
       item.eventId ? ["Sensor event", item.eventId] : null,
+      waitingForInstance ? ["Execution", "Waiting for a free agent instance (backlog limit 5)"] : null,
       item.prompt ? ["Prompt", item.prompt] : null,
       item.result ? ["Result", item.result] : null,
       item.failureReason ? ["Failure", item.failureReason] : null,
@@ -2436,8 +2525,8 @@ function renderWorkItemLog(items) {
     return renderLogRow({
       time: item.updatedAt || item.createdAt,
       source: agent,
-      status: item.status + " · " + item.id,
-      statusClass: item.status,
+      status: (waitingForInstance ? "waiting" : item.status) + " · " + item.id,
+      statusClass: waitingForInstance ? "waiting" : item.status,
       message: item.prompt || item.id,
       detail,
     });
@@ -2744,13 +2833,18 @@ function summarizeWorkEvents(visibleEvents) {
       current.title = "Work item failed";
       current.detail = event.message;
     }
+    if (event.type === "work_item_cancelled") {
+      current.status = "cancelled";
+      current.title = "Work item cancelled";
+      current.detail = event.message;
+    }
     summaries.set(workItemId, current);
   }
   return Array.from(summaries.values());
 }
 
 function shouldShowTimelineInChat(summary) {
-  return summary.status === "running" || summary.status === "failed" || summary.hasApproval || summary.hasCompaction;
+  return summary.status === "running" || summary.status === "failed" || summary.status === "cancelled" || summary.hasApproval || summary.hasCompaction;
 }
 
 function workSummaryToTimelineMessage(summary) {

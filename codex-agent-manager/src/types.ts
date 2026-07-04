@@ -37,12 +37,17 @@ export type AgentEventType =
   | "work_item_started"
   | "work_item_completed"
   | "work_item_failed"
+  | "work_item_cancelled"
+  | "work_item_instantiated"
   | "work_item_requeued"
   | "turn_started"
   | "turn_interrupt_requested"
   | "turn_completed"
   | "turn_failed"
   | "agent_updated"
+  | "agent_instantiated"
+  | "agent_instance_needs_attention"
+  | "agent_instance_resolved"
   | "agent_deleted"
   | "agent_failed"
   | "compatibility_blocked"
@@ -170,6 +175,9 @@ export type SendResult = {
 export type SensorEventStatus = "unassigned" | "pending" | "routing" | "routed" | "failed" | "ignored";
 
 export type RoutingMode = "explicit" | "router-fallback" | "router-only";
+export type AgentExecutionPolicy = "reuse" | "new";
+export type AgentInstanceLifecycle = "active" | "needs_attention" | "done" | "cancelled";
+export type AgentInstanceResolution = Extract<AgentInstanceLifecycle, "done" | "cancelled">;
 
 export type SensorEventInput = {
   source: string;
@@ -179,11 +187,13 @@ export type SensorEventInput = {
   url?: string;
   dedupeKey?: string;
   targetAgentId?: string;
+  executionPolicy?: AgentExecutionPolicy;
   priority?: "low" | "normal" | "high";
   metadata?: Record<string, unknown>;
 };
 
-export type SensorEvent = SensorEventInput & {
+export type SensorEvent = Omit<SensorEventInput, "executionPolicy"> & {
+  executionPolicy: AgentExecutionPolicy;
   id: string;
   status: SensorEventStatus;
   workItemId: string | null;
@@ -192,7 +202,7 @@ export type SensorEvent = SensorEventInput & {
   updatedAt: string;
 };
 
-export type WorkItemStatus = "queued" | "running" | "done" | "failed" | "blocked";
+export type WorkItemStatus = "queued" | "running" | "done" | "failed" | "blocked" | "cancelled";
 
 export type WorkItem = {
   id: string;
@@ -414,6 +424,8 @@ export type CodexAgentManagerOptions = {
   clientFactory?: CodexControlClientFactory;
   clock?: () => Date;
   routingMode?: RoutingMode;
+  maxConcurrentInstancesPerAgent?: number;
+  maxOpenInstancesPerAgent?: number;
 };
 
 export class CodexAgentManagerError extends Error {

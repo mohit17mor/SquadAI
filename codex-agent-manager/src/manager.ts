@@ -11,6 +11,8 @@ import type {
   AgentEventPage,
   AgentEventQuery,
   AgentEventType,
+  AgentInstanceLifecycle,
+  AgentInstanceResolution,
   AgentModelCatalog,
   AgentNotification,
   AgentNotificationKind,
@@ -95,6 +97,8 @@ export class CodexAgentManager extends EventEmitter {
   private readonly clock: () => Date;
   private readonly compatibilityGuardian: CompatibilityGuardian;
   private readonly routingMode: RoutingMode;
+  private readonly maxConcurrentInstancesPerAgent: number;
+  private readonly maxOpenInstancesPerAgent: number;
   private events: AgentEvent[] = [];
   private sensorEvents: SensorEvent[] = [];
   private workItems: WorkItem[] = [];
@@ -119,6 +123,14 @@ export class CodexAgentManager extends EventEmitter {
     this.clientFactory = options.clientFactory ?? createDefaultClientFactory();
     this.clock = options.clock ?? (() => new Date());
     this.routingMode = options.routingMode ?? "explicit";
+    this.maxConcurrentInstancesPerAgent = Math.max(
+      1,
+      Math.floor(options.maxConcurrentInstancesPerAgent ?? 3),
+    );
+    this.maxOpenInstancesPerAgent = Math.max(
+      this.maxConcurrentInstancesPerAgent,
+      Math.floor(options.maxOpenInstancesPerAgent ?? 5),
+    );
     this.compatibilityGuardian = new CompatibilityGuardian({ now: () => this.clock().getTime() });
 
     for (const definition of options.agents) {
@@ -263,6 +275,7 @@ export class CodexAgentManager extends EventEmitter {
         workItem.completedAt = null;
         workItem.retryGeneration = (workItem.retryGeneration ?? 0) + 1;
         workItem.updatedAt = resolvedAt;
+        this.setInstanceLifecycle(workItem.targetAgentId, "active");
       }
     }
     await this.recordEvent(record.definition.id, "compatibility_migrated", "Agent compatibility configuration migrated.", {
@@ -294,6 +307,10 @@ export class CodexAgentManager extends EventEmitter {
     this.assertOpen();
     await this.start();
     const record = this.requireRecord(agentId);
+    const instanceLifecycle = record.definition.metadata?.instanceLifecycle;
+    if (instanceLifecycle === "done" || instanceLifecycle === "cancelled") {
+      throw new CodexAgentManagerError(`Agent instance ${agentId} is ${instanceLifecycle} and cannot be edited.`);
+    }
     if (record.activeTurn || record.status === "starting" || record.status === "running") {
       throw new CodexAgentManagerError(`Agent ${agentId} is running and cannot be edited.`);
     }
@@ -365,6 +382,63 @@ export class CodexAgentManager extends EventEmitter {
     return snapshot;
   }
 
+  async resolveAgentInstance(
+    agentId: string,
+    resolution: AgentInstanceResolution,
+  ): Promise<AgentSnapshot> {
+    this.assertOpen();
+    await this.start();
+    const record = this.requireRecord(agentId);
+    const baseAgentId = this.instanceBaseAgentId(agentId);
+    if (!baseAgentId) {
+      throw new CodexAgentManagerError(`Agent ${agentId} is not an instantiated agent.`);
+    }
+    const lifecycle = record.definition.metadata?.instanceLifecycle;
+    if (lifecycle === "done" || lifecycle === "cancelled") {
+      throw new CodexAgentManagerError(`Agent instance ${agentId} is already ${lifecycle}.`);
+    }
+    const activeWorkItems = this.workItems.filter(
+      (item) => item.targetAgentId === agentId && (item.status === "queued" || item.status === "running"),
+    );
+    if (resolution === "done" && (record.activeTurn || activeWorkItems.length)) {
+      throw new CodexAgentManagerError(`Agent instance ${agentId} still has active work and cannot be marked done.`);
+    }
+    if (resolution === "cancelled" && record.activeTurn) {
+      if (!record.session?.interrupt) {
+        throw new CodexAgentManagerError(`Agent ${agentId} does not support turn interruption.`);
+      }
+      await record.session.interrupt();
+      await this.recordEvent(agentId, "turn_interrupt_requested", "Turn interrupt requested for cancelled task.", {
+        threadId: record.threadId,
+      });
+    }
+    if (resolution === "cancelled") {
+      const now = this.now();
+      for (const workItem of this.workItems.filter(
+        (item) => item.targetAgentId === agentId
+          && (item.status === "queued" || item.status === "running" || item.status === "blocked"),
+      )) {
+        workItem.status = "cancelled";
+        workItem.failureReason = "Cancelled by user.";
+        workItem.completedAt = now;
+        workItem.updatedAt = now;
+        await this.recordEvent(agentId, "work_item_cancelled", "Work item cancelled by user.", {
+          workItemId: workItem.id,
+          sensorEventId: workItem.eventId,
+        });
+      }
+      await this.resolvePendingApprovalsForAgent(agentId, "declined", "Task instance cancelled by user.");
+    }
+    this.setInstanceLifecycle(agentId, resolution);
+    await this.recordEvent(agentId, "agent_instance_resolved", `Agent instance marked ${resolution}.`, {
+      baseAgentId,
+      resolution,
+    });
+    await this.persist();
+    void this.dispatchQueuedWork();
+    return this.snapshot(record);
+  }
+
   listEvents(agentId?: string): AgentEvent[] {
     if (this.stateStore.queryEvents) {
       return this.stateStore.queryEvents(agentId ? { agentId } : {}).events;
@@ -427,6 +501,10 @@ export class CodexAgentManager extends EventEmitter {
     await this.start();
 
     const record = this.requireRecord(agentId);
+    const instanceLifecycle = record.definition.metadata?.instanceLifecycle;
+    if (instanceLifecycle === "done" || instanceLifecycle === "cancelled") {
+      throw new CodexAgentManagerError(`Agent instance ${agentId} is ${instanceLifecycle} and cannot start another turn.`);
+    }
     if (record.activeTurn || record.status === "starting" || record.status === "running") {
       throw new CodexAgentManagerError(`Agent ${agentId} is already running a turn.`);
     }
@@ -525,22 +603,25 @@ export class CodexAgentManager extends EventEmitter {
       throw new CodexAgentManagerError(`Sensor event is already assigned: ${eventId}`);
     }
     this.requireRecord(targetAgentId);
-    const workItem = this.createDirectWorkItem(event, targetAgentId, "Assigned by a human.");
-    event.targetAgentId = targetAgentId;
+    const resolvedTargetAgentId = await this.resolveExecutionTarget(event, targetAgentId);
+    const workItem = this.createDirectWorkItem(event, resolvedTargetAgentId, "Assigned by a human.");
+    event.targetAgentId = resolvedTargetAgentId;
     event.status = "routed";
     event.workItemId = workItem.id;
     event.failureReason = null;
     event.updatedAt = this.now();
-    await this.recordEvent(targetAgentId, "work_item_created", "Work item created.", {
+    await this.recordEvent(resolvedTargetAgentId, "work_item_created", "Work item created.", {
       workItemId: workItem.id,
       sensorEventId: event.id,
       routerAgentId: null,
       reason: workItem.reason,
     });
-    await this.recordEvent(targetAgentId, "sensor_event_routed", "Sensor event assigned directly.", {
+    await this.recordEvent(resolvedTargetAgentId, "sensor_event_routed", "Sensor event assigned directly.", {
       sensorEventId: event.id,
       workItemId: workItem.id,
-      targetAgentId,
+      targetAgentId: resolvedTargetAgentId,
+      baseAgentId: targetAgentId,
+      executionPolicy: event.executionPolicy,
       routingMode: this.routingMode,
     });
     await this.persist();
@@ -575,6 +656,7 @@ export class CodexAgentManager extends EventEmitter {
     workItem.startedAt = null;
     workItem.completedAt = null;
     workItem.updatedAt = this.now();
+    this.setInstanceLifecycle(workItem.targetAgentId, "active");
     await this.recordEvent(workItem.targetAgentId, "work_item_requeued", "Work item requeued.", {
       workItemId: workItem.id,
       sensorEventId: workItem.eventId,
@@ -601,17 +683,24 @@ export class CodexAgentManager extends EventEmitter {
     }
 
     const now = this.now();
-    const directTarget = this.routingMode !== "router-only" ? normalized.targetAgentId : undefined;
+    const requestedDirectTarget = this.routingMode !== "router-only" ? normalized.targetAgentId : undefined;
     const event: SensorEvent = {
       id: `sensor-${this.nextSensorEventId++}`,
       ...normalized,
-      status: directTarget ? "routed" : this.routingMode === "explicit" ? "unassigned" : "pending",
+      executionPolicy: normalized.executionPolicy ?? "reuse",
+      status: requestedDirectTarget ? "routed" : this.routingMode === "explicit" ? "unassigned" : "pending",
       workItemId: null,
       failureReason: null,
       createdAt: now,
       updatedAt: now,
     };
     this.sensorEvents.push(event);
+    const directTarget = requestedDirectTarget
+      ? await this.resolveExecutionTarget(event, requestedDirectTarget)
+      : undefined;
+    if (directTarget) {
+      event.targetAgentId = directTarget;
+    }
     const workItem = directTarget
       ? this.createDirectWorkItem(event, directTarget, "Explicit target supplied by event producer.")
       : null;
@@ -624,6 +713,8 @@ export class CodexAgentManager extends EventEmitter {
       type: event.type,
       dedupeKey: event.dedupeKey,
       targetAgentId: directTarget,
+      requestedTargetAgentId: requestedDirectTarget,
+      executionPolicy: event.executionPolicy,
       routingMode: this.routingMode,
     });
     if (workItem && directTarget) {
@@ -637,6 +728,8 @@ export class CodexAgentManager extends EventEmitter {
         sensorEventId: event.id,
         workItemId: workItem.id,
         targetAgentId: directTarget,
+        baseAgentId: requestedDirectTarget,
+        executionPolicy: event.executionPolicy,
         routingMode: this.routingMode,
       });
     }
@@ -722,13 +815,70 @@ export class CodexAgentManager extends EventEmitter {
     await this.start();
     const started: WorkItem[] = [];
     const reservedAgentIds = new Set<string>();
+    const activeInstancesByBaseAgent = new Map<string, number>();
+    const activeInstanceAgentIds = new Set<string>();
+    for (const runningWork of this.workItems.filter((item) => item.status === "running")) {
+      activeInstanceAgentIds.add(runningWork.targetAgentId);
+    }
+    for (const record of this.records.values()) {
+      if (record.activeTurn || record.status === "starting" || record.status === "running") {
+        activeInstanceAgentIds.add(record.definition.id);
+      }
+    }
+    for (const activeAgentId of activeInstanceAgentIds) {
+      const baseAgentId = this.instanceBaseAgentId(activeAgentId);
+      if (baseAgentId) {
+        activeInstancesByBaseAgent.set(baseAgentId, (activeInstancesByBaseAgent.get(baseAgentId) ?? 0) + 1);
+      }
+    }
     for (const workItem of this.workItems.filter((item) => item.status === "queued")) {
+      if (workItem.metadata.pendingInstantiation === true) {
+        const sensorEvent = workItem.eventId
+          ? this.sensorEvents.find((event) => event.id === workItem.eventId)
+          : undefined;
+        const baseAgentId = typeof workItem.metadata.baseAgentId === "string"
+          ? workItem.metadata.baseAgentId
+          : workItem.targetAgentId;
+        if (!sensorEvent) {
+          continue;
+        }
+        const resolvedTargetAgentId = await this.resolveExecutionTarget(sensorEvent, baseAgentId);
+        if (resolvedTargetAgentId === baseAgentId) {
+          continue;
+        }
+        workItem.targetAgentId = resolvedTargetAgentId;
+        workItem.metadata.pendingInstantiation = false;
+        workItem.updatedAt = this.now();
+        sensorEvent.targetAgentId = resolvedTargetAgentId;
+        sensorEvent.updatedAt = workItem.updatedAt;
+        await this.recordEvent(
+          resolvedTargetAgentId,
+          "work_item_instantiated",
+          "Queued work received an available agent instance.",
+          {
+            workItemId: workItem.id,
+            sensorEventId: sensorEvent.id,
+            baseAgentId,
+          },
+        );
+      }
       const record = this.records.get(workItem.targetAgentId);
       if (!record || reservedAgentIds.has(record.definition.id) || !this.isAgentAvailable(record)) {
         continue;
       }
+      const baseAgentId = this.instanceBaseAgentId(record.definition.id);
+      if (
+        baseAgentId
+        && (activeInstancesByBaseAgent.get(baseAgentId) ?? 0) >= this.maxConcurrentInstancesPerAgent
+      ) {
+        continue;
+      }
       reservedAgentIds.add(record.definition.id);
+      if (baseAgentId) {
+        activeInstancesByBaseAgent.set(baseAgentId, (activeInstancesByBaseAgent.get(baseAgentId) ?? 0) + 1);
+      }
       workItem.status = "running";
+      this.setInstanceLifecycle(workItem.targetAgentId, "active");
       workItem.startedAt = this.now();
       workItem.updatedAt = workItem.startedAt;
       await this.recordEvent(workItem.targetAgentId, "work_item_started", "Work item started.", {
@@ -1102,7 +1252,10 @@ export class CodexAgentManager extends EventEmitter {
       ...event,
       payload: { ...event.payload },
     }));
-    this.sensorEvents = (state.sensorEvents ?? []).map(cloneSensorEvent);
+    this.sensorEvents = (state.sensorEvents ?? []).map((event) => cloneSensorEvent({
+      ...event,
+      executionPolicy: event.executionPolicy ?? "reuse",
+    }));
     if (this.routingMode === "explicit") {
       for (const event of this.sensorEvents) {
         if (event.status === "pending" && !event.workItemId) {
@@ -1149,6 +1302,12 @@ export class CodexAgentManager extends EventEmitter {
       record.createdAt = persisted.createdAt ?? record.createdAt;
       record.updatedAt = persisted.updatedAt ?? record.updatedAt;
       record.lastError = persisted.lastError ?? null;
+      if (
+        typeof record.definition.metadata?.instanceOfAgentId === "string"
+        && typeof record.definition.metadata.instanceLifecycle !== "string"
+      ) {
+        this.setInstanceLifecycle(agentId, "active");
+      }
       record.compatibilityIssue = this.compatibilityApprovals.find(
         (approval) => approval.agentId === agentId && approval.status === "pending",
       )?.issue ?? null;
@@ -1165,6 +1324,7 @@ export class CodexAgentManager extends EventEmitter {
       workItem.failureReason = "Manager restarted while work item was running.";
       workItem.completedAt = now;
       workItem.updatedAt = now;
+      await this.markInstanceNeedsAttention(workItem.targetAgentId, workItem.id);
       await this.recordEvent(workItem.targetAgentId, "work_item_failed", workItem.failureReason, {
         workItemId: workItem.id,
         sensorEventId: workItem.eventId,
@@ -1422,6 +1582,7 @@ export class CodexAgentManager extends EventEmitter {
       .filter((record) => record.definition.id !== routerAgentId)
       .filter((record) => record.definition.metadata?.role !== "router")
       .filter((record) => record.definition.metadata?.role !== "jarvis")
+      .filter((record) => typeof record.definition.metadata?.instanceOfAgentId !== "string")
       .map((record) => ({
         id: record.definition.id,
         name: record.definition.name,
@@ -1471,19 +1632,27 @@ export class CodexAgentManager extends EventEmitter {
     routerAgentId: string,
     decision: RoutingDecision,
   ): Promise<WorkItem> {
+    const targetAgentId = await this.resolveExecutionTarget(event, decision.targetAgentId);
     const workItem = this.createWorkItem({
       event,
-      targetAgentId: decision.targetAgentId,
+      targetAgentId,
       prompt: decision.prompt.trim(),
       routerAgentId,
       reason: decision.reason?.trim() || null,
-      metadata: decision.metadata ?? {},
+      metadata: {
+        ...(decision.metadata ?? {}),
+        executionPolicy: event.executionPolicy,
+        baseAgentId: decision.targetAgentId,
+        pendingInstantiation: event.executionPolicy === "new" && targetAgentId === decision.targetAgentId,
+      },
     });
-    await this.recordEvent(decision.targetAgentId, "work_item_created", "Work item created.", {
+    await this.recordEvent(targetAgentId, "work_item_created", "Work item created.", {
       workItemId: workItem.id,
       sensorEventId: event.id,
       routerAgentId,
       reason: workItem.reason,
+      baseAgentId: decision.targetAgentId,
+      executionPolicy: event.executionPolicy,
     });
     return workItem;
   }
@@ -1495,8 +1664,85 @@ export class CodexAgentManager extends EventEmitter {
       prompt: sensorEventPrompt(event),
       routerAgentId: null,
       reason,
-      metadata: { routingMode: "explicit" },
+      metadata: {
+        routingMode: "explicit",
+        executionPolicy: event.executionPolicy,
+        baseAgentId: this.instanceBaseAgentId(targetAgentId) ?? targetAgentId,
+        pendingInstantiation: event.executionPolicy === "new" && !this.instanceBaseAgentId(targetAgentId),
+      },
     });
+  }
+
+  private async resolveExecutionTarget(event: SensorEvent, requestedAgentId: string): Promise<string> {
+    if (event.executionPolicy !== "new") {
+      return requestedAgentId;
+    }
+    const requested = this.requireRecord(requestedAgentId);
+    const inheritedBaseAgentId = requested.definition.metadata?.instanceOfAgentId;
+    const baseAgentId = typeof inheritedBaseAgentId === "string" ? inheritedBaseAgentId : requestedAgentId;
+    const base = this.requireRecord(baseAgentId);
+    const instanceAgentId = `${baseAgentId}--${event.id}`;
+    const existing = this.records.get(instanceAgentId);
+    if (existing) {
+      return existing.definition.id;
+    }
+    if (this.openInstanceCount(baseAgentId) >= this.maxOpenInstancesPerAgent) {
+      return baseAgentId;
+    }
+    const definition = cloneUnknown(base.definition);
+    const metadata = cloneRecord(definition.metadata);
+    delete metadata.role;
+    definition.id = instanceAgentId;
+    definition.name = `${base.definition.name} · ${instanceLabel(event)}`;
+    definition.metadata = {
+      ...metadata,
+      instanceOfAgentId: baseAgentId,
+      instanceSensorEventId: event.id,
+      instanceExecutionPolicy: "new",
+      instanceLifecycle: "active",
+    };
+    validateDefinition(definition);
+    this.addRecord(definition);
+    await this.recordEvent(instanceAgentId, "agent_instantiated", "Agent instance created for sensor event.", {
+      baseAgentId,
+      sensorEventId: event.id,
+      executionPolicy: event.executionPolicy,
+    });
+    return instanceAgentId;
+  }
+
+  private instanceBaseAgentId(agentId: string): string | null {
+    const value = this.records.get(agentId)?.definition.metadata?.instanceOfAgentId;
+    return typeof value === "string" ? value : null;
+  }
+
+  private openInstanceCount(baseAgentId: string): number {
+    return Array.from(this.records.values()).filter((record) => {
+      if (record.definition.metadata?.instanceOfAgentId !== baseAgentId) return false;
+      const lifecycle = record.definition.metadata?.instanceLifecycle;
+      return lifecycle !== "done" && lifecycle !== "cancelled";
+    }).length;
+  }
+
+  private setInstanceLifecycle(agentId: string, lifecycle: AgentInstanceLifecycle): boolean {
+    const record = this.records.get(agentId);
+    if (!record || typeof record.definition.metadata?.instanceOfAgentId !== "string") {
+      return false;
+    }
+    if (record.definition.metadata.instanceLifecycle === lifecycle) {
+      return false;
+    }
+    record.definition = {
+      ...record.definition,
+      metadata: {
+        ...record.definition.metadata,
+        instanceLifecycle: lifecycle,
+        instanceLifecycleUpdatedAt: this.now(),
+      },
+    };
+    record.updatedAt = this.now();
+    this.definitions.set(agentId, record.definition);
+    return true;
   }
 
   private createWorkItem(input: {
@@ -1534,17 +1780,26 @@ export class CodexAgentManager extends EventEmitter {
         timeoutMs: DEFAULT_AGENT_TURN_TIMEOUT_MS,
         network: "allow",
       });
+      if (workItem.status === "cancelled") {
+        await this.persist();
+        return;
+      }
       workItem.status = "done";
       workItem.result = result.finalText;
       workItem.failureReason = null;
       workItem.completedAt = this.now();
       workItem.updatedAt = workItem.completedAt;
+      await this.markInstanceNeedsAttention(workItem.targetAgentId, workItem.id);
       await this.recordEvent(workItem.targetAgentId, "work_item_completed", "Work item completed.", {
         workItemId: workItem.id,
         sensorEventId: workItem.eventId,
       });
       await this.persist();
     } catch (error) {
+      if (workItem.status === "cancelled") {
+        await this.persist();
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       const record = this.records.get(workItem.targetAgentId);
       if (record?.status === "blocked" && record.compatibilityIssue) {
@@ -1559,6 +1814,7 @@ export class CodexAgentManager extends EventEmitter {
       workItem.failureReason = message;
       workItem.completedAt = this.now();
       workItem.updatedAt = workItem.completedAt;
+      await this.markInstanceNeedsAttention(workItem.targetAgentId, workItem.id);
       await this.recordEvent(workItem.targetAgentId, "work_item_failed", message, {
         workItemId: workItem.id,
         sensorEventId: workItem.eventId,
@@ -1569,6 +1825,18 @@ export class CodexAgentManager extends EventEmitter {
 
   private isAgentAvailable(record: RuntimeRecord): boolean {
     return !record.activeTurn && (record.status === "idle" || record.status === "failed");
+  }
+
+  private async markInstanceNeedsAttention(agentId: string, workItemId: string): Promise<void> {
+    if (!this.setInstanceLifecycle(agentId, "needs_attention")) {
+      return;
+    }
+    await this.recordEvent(
+      agentId,
+      "agent_instance_needs_attention",
+      "Agent instance finished its work and needs your review.",
+      { workItemId, baseAgentId: this.instanceBaseAgentId(agentId) },
+    );
   }
 
   private async persist(): Promise<void> {
@@ -1972,11 +2240,15 @@ function normalizeSensorEventInput(input: SensorEventInput): SensorEventInput {
   const source = requiredTrimmed(input.source, "source");
   const type = requiredTrimmed(input.type, "type");
   const body = requiredTrimmed(input.body, "body");
+  if (input.executionPolicy !== undefined && input.executionPolicy !== "reuse" && input.executionPolicy !== "new") {
+    throw new CodexAgentManagerError("Sensor event executionPolicy must be reuse or new.");
+  }
   const normalized: SensorEventInput = {
     source,
     type,
     body,
     priority: input.priority ?? "normal",
+    executionPolicy: input.executionPolicy ?? "reuse",
     metadata: cloneRecord(input.metadata),
   };
   const title = optionalTrimmed(input.title);
@@ -1996,6 +2268,11 @@ function normalizeSensorEventInput(input: SensorEventInput): SensorEventInput {
     normalized.targetAgentId = targetAgentId;
   }
   return normalized;
+}
+
+function instanceLabel(event: SensorEvent): string {
+  const label = event.title?.trim() || event.dedupeKey?.trim() || event.id;
+  return label.length <= 72 ? label : `${label.slice(0, 69)}...`;
 }
 
 function sensorEventPrompt(event: SensorEvent): string {

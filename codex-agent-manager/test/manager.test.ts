@@ -1616,6 +1616,44 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
 });
 
+test("applies new-instance execution after a router selects the base agent", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [
+      agent({
+        id: "router",
+        name: "Router",
+        instructions: "Route incoming sensor events.",
+        metadata: { role: "router" },
+      }),
+      agent({ id: "coder", name: "Coder", instructions: "Implement coding tasks." }),
+    ],
+    clientFactory: fakeFactory(clients),
+    routingMode: "router-only",
+  });
+
+  const event = await manager.ingestSensorEvent({
+    source: "jira",
+    type: "ticket.created",
+    title: "Fix planner",
+    body: "Implement the planner fix.",
+    executionPolicy: "new",
+  });
+  const route = manager.processNextSensorEvent("router");
+  await waitFor(() => clients.length === 1, "router client for instantiation");
+  await completeRouterRosterUpdate(clients[0], "router instance event prompt");
+  clients[0]?.session("thread-1").complete(JSON.stringify({
+    targetAgentId: "coder",
+    prompt: "Implement the planner fix.",
+    reason: "Coding task.",
+  }));
+
+  const work = await route;
+  assert.equal(work.targetAgentId, "coder--sensor-1");
+  assert.equal(manager.getSensorEvent(event.id).targetAgentId, "coder--sensor-1");
+  assert.equal(manager.getAgent("coder--sensor-1").metadata.instanceOfAgentId, "coder");
+});
+
 test("routes explicitly targeted sensor events without a router turn", async () => {
   const manager = new CodexAgentManager({
     agents: [agent({ id: "coder", name: "Coder", instructions: "Implement coding tasks." })],
@@ -1648,6 +1686,179 @@ test("routes explicitly targeted sensor events without a router turn", async () 
   assert.equal(workItem.routerAgentId, null);
   assert.match(workItem.prompt, /Fix parser/);
   assert.match(workItem.prompt, /Fix the parser regression/);
+});
+
+test("creates a durable agent instance when an event requests a new execution", async () => {
+  const clients: FakeCodexClient[] = [];
+  const stateStore = new MemoryAgentStateStore();
+  const baseAgent = agent({
+    id: "coder",
+    name: "Coder",
+    instructions: "Implement coding tasks.",
+    model: "gpt-test",
+    skillMode: "selected",
+    allowedSkills: [{ name: "review", scope: "repo" }],
+    metadata: { routingDescription: "Codes repository changes." },
+  });
+  const manager = new CodexAgentManager({
+    agents: [baseAgent],
+    stateStore,
+    clientFactory: fakeFactory(clients),
+  });
+
+  const event = await manager.ingestSensorEvent({
+    source: "jira",
+    type: "ticket.created",
+    title: "Fix parser",
+    body: "Fix the parser regression.",
+    targetAgentId: "coder",
+    executionPolicy: "new",
+  });
+
+  assert.equal(event.executionPolicy, "new");
+  assert.equal(event.targetAgentId, "coder--sensor-1");
+  const instance = manager.getAgent("coder--sensor-1");
+  assert.equal(instance.name, "Coder · Fix parser");
+  assert.equal(instance.model, "gpt-test");
+  assert.deepEqual(instance.allowedSkills, [{ name: "review", scope: "repo" }]);
+  assert.equal(instance.metadata.instanceOfAgentId, "coder");
+  assert.equal(instance.metadata.instanceSensorEventId, "sensor-1");
+  assert.equal(manager.getAgent("coder").threadId, null);
+  assert.equal(manager.getWorkItem(event.workItemId as string).targetAgentId, "coder--sensor-1");
+
+  const started = await manager.dispatchQueuedWork();
+  assert.deepEqual(started.map((item) => item.targetAgentId), ["coder--sensor-1"]);
+  await waitFor(() => clients.some((client) => client.startCalls.length === 1), "instantiated worker session");
+  const workerClient = clients.find((client) => client.startCalls.length === 1);
+  workerClient?.session("thread-1").complete("parser fixed");
+  await waitFor(
+    () => manager.getWorkItem(event.workItemId as string).status === "done",
+    "instantiated work completion",
+  );
+  assert.equal(manager.getAgent("coder").threadId, null);
+  assert.equal(manager.getAgent("coder--sensor-1").threadId, "thread-1");
+
+  await manager.close();
+  const resumed = new CodexAgentManager({
+    agents: [baseAgent],
+    stateStore,
+    clientFactory: fakeFactory(),
+  });
+  await resumed.start();
+  assert.equal(resumed.getAgent("coder--sensor-1").threadId, "thread-1");
+  assert.equal(resumed.getAgent("coder--sensor-1").metadata.instanceOfAgentId, "coder");
+  await resumed.close();
+});
+
+test("counts manual instance conversations toward the three-slot per-agent limit", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({ id: "coder", name: "Coder" })],
+    clientFactory: fakeFactory(clients),
+    maxConcurrentInstancesPerAgent: 3,
+  });
+
+  for (let index = 1; index <= 4; index++) {
+    await manager.ingestSensorEvent({
+      source: "jira",
+      type: "ticket.created",
+      title: `Task ${index}`,
+      body: `Implement task ${index}.`,
+      targetAgentId: "coder",
+      executionPolicy: "new",
+      dedupeKey: `jira:TASK-${index}`,
+    });
+  }
+
+  assert.equal(manager.listAgents().length, 5);
+  const manualTurn = manager.sendToAgent("coder--sensor-1", "Add my review notes before continuing.");
+  await waitFor(() => clients.some((client) => client.startCalls.length === 1), "manual instance conversation");
+  const started = await manager.dispatchQueuedWork();
+  assert.equal(started.length, 2);
+  assert.equal(manager.listWorkItems().filter((item) => item.status === "running").length, 2);
+  assert.equal(manager.listWorkItems().filter((item) => item.status === "queued").length, 2);
+  await waitFor(() => clients.length === 3, "three instantiated worker clients");
+  for (const client of clients) {
+    client.session("thread-1").complete("done");
+  }
+  await manualTurn;
+  await waitFor(
+    () => manager.listWorkItems().filter((item) => item.status === "done").length === 2,
+    "two instantiated work completions",
+  );
+});
+
+test("keeps only five unresolved instances and promotes queued work after resolution", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({ id: "coder", name: "Coder" })],
+    clientFactory: fakeFactory(clients),
+    maxConcurrentInstancesPerAgent: 3,
+    maxOpenInstancesPerAgent: 5,
+  });
+
+  for (let index = 1; index <= 6; index++) {
+    await manager.ingestSensorEvent({
+      source: "jira",
+      type: "ticket.created",
+      title: `Task ${index}`,
+      body: `Implement task ${index}.`,
+      targetAgentId: "coder",
+      executionPolicy: "new",
+      dedupeKey: `jira:BACKLOG-${index}`,
+    });
+  }
+
+  assert.equal(manager.listAgents().length, 6);
+  const deferredWork = manager.getWorkItem("work-6");
+  assert.equal(deferredWork.targetAgentId, "coder");
+  assert.equal(deferredWork.metadata.pendingInstantiation, true);
+
+  const initiallyStarted = await manager.dispatchQueuedWork();
+  assert.equal(initiallyStarted.length, 3);
+  await waitFor(() => clients.length === 3, "initial instance sessions");
+  for (const client of clients) client.session("thread-1").complete("done");
+  await waitFor(
+    () => manager.listWorkItems().filter((item) => item.status === "done").length === 3,
+    "initial instance completions",
+  );
+  assert.equal(manager.getAgent("coder--sensor-1").metadata.instanceLifecycle, "needs_attention");
+
+  await manager.resolveAgentInstance("coder--sensor-1", "done");
+  assert.equal(manager.getAgent("coder--sensor-1").metadata.instanceLifecycle, "done");
+  await waitFor(() => manager.listAgents().some((item) => item.id === "coder--sensor-6"), "deferred instance promotion");
+  assert.equal(manager.getWorkItem("work-6").targetAgentId, "coder--sensor-6");
+  assert.equal(manager.getWorkItem("work-6").metadata.pendingInstantiation, false);
+  assert.equal(manager.listAgents().length, 7);
+
+  await waitFor(() => clients.length === 6, "promoted instance sessions");
+  for (const client of clients.slice(3)) client.session("thread-1").complete("done");
+  await waitFor(
+    () => manager.listWorkItems().filter((item) => item.status === "done").length === 6,
+    "promoted instance completions",
+  );
+});
+
+test("cancelling an instance cancels its queued work and frees its backlog slot", async () => {
+  const manager = new CodexAgentManager({
+    agents: [agent({ id: "coder", name: "Coder" })],
+    clientFactory: fakeFactory(),
+  });
+  const event = await manager.ingestSensorEvent({
+    source: "jira",
+    type: "ticket.created",
+    body: "Implement task.",
+    targetAgentId: "coder",
+    executionPolicy: "new",
+  });
+
+  const resolved = await manager.resolveAgentInstance(event.targetAgentId as string, "cancelled");
+  assert.equal(resolved.metadata.instanceLifecycle, "cancelled");
+  assert.equal(manager.getWorkItem(event.workItemId as string).status, "cancelled");
+  await assert.rejects(
+    manager.sendToAgent(event.targetAgentId as string, "Continue anyway."),
+    /is cancelled and cannot start another turn/,
+  );
 });
 
 test("keeps targetless events unassigned and supports durable human assignment", async () => {
@@ -1819,6 +2030,15 @@ test("rejects invalid sensor event and routing inputs", async () => {
   await assert.rejects(
     manager.ingestSensorEvent({ source: " ", type: "ticket.claimed", body: "body" }),
     /Field source/,
+  );
+  await assert.rejects(
+    manager.ingestSensorEvent({
+      source: "issue-tracker",
+      type: "ticket.claimed",
+      body: "body",
+      executionPolicy: "sometimes" as "new",
+    }),
+    /executionPolicy must be reuse or new/,
   );
   await assert.rejects(manager.processNextSensorEvent("router"), /No pending sensor events/);
 

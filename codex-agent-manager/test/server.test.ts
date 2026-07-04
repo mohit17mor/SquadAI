@@ -587,8 +587,13 @@ test("direct event routing is recorded before its worker starts", async () => {
         body: "platform-456 needs maintenance triage.",
         dedupeKey: "jira:platform-456",
         targetAgentId: "maintenance",
+        executionPolicy: "new",
       },
     });
+
+    assert.equal(created.event.executionPolicy, "new");
+    assert.equal(created.event.targetAgentId, `maintenance--${created.event.id}`);
+    assert.equal(manager.getAgent(created.event.targetAgentId).metadata.instanceOfAgentId, "maintenance");
 
     await waitFor(
       () => manager.listWorkItems().some((item) => item.eventId === created.event.id && item.status === "done"),
@@ -603,6 +608,12 @@ test("direct event routing is recorded before its worker starts", async () => {
     assert.ok(createdIndex >= 0);
     assert.ok(routedIndex > createdIndex);
     assert.ok(startedIndex > routedIndex);
+
+    const resolved = await jsonFetch(
+      `${baseUrl}/api/agents/${encodeURIComponent(created.event.targetAgentId)}/instance/resolve`,
+      { method: "POST", body: { resolution: "done" } },
+    );
+    assert.equal(resolved.agent.metadata.instanceLifecycle, "done");
   } finally {
     await server.close();
     await manager.close();
@@ -632,6 +643,9 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /data-panel="notifications"/);
     assert.match(html, /data-sensor-event-assign/);
     assert.match(html, /notification-count/);
+    assert.match(html, /instance-done-button/);
+    assert.match(html, /instance-cancel-button/);
+    assert.match(html, /needs you/);
     assert.match(html, /activePanel = "topology"/);
     assert.match(html, /class="shell topology-mode"/);
     assert.match(html, /window\.addEventListener\("pageshow"/);
@@ -769,7 +783,7 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /max-height: 260px/);
     assert.doesNotMatch(html, /summary\.entries\.slice\(-10\)/);
     assert.match(html, /shouldShowTimelineInChat/);
-    assert.match(html, /summary\.status === "running" \|\| summary\.status === "failed" \|\| summary\.hasApproval \|\| summary\.hasCompaction/);
+    assert.match(html, /summary\.status === "running" \|\| summary\.status === "failed" \|\| summary\.status === "cancelled" \|\| summary\.hasApproval \|\| summary\.hasCompaction/);
     assert.match(html, /hasCompaction/);
     assert.match(html, /Approve Tool/);
     assert.match(html, /approved-session/);

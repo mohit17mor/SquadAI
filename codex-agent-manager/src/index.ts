@@ -6,6 +6,9 @@ export { JsonFileAgentStateStore, MemoryAgentStateStore, SqliteAgentStateStore }
 export type {
   AgentDefinition,
   AgentDefinitionUpdate,
+  AgentExecutionPolicy,
+  AgentInstanceLifecycle,
+  AgentInstanceResolution,
   AgentEvent,
   AgentEventCursor,
   AgentEventPage,
