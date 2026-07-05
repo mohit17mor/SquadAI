@@ -60,6 +60,7 @@ export type AgentEventType =
 export type AgentDefinition = {
   id: string;
   name: string;
+  runnerId?: string | undefined;
   cwd: string;
   instructions: string;
   model?: string | undefined;
@@ -139,6 +140,7 @@ export type ApprovalHandler = (
 export type AgentSnapshot = {
   id: string;
   name: string;
+  runnerId: string;
   cwd: string;
   instructions: string;
   status: AgentStatus;
@@ -430,6 +432,7 @@ export type CodexSessionLike = {
 
 export type CodexControlClientContext = {
   agentId: string;
+  runnerId?: string;
   approvalHandler: ApprovalHandler;
 };
 
@@ -447,6 +450,60 @@ export type CodexAgentManagerOptions = {
   maxOpenInstancesPerAgent?: number;
   workspaceManager?: AgentWorkspaceManager;
 };
+
+export type RunnerStatus = "online" | "offline";
+
+export type RunnerSnapshot = {
+  id: string;
+  name: string;
+  status: RunnerStatus;
+  hostname: string;
+  platform: string;
+  arch: string;
+  version: string;
+  activeCommands: number;
+  connectedAt: string;
+  lastSeenAt: string;
+};
+
+export type RunnerRegistration = {
+  id: string;
+  name: string;
+  hostname: string;
+  platform: string;
+  arch: string;
+  version: string;
+};
+
+export type RunnerCommandType =
+  | "client.close"
+  | "models.list"
+  | "runtime.info"
+  | "session.start"
+  | "session.resume"
+  | "session.ask"
+  | "session.interrupt"
+  | "skills.list"
+  | "workspace.prepareBase"
+  | "workspace.prepareInstance"
+  | "workspace.inspect"
+  | "workspace.cleanup";
+
+export type RunnerCommand = {
+  id: string;
+  type: RunnerCommandType;
+  agentId: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type RunnerCommandEvent =
+  | { kind: "session"; name: string; args: unknown[] }
+  | { kind: "approval"; request: ApprovalRequest };
+
+export type RunnerCommandCompletion =
+  | { ok: true; value: unknown }
+  | { ok: false; error: string };
 
 export class CodexAgentManagerError extends Error {
   constructor(message: string) {

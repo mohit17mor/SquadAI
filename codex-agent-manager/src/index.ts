@@ -2,6 +2,8 @@ export { CodexAgentManager } from "./manager.js";
 export { CommandCenterServer, createCommandCenterServer } from "./server.js";
 export type { CommandCenterServerOptions } from "./server.js";
 export { createDefaultClientFactory } from "./codexControlFactory.js";
+export { RunnerDaemon } from "./runnerDaemon.js";
+export { RemoteSession, RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 export { GitWorkspaceManager } from "./gitWorkspace.js";
 export type { GitWorkspaceManagerOptions } from "./gitWorkspace.js";
 export { JsonFileAgentStateStore, MemoryAgentStateStore, SqliteAgentStateStore } from "./stateStore.js";
@@ -54,6 +56,13 @@ export type {
   PersistedAgentState,
   ReasoningEffort,
   ReasoningEffortOption,
+  RunnerCommand,
+  RunnerCommandCompletion,
+  RunnerCommandEvent,
+  RunnerCommandType,
+  RunnerRegistration,
+  RunnerSnapshot,
+  RunnerStatus,
   RoutingMode,
   RoutingDecision,
   SandboxPolicy,

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 
+import { createDefaultClientFactory } from "./codexControlFactory.js";
+import { GitWorkspaceManager } from "./gitWorkspace.js";
 import { CodexAgentManager } from "./manager.js";
+import { RunnerDaemon } from "./runnerDaemon.js";
+import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
 import type { RoutingMode } from "./types.js";
@@ -18,6 +22,8 @@ for (let index = 2; index < process.argv.length; index += 1) {
 
 const port = Number(args.get("port") ?? process.env.CODEX_AGENT_MANAGER_PORT ?? 4317);
 const host = args.get("host") ?? process.env.CODEX_AGENT_MANAGER_HOST ?? "127.0.0.1";
+const mode = args.get("mode") ?? process.env.CODEX_AGENT_MANAGER_MODE ?? "embedded";
+const runnerToken = args.get("runner-token") ?? process.env.CODEX_AGENT_MANAGER_RUNNER_TOKEN ?? "";
 const statePath = resolve(
   args.get("state") ?? process.env.CODEX_AGENT_MANAGER_STATE ?? "./codex-agents.state.json",
 );
@@ -32,12 +38,41 @@ if (codexBinary) {
   process.env.CODEX_BINARY = codexBinary;
 }
 
+if (mode === "runner") {
+  const controlUrl = args.get("control-url") ?? process.env.CODEX_AGENT_MANAGER_CONTROL_URL;
+  const runnerId = args.get("runner-id") ?? process.env.CODEX_AGENT_MANAGER_RUNNER_ID;
+  if (!controlUrl) throw new Error("Runner mode requires --control-url or CODEX_AGENT_MANAGER_CONTROL_URL.");
+  if (!runnerId) throw new Error("Runner mode requires --runner-id or CODEX_AGENT_MANAGER_RUNNER_ID.");
+  const runnerName = args.get("runner-name") ?? process.env.CODEX_AGENT_MANAGER_RUNNER_NAME;
+  const daemon = new RunnerDaemon({
+    controlUrl,
+    token: runnerToken,
+    id: runnerId,
+    ...(runnerName ? { name: runnerName } : {}),
+  });
+  console.log(`Command Center runner ${runnerId} connecting to ${controlUrl}`);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => void daemon.close().finally(() => process.exit(0)));
+  }
+  await daemon.start();
+  process.exit(0);
+}
+
+if (mode !== "embedded" && mode !== "control") {
+  throw new Error(`Invalid mode: ${mode}. Use embedded, control, or runner.`);
+}
+
+const runnerHub = new RunnerHub(runnerToken);
+const localClientFactory = createDefaultClientFactory();
+
 const manager = new CodexAgentManager({
   agents: [],
   stateStore: new SqliteAgentStateStore(databasePath, { legacyJsonPath: statePath }),
   routingMode,
+  clientFactory: runnerHub.createClientFactory(localClientFactory),
+  workspaceManager: new RunnerAwareWorkspaceManager(runnerHub, new GitWorkspaceManager()),
 });
-const server = createCommandCenterServer({ manager });
+const server = createCommandCenterServer({ manager, runnerHub });
 
 await manager.start();
 await server.listen(port, host);
@@ -46,6 +81,8 @@ console.log(`Database: ${databasePath}`);
 console.log(`Legacy state backup: ${statePath}`);
 console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);
 console.log(`Routing mode: ${routingMode}`);
+console.log(`Mode: ${mode}`);
+console.log(`Remote runners: ${runnerToken ? "token protected" : "development mode (no token)"}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {

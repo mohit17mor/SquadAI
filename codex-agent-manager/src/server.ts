@@ -6,6 +6,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type { CodexAgentManager } from "./manager.js";
+import type { RunnerHub } from "./runnerHub.js";
 import type {
   AgentDefinition,
   AgentDefinitionUpdate,
@@ -16,6 +17,9 @@ import type {
   CompatibilityApprovalResolution,
   ReasoningEffort,
   SensorEventInput,
+  RunnerCommandCompletion,
+  RunnerCommandEvent,
+  RunnerRegistration,
 } from "./types.js";
 
 const REASONING_EFFORTS = [
@@ -33,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
+  runnerHub?: RunnerHub;
   title?: string;
   directoryPicker?: (initialPath: string) => Promise<string | null>;
   workspaceOpener?: (workspacePath: string) => Promise<void>;
@@ -135,9 +140,73 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/runners") {
+        this.json(response, { runners: this.options.runnerHub?.listRunners() ?? [] });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/runners/register") {
+        const hub = this.requireRunnerHub(request);
+        const runner = hub.register(parseRunnerRegistration(await readJson(request)));
+        this.json(response, { runner });
+        return;
+      }
+
+      const runnerHeartbeatMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/heartbeat$/);
+      if (request.method === "POST" && runnerHeartbeatMatch?.[1]) {
+        const hub = this.requireRunnerHub(request);
+        const runner = hub.heartbeat(decodeURIComponent(runnerHeartbeatMatch[1]));
+        this.json(response, { runner });
+        return;
+      }
+
+      const runnerPollMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/poll$/);
+      if (request.method === "POST" && runnerPollMatch?.[1]) {
+        const hub = this.requireRunnerHub(request);
+        const body = asRecord(await readJson(request));
+        const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : 25_000;
+        const abort = new AbortController();
+        request.once("aborted", () => abort.abort());
+        const command = await hub.poll(decodeURIComponent(runnerPollMatch[1]), timeoutMs, abort.signal);
+        this.json(response, { command });
+        return;
+      }
+
+      const runnerCommandEventMatch = url.pathname.match(
+        /^\/api\/runners\/([^/]+)\/commands\/([^/]+)\/events$/,
+      );
+      if (request.method === "POST" && runnerCommandEventMatch?.[1] && runnerCommandEventMatch[2]) {
+        const hub = this.requireRunnerHub(request);
+        const result = await hub.reportEvent(
+          decodeURIComponent(runnerCommandEventMatch[1]),
+          decodeURIComponent(runnerCommandEventMatch[2]),
+          await readJson(request) as RunnerCommandEvent,
+        );
+        this.json(response, result);
+        return;
+      }
+
+      const runnerCommandCompleteMatch = url.pathname.match(
+        /^\/api\/runners\/([^/]+)\/commands\/([^/]+)\/complete$/,
+      );
+      if (request.method === "POST" && runnerCommandCompleteMatch?.[1] && runnerCommandCompleteMatch[2]) {
+        const hub = this.requireRunnerHub(request);
+        hub.complete(
+          decodeURIComponent(runnerCommandCompleteMatch[1]),
+          decodeURIComponent(runnerCommandCompleteMatch[2]),
+          await readJson(request) as RunnerCommandCompletion,
+        );
+        this.json(response, { completed: true });
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/model-options") {
         const includeHidden = url.searchParams.get("includeHidden") === "true";
-        this.json(response, await this.options.manager.listModelOptions({ includeHidden }));
+        const runnerId = url.searchParams.get("runnerId")?.trim();
+        this.json(response, await this.options.manager.listModelOptions({
+          includeHidden,
+          ...(runnerId ? { runnerId } : {}),
+        }));
         return;
       }
 
@@ -147,6 +216,7 @@ export class CommandCenterServer {
         this.json(response, await this.options.manager.listSkillOptions(
           cwd,
           url.searchParams.get("forceReload") === "true",
+          url.searchParams.get("runnerId")?.trim() || "local",
         ));
         return;
       }
@@ -224,6 +294,10 @@ export class CommandCenterServer {
       const workspaceOpenMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/workspace\/open$/);
       if (request.method === "POST" && workspaceOpenMatch?.[1]) {
         const agentId = decodeURIComponent(workspaceOpenMatch[1]);
+        const agent = this.options.manager.getAgent(agentId);
+        if (agent.runnerId !== "local") {
+          throw new Error("Remote worktrees cannot be opened in the control plane's local VS Code.");
+        }
         const workspace = await this.options.manager.inspectAgentWorkspace(agentId);
         if (!workspace || workspace.removed) {
           throw new Error(`Agent ${agentId} does not have an available managed worktree.`);
@@ -376,6 +450,15 @@ export class CommandCenterServer {
     response.end(renderHtml(this.title));
   }
 
+  private requireRunnerHub(request: IncomingMessage): RunnerHub {
+    const hub = this.options.runnerHub;
+    if (!hub) throw new Error("Remote runners are not enabled on this control plane.");
+    const authorization = request.headers.authorization;
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+    if (!hub.authenticate(token)) throw new Error("Runner authentication failed.");
+    return hub;
+  }
+
   private json(response: ServerResponse, body: unknown, status = 200): void {
     response.writeHead(status, {
       "content-type": "application/json; charset=utf-8",
@@ -468,6 +551,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
     cwd: requiredString(value.cwd, "cwd"),
     instructions: requiredString(value.instructions, "instructions"),
   };
+  const runnerId = optionalString(value.runnerId);
+  if (runnerId) definition.runnerId = runnerId;
   const model = optionalString(value.model);
   const approvalPolicy = optionalEnum(value.approvalPolicy, [
     "untrusted",
@@ -558,6 +643,7 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   const serviceTier = optionalString(value.serviceTier);
   const skillMode = optionalEnum(value.skillMode, ["all", "selected"]);
   const allowedSkills = parseSkillReferences(value.allowedSkills);
+  const runnerId = optionalString(value.runnerId);
   if (name) {
     update.name = name;
   }
@@ -567,6 +653,7 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   if (instructions) {
     update.instructions = instructions;
   }
+  if ("runnerId" in value) update.runnerId = runnerId;
   if ("model" in value) {
     update.model = model;
   }
@@ -593,6 +680,18 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
     update.metadata = metadata;
   }
   return update;
+}
+
+function parseRunnerRegistration(body: unknown): RunnerRegistration {
+  const value = asRecord(body);
+  return {
+    id: requiredString(value.id, "id"),
+    name: requiredString(value.name, "name"),
+    hostname: requiredString(value.hostname, "hostname"),
+    platform: requiredString(value.platform, "platform"),
+    arch: requiredString(value.arch, "arch"),
+    version: requiredString(value.version, "version"),
+  };
 }
 
 function permissionSettingsForMode(mode: "ask" | "auto-review" | "full-access"): Pick<AgentDefinition, "approvalPolicy" | "approvalsReviewer" | "sandbox"> {
@@ -912,6 +1011,7 @@ function renderHtml(title: string): string {
           <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
           <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
           <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+          <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
           <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
           <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
           <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
@@ -941,6 +1041,7 @@ function renderHtml(title: string): string {
           <form id="edit-agent-form" class="agent-editor-form">
             <label>Name<input name="name" autocomplete="off"></label>
             <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+            <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
             <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
             <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
             <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
@@ -1357,6 +1458,7 @@ textarea { resize: vertical; }
 function js(): string {
   return `
 let agents = [];
+let runners = [];
 let selectedAgentId = null;
 let events = [];
 let eventHasMore = false;
@@ -1367,7 +1469,8 @@ let workItems = [];
 let notifications = [];
 let compatibilityApprovals = [];
 let compatibilitySnapshot = null;
-let modelOptions = [];
+const modelCatalogs = new Map();
+const modelCatalogRequests = new Map();
 const skillCatalogs = new Map();
 let pendingMessages = [];
 let sendInFlight = false;
@@ -1518,6 +1621,13 @@ agentForm.addEventListener("input", (event) => {
 });
 createRoleSelect.addEventListener("change", applyCreateRoleDefaults);
 createModelInput.addEventListener("change", renderModelControls);
+for (const select of document.querySelectorAll("[data-runner-select]")) {
+  select.addEventListener("change", () => {
+    void refreshModelOptions(select.value || "local");
+    const form = select.closest("form");
+    if (form?.elements.skillMode?.value === "selected") void loadSkillOptions(form, [], true);
+  });
+}
 setupSkillPicker(agentForm);
 setupSkillPicker(editAgentForm);
 setupDirectoryBrowse(agentForm);
@@ -1589,24 +1699,53 @@ stream.addEventListener("agent-event", (message) => {
 });
 
 async function refresh() {
-  await refreshAgents();
+  await Promise.all([refreshAgents(), refreshRunners()]);
+  const selectedRunnerId = agents.find((agent) => agent.id === selectedAgentId)?.runnerId || "local";
+  const runnerCatalogs = new Set(["local", selectedRunnerId]);
   await Promise.all([
     refreshEvents(),
     refreshQueues(),
     refreshNotifications(),
-    refreshModelOptions(),
+    ...Array.from(runnerCatalogs, (runnerId) => refreshModelOptions(runnerId)),
   ]);
   render();
 }
 
-async function refreshModelOptions() {
-  const response = await fetch("/api/model-options");
-  if (!response.ok) {
-    return;
-  }
+async function refreshRunners() {
+  const response = await fetch("/api/runners");
+  if (!response.ok) return;
   const body = await response.json();
-  modelOptions = Array.isArray(body.models) ? body.models : [];
-  renderModelControls();
+  runners = Array.isArray(body.runners) ? body.runners : [];
+  renderRunnerOptions();
+}
+
+function renderRunnerOptions() {
+  for (const select of document.querySelectorAll("[data-runner-select]")) {
+    const current = select.value || "local";
+    select.innerHTML = '<option value="local">This machine</option>' + runners.map((runner) =>
+      '<option value="' + escapeAttr(runner.id) + '">' + escapeHtml(runner.name)
+      + ' · ' + escapeHtml(runner.status) + ' · ' + escapeHtml(runner.hostname) + '</option>'
+    ).join("");
+    select.value = Array.from(select.options).some((option) => option.value === current) ? current : "local";
+  }
+}
+
+async function refreshModelOptions(runnerId = "local") {
+  const key = runnerId || "local";
+  if (modelCatalogRequests.has(key)) return modelCatalogRequests.get(key);
+  const request = (async () => {
+    const response = await fetch("/api/model-options?runnerId=" + encodeURIComponent(key));
+    if (!response.ok) return;
+    const body = await response.json();
+    modelCatalogs.set(key, Array.isArray(body.models) ? body.models : []);
+    renderModelControls();
+  })();
+  modelCatalogRequests.set(key, request);
+  try {
+    await request;
+  } finally {
+    modelCatalogRequests.delete(key);
+  }
 }
 
 async function refreshAgents() {
@@ -1645,14 +1784,24 @@ function upsertAgent(agent) {
 }
 
 function renderModelControls() {
-  updateModelSelect(agentForm.elements.model);
-  updateModelSelect(editAgentForm.elements.model);
+  updateModelSelect(agentForm);
+  updateModelSelect(editAgentForm);
   updateModelDependentSelects(agentForm);
   updateModelDependentSelects(editAgentForm);
   syncComposerControls(agents.find((agent) => agent.id === selectedAgentId) || null, true);
 }
 
-function updateModelSelect(select) {
+function modelOptionsForRunner(runnerId) {
+  return modelCatalogs.get(runnerId || "local") || [];
+}
+
+function modelOptionsForForm(form) {
+  return modelOptionsForRunner(String(form.elements.runnerId?.value || "local"));
+}
+
+function updateModelSelect(form) {
+  const select = form.elements.model;
+  const modelOptions = modelOptionsForForm(form);
   const current = select.value;
   select.innerHTML = '<option value="">Default Codex model</option>' + modelOptions.map((model) => {
     const value = model.model || model.id || "";
@@ -1669,6 +1818,7 @@ function updateModelDependentSelects(form) {
 }
 
 function selectedModelForForm(form) {
+  const modelOptions = modelOptionsForForm(form);
   const requested = String(form.elements.model.value || "").trim();
   if (!requested) {
     return modelOptions.find((model) => model.isDefault) || null;
@@ -2129,6 +2279,7 @@ async function updatePermissionFromComposer() {
 async function updateModelFromComposer(modelValue) {
   const selected = agents.find((agent) => agent.id === selectedAgentId);
   if (!selected) return;
+  const modelOptions = modelOptionsForRunner(selected.runnerId);
   const selectedModel = modelOptions.find((model) => model.model === modelValue || model.id === modelValue)
     || modelOptions.find((model) => model.isDefault)
     || null;
@@ -2194,6 +2345,10 @@ function syncComposerControls(selected, force = false) {
     composerModelOptions.innerHTML = "";
     return;
   }
+  const runnerId = selected.runnerId || "local";
+  if (!modelCatalogs.has(runnerId) && !modelCatalogRequests.has(runnerId)) {
+    void refreshModelOptions(runnerId);
+  }
   if (!force && composerAgentId === selected.id) return;
   composerAgentId = selected.id;
   composerPermission.value = permissionModeForAgent(selected);
@@ -2225,6 +2380,7 @@ function setComposerRuntimeView(view) {
 }
 
 function renderComposerRuntimeMenu(selected) {
+  const modelOptions = modelOptionsForRunner(selected.runnerId);
   const selectedModel = modelOptions.find((model) => model.model === selected.model || model.id === selected.model)
     || modelOptions.find((model) => model.isDefault)
     || null;
@@ -2323,7 +2479,7 @@ function render() {
     ? currentWorkspace.branch + (currentWorkspace.dirty ? " · modified" : " · clean")
     : configuredWorkspace?.branch || "";
   selectedTitle.textContent = selected ? selected.name : "No agent selected";
-  selectedMeta.textContent = selected ? \`\${selected.id} - \${instanceLifecycleText(selected)} - \${selected.cwd}\${workspaceLabel ? " - " + workspaceLabel : ""} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
+  selectedMeta.textContent = selected ? \`\${selected.id} - \${instanceLifecycleText(selected)} - \${selected.runnerId || "local"} - \${selected.cwd}\${workspaceLabel ? " - " + workspaceLabel : ""} - \${skillSummary(selected)} - \${permissionSummary(selected)}\` : "Create or select an agent to begin.";
   messageInput.placeholder = selected ? "Message " + selected.name : "Create or select an agent to begin";
   syncComposerControls(selected || null);
   cancelAgentButton.hidden = !(selected && selected.status === "running");
@@ -2340,7 +2496,7 @@ function render() {
   workspaceCleanupButton.hidden = !isTerminalInstance || !currentWorkspace || currentWorkspace.removed;
   workspaceCleanupButton.disabled = workspaceCleanupInFlight;
   workspaceCleanupButton.textContent = workspaceCleanupInFlight ? "Cleaning up" : "Clean up";
-  workspaceOpenButton.hidden = !currentWorkspace || currentWorkspace.removed;
+  workspaceOpenButton.hidden = !currentWorkspace || currentWorkspace.removed || selected?.runnerId !== "local";
   workspaceOpenButton.disabled = workspaceOpenInFlight;
   workspaceOpenButton.textContent = workspaceOpenInFlight ? "Opening" : "Open in VS Code";
   messageInput.disabled = isTerminalInstance;
@@ -2419,6 +2575,7 @@ function renderAgentEditor(selected) {
   editAgentLoadedId = selected.id;
   editAgentDirty = false;
   editAgentForm.elements.name.value = selected.name || "";
+  editAgentForm.elements.runnerId.value = selected.runnerId || "local";
   editAgentForm.elements.role.value = selected.metadata?.role === "router" || selected.metadata?.role === "jarvis"
     ? selected.metadata.role
     : "";
@@ -2430,6 +2587,9 @@ function renderAgentEditor(selected) {
   editAgentForm.elements.skillMode.value = selected.skillMode || "all";
   editAgentForm.elements.routingDescription.value = selected.metadata?.routingDescription || "";
   editAgentForm.elements.instructions.value = selected.instructions || "";
+  if (!modelCatalogs.has(selected.runnerId || "local")) {
+    void refreshModelOptions(selected.runnerId || "local");
+  }
   renderModelControls();
   updateSkillPickerVisibility(editAgentForm);
   if ((selected.skillMode || "all") === "selected") {
@@ -2475,6 +2635,10 @@ function setupDirectoryBrowse(form) {
   const button = form.querySelector("[data-browse-cwd]");
   const cwd = form.elements.cwd;
   button.addEventListener("click", async () => {
+    if (String(form.elements.runnerId?.value || "local") !== "local") {
+      toast("Enter a path that exists on the selected remote runner.");
+      return;
+    }
     const originalLabel = button.textContent;
     button.disabled = true;
     button.textContent = "Opening…";
@@ -2505,6 +2669,7 @@ function updateSkillPickerVisibility(form) {
 
 async function loadSkillOptions(form, desiredSkills, forceReload = false) {
   const cwd = String(form.elements.cwd.value || "").trim();
+  const runnerId = String(form.elements.runnerId?.value || "local");
   const container = form.querySelector("[data-skill-options]");
   if (!cwd) {
     container.innerHTML = "<span>Enter a working directory to load skills.</span>";
@@ -2517,13 +2682,14 @@ async function loadSkillOptions(form, desiredSkills, forceReload = false) {
   const selected = new Set(existing.map((skill) => skill.scope + "\\u0000" + skill.name));
   container.innerHTML = "<span>Loading skills…</span>";
   try {
-    let catalog = !forceReload && skillCatalogs.get(cwd);
+    const catalogKey = runnerId + "\u0000" + cwd;
+    let catalog = !forceReload && skillCatalogs.get(catalogKey);
     if (!catalog) {
-      const response = await fetch("/api/skill-options?cwd=" + encodeURIComponent(cwd) + (forceReload ? "&forceReload=true" : ""));
+      const response = await fetch("/api/skill-options?cwd=" + encodeURIComponent(cwd) + "&runnerId=" + encodeURIComponent(runnerId) + (forceReload ? "&forceReload=true" : ""));
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not load skills");
       catalog = body;
-      skillCatalogs.set(cwd, catalog);
+      skillCatalogs.set(catalogKey, catalog);
     }
     const skills = Array.isArray(catalog.skills) ? catalog.skills : [];
     const identityCounts = new Map();

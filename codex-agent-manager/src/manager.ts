@@ -163,14 +163,22 @@ export class CodexAgentManager extends EventEmitter {
     return this.snapshot(this.requireRecord(agentId));
   }
 
-  async listModelOptions(options: { includeHidden?: boolean } = {}): Promise<AgentModelCatalog> {
+  async listModelOptions(options: { includeHidden?: boolean; runnerId?: string } = {}): Promise<AgentModelCatalog> {
     this.assertOpen();
-    const client = this.clientFactory();
+    const client = options.runnerId
+      ? this.clientFactory({
+          agentId: "model-catalog",
+          runnerId: options.runnerId,
+          approvalHandler: () => ({ decision: "declined", reason: "Catalog requests cannot approve actions." }),
+        })
+      : this.clientFactory();
     try {
       if (!client.listModels) {
         return { models: [] };
       }
-      const catalog = await client.listModels(options);
+      const catalog = await client.listModels(
+        options.includeHidden === undefined ? {} : { includeHidden: options.includeHidden },
+      );
       if (catalog.models.length) {
         const runtimeInfo = await client.getRuntimeInfo?.();
         this.compatibilityGuardian.updateCatalog(catalog, {
@@ -184,9 +192,13 @@ export class CodexAgentManager extends EventEmitter {
     }
   }
 
-  async listSkillOptions(cwd: string, forceReload = false): Promise<AgentSkillCatalog> {
+  async listSkillOptions(cwd: string, forceReload = false, runnerId = "local"): Promise<AgentSkillCatalog> {
     this.assertOpen();
-    const client = this.clientFactory();
+    const client = this.clientFactory({
+      agentId: "skill-catalog",
+      runnerId,
+      approvalHandler: () => ({ decision: "declined", reason: "Catalog requests cannot approve actions." }),
+    });
     try {
       if (!client.listSkills) {
         throw new CodexAgentManagerError("The configured Codex App Server does not support skill discovery.");
@@ -239,7 +251,7 @@ export class CodexAgentManager extends EventEmitter {
       throw new CodexAgentManagerError("Approved compatibility migration requires a replacement model.");
     }
     if (this.compatibilityGuardian.needsRefresh()) {
-      await this.refreshCompatibilityCatalog();
+      await this.refreshCompatibilityCatalog(record.definition.runnerId);
     }
     const snapshot = this.compatibilityGuardian.snapshot();
     const replacement = snapshot?.catalog.models.find((model) =>
@@ -331,6 +343,7 @@ export class CodexAgentManager extends EventEmitter {
     const nextDefinition: AgentDefinition = {
       id: record.definition.id,
       name: update.name ?? record.definition.name,
+      runnerId: "runnerId" in update ? update.runnerId : record.definition.runnerId,
       cwd: update.cwd ?? record.definition.cwd,
       instructions: update.instructions ?? record.definition.instructions,
       model: "model" in update ? update.model : record.definition.model,
@@ -351,7 +364,13 @@ export class CodexAgentManager extends EventEmitter {
     } else if (record.definition.metadata !== undefined) {
       nextDefinition.metadata = record.definition.metadata;
     }
-    if (update.cwd !== undefined && update.cwd !== record.definition.cwd && nextDefinition.metadata) {
+    if (
+      (
+        (update.cwd !== undefined && update.cwd !== record.definition.cwd)
+        || ("runnerId" in update && (update.runnerId?.trim() || "local") !== (record.definition.runnerId?.trim() || "local"))
+      )
+      && nextDefinition.metadata
+    ) {
       nextDefinition.metadata = cloneRecord(nextDefinition.metadata);
       delete nextDefinition.metadata.commandCenterWorkspace;
     }
@@ -1144,6 +1163,7 @@ export class CodexAgentManager extends EventEmitter {
 
     record.client = this.clientFactory({
       agentId: record.definition.id,
+      runnerId: record.definition.runnerId?.trim() || "local",
       approvalHandler: (request) => this.handleApprovalRequest(record.definition.id, request),
     });
     const skillConfig = await this.resolveSkillConfig(record.definition);
@@ -1179,7 +1199,11 @@ export class CodexAgentManager extends EventEmitter {
 
   private async resolveSkillConfig(definition: AgentDefinition): Promise<Record<string, unknown> | undefined> {
     if ((definition.skillMode ?? "all") === "all") return undefined;
-    const catalog = await this.listSkillOptions(definition.cwd, true);
+    const catalog = await this.listSkillOptions(
+      definition.cwd,
+      true,
+      definition.runnerId?.trim() || "local",
+    );
     if (catalog.errors.length) {
       throw new CodexAgentManagerError(
         `Skill discovery failed for ${definition.name}: ${catalog.errors.map((error) => error.message).join("; ")}`,
@@ -1207,7 +1231,7 @@ export class CodexAgentManager extends EventEmitter {
   private async ensureAgentCompatible(record: RuntimeRecord, forceRefresh = false): Promise<void> {
     if (!record.definition.model) return;
     if (forceRefresh || this.compatibilityGuardian.needsRefresh()) {
-      await this.refreshCompatibilityCatalog();
+      await this.refreshCompatibilityCatalog(record.definition.runnerId);
     }
     const issue = this.compatibilityGuardian.validate(record.definition)[0];
     if (!issue) return;
@@ -1223,7 +1247,7 @@ export class CodexAgentManager extends EventEmitter {
       return false;
     }
     try {
-      await this.refreshCompatibilityCatalog();
+      await this.refreshCompatibilityCatalog(record.definition.runnerId);
     } catch {
       return false;
     }
@@ -1235,8 +1259,14 @@ export class CodexAgentManager extends EventEmitter {
     return true;
   }
 
-  private async refreshCompatibilityCatalog(): Promise<void> {
-    const client = this.clientFactory();
+  private async refreshCompatibilityCatalog(runnerId?: string): Promise<void> {
+    const client = runnerId && runnerId !== "local"
+      ? this.clientFactory({
+          agentId: "compatibility-catalog",
+          runnerId,
+          approvalHandler: () => ({ decision: "declined", reason: "Catalog requests cannot approve actions." }),
+        })
+      : this.clientFactory();
     try {
       if (!client.listModels) return;
       const catalog = await client.listModels({ includeHidden: true });
@@ -1385,6 +1415,7 @@ export class CodexAgentManager extends EventEmitter {
     return {
       id: record.definition.id,
       name: record.definition.name,
+      runnerId: record.definition.runnerId?.trim() || "local",
       cwd: record.definition.cwd,
       instructions: record.definition.instructions,
       status: record.status,
@@ -2075,6 +2106,9 @@ function validateDefinition(definition: AgentDefinition): void {
   if (typeof definition.name !== "string" || !definition.name.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have a name.`);
   }
+  if (definition.runnerId !== undefined && !/^[A-Za-z0-9_.-]+$/.test(definition.runnerId)) {
+    throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid runner id.`);
+  }
   if (typeof definition.cwd !== "string" || !definition.cwd.trim()) {
     throw new CodexAgentManagerError(`Agent ${definition.id} must have a cwd.`);
   }
@@ -2099,7 +2133,8 @@ function skillReferenceKey(skill: { name: string; scope: string }): string {
 }
 
 function requiresFreshSession(previous: AgentDefinition, next: AgentDefinition): boolean {
-  return previous.cwd !== next.cwd ||
+  return (previous.runnerId?.trim() || "local") !== (next.runnerId?.trim() || "local") ||
+    previous.cwd !== next.cwd ||
     previous.instructions !== next.instructions ||
     (previous.skillMode ?? "all") !== (next.skillMode ?? "all") ||
     JSON.stringify(previous.allowedSkills ?? []) !== JSON.stringify(next.allowedSkills ?? []) ||
