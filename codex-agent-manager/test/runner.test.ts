@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -36,6 +39,49 @@ test("runner hub dispatches commands and tracks runner health", async () => {
 
   assert.deepEqual(await resultPromise, { userAgent: "codex-test" });
   assert.equal(hub.getRunner("vm-1").activeCommands, 0);
+});
+
+test("remote runner advertises its SSH host and browses its filesystem", async () => {
+  const root = await mkdtemp(join(tmpdir(), "command-center-runner-directory-"));
+  await mkdir(join(root, "alpha"));
+  await mkdir(join(root, "Beta"));
+  const hub = new RunnerHub("secret");
+  const daemon = new RunnerDaemon({
+    controlUrl: "http://control.test",
+    token: "secret",
+    id: "vm-browser",
+    name: "Browser VM",
+    sshHost: "browser-vm",
+    clientFactory: fakeRunnerClientFactory(),
+    fetch: hubFetch(hub),
+  });
+  const daemonRun = daemon.start();
+  try {
+    await waitFor(() => hub.listRunners().some((runner) => runner.id === "vm-browser"));
+
+    const runner = hub.getRunner("vm-browser");
+    assert.equal(runner.sshHost, "browser-vm");
+    const listing = await hub.execute(
+      "vm-browser",
+      "filesystem.listDirectories",
+      "directory-browser",
+      { path: root },
+    ) as { path: string; directories: Array<{ name: string; path: string }> };
+    assert.equal(listing.path, await realpath(root));
+    assert.deepEqual(
+      new Set(listing.directories.map((entry) => entry.name)),
+      new Set(["alpha", "Beta"]),
+    );
+    await assert.rejects(
+      hub.execute("vm-browser", "filesystem.listDirectories", "directory-browser", {
+        path: join(root, "missing"),
+      }),
+      /ENOENT|does not exist/,
+    );
+  } finally {
+    await daemon.close();
+    await daemonRun;
+  }
 });
 
 test("remote runner executes a Codex turn and forwards activity and approvals", async () => {

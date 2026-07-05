@@ -5,6 +5,7 @@ type AgentStatus = "idle" | "starting" | "running" | "failed" | "blocked" | "sto
 type AgentSnapshot = {
   id: string;
   name: string;
+  runnerId: string;
   status: AgentStatus;
   threadId: string | null;
   model: string | null;
@@ -15,6 +16,14 @@ type AgentSnapshot = {
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   cwd: string;
   metadata: Record<string, unknown>;
+};
+
+type RunnerSnapshot = {
+  id: string;
+  name: string;
+  status: "online" | "offline";
+  hostname: string;
+  sshHost?: string;
 };
 
 type AgentEvent = {
@@ -130,6 +139,7 @@ function startTopology(
   const pointer = new THREE.Vector2();
   const pulses: Array<{ mesh: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; started: number }> = [];
   let agents: AgentSnapshot[] = [];
+  let runners: RunnerSnapshot[] = [];
   let sensorSources: string[] = [];
   let sensorEvents: SensorEventSnapshot[] = [];
   let routingMode = "explicit";
@@ -292,10 +302,11 @@ function startTopology(
 
   async function refreshAgents(): Promise<void> {
     workspaceElement.setAttribute("aria-busy", "true");
-    const [response, sensorResponse, routingResponse] = await Promise.all([
+    const [response, sensorResponse, routingResponse, runnersResponse] = await Promise.all([
       fetch("/api/agents"),
       fetch("/api/sensor-events"),
       fetch("/api/routing"),
+      fetch("/api/runners"),
     ]);
     if (!response.ok) {
       workspaceElement.setAttribute("aria-busy", "false");
@@ -308,7 +319,11 @@ function startTopology(
     const routingBody = routingResponse.ok
       ? await routingResponse.json() as { mode?: string }
       : { mode: "explicit" };
+    const runnersBody = runnersResponse.ok
+      ? await runnersResponse.json() as { runners?: RunnerSnapshot[] }
+      : { runners: [] };
     agents = Array.isArray(body.agents) ? body.agents : [];
+    runners = Array.isArray(runnersBody.runners) ? runnersBody.runners : [];
     sensorEvents = Array.isArray(sensorBody.events) ? sensorBody.events : [];
     routingMode = routingBody.mode ?? "explicit";
     const agentIds = new Set(agents.map((agent) => agent.id));
@@ -470,7 +485,7 @@ function startTopology(
     label.type = "button";
     label.className = `topology-label status-${visualStatus}`;
     label.dataset.agentId = agent.id;
-    label.innerHTML = `<strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(displayState(agent))}</span>`;
+    label.innerHTML = `<strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(displayState(agent))} · ${escapeHtml(machineLabel(agent))}</span>`;
     label.addEventListener("click", () => selectAgent(agent.id));
     return { agent, group, sphere, halo, label };
   }
@@ -599,9 +614,14 @@ function startTopology(
       ? agent.metadata.commandCenterWorkspace as Record<string, unknown>
       : null;
     const branch = workspace && typeof workspace.branch === "string" ? workspace.branch : null;
+    const runner = runnerForAgent(agent);
+    const runnerName = agent.runnerId === "local" ? "This machine" : runner?.name ?? agent.runnerId;
+    const machine = agent.runnerId === "local"
+      ? "Control plane"
+      : runner ? `${runner.hostname} · ${runner.status}` : "Runner unavailable";
     inspectorElement.innerHTML = `
       <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(instanceVisualStatus(agent))}"></i>${escapeHtml(displayState(agent))}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
-      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div>${branch ? `<div><dt>Branch</dt><dd>${escapeHtml(branch)}</dd></div>` : ""}<div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
+      <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Runner</dt><dd>${escapeHtml(runnerName)}</dd></div><div><dt>Machine</dt><dd>${escapeHtml(machine)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div>${branch ? `<div><dt>Branch</dt><dd>${escapeHtml(branch)}</dd></div>` : ""}<div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
       <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
@@ -617,6 +637,18 @@ function startTopology(
     });
     inspectorElement.querySelector("[data-pause-agent]")?.addEventListener("click", () => void pauseAgent(agent));
     inspectorElement.querySelector("[data-remove-agent]")?.addEventListener("click", () => void removeAgent(agent));
+  }
+
+  function runnerForAgent(agent: AgentSnapshot): RunnerSnapshot | null {
+    if (!agent.runnerId || agent.runnerId === "local") return null;
+    return runners.find((runner) => runner.id === agent.runnerId) ?? null;
+  }
+
+  function machineLabel(agent: AgentSnapshot): string {
+    if (!agent.runnerId || agent.runnerId === "local") return "this machine";
+    const runner = runnerForAgent(agent);
+    if (!runner) return `${agent.runnerId} unavailable`;
+    return runner.status === "offline" ? `${runner.name} offline` : runner.name;
   }
 
   function permissionLabel(agent: AgentSnapshot): string {

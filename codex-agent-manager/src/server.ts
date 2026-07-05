@@ -19,6 +19,7 @@ import type {
   SensorEventInput,
   RunnerCommandCompletion,
   RunnerCommandEvent,
+  RunnerDirectoryListing,
   RunnerRegistration,
 } from "./types.js";
 
@@ -229,6 +230,23 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/runner-directories") {
+        const hub = this.options.runnerHub;
+        if (!hub) throw new Error("Remote runners are not enabled on this control plane.");
+        const runnerId = url.searchParams.get("runnerId")?.trim();
+        if (!runnerId || runnerId === "local") throw new Error("A remote runnerId is required.");
+        const path = url.searchParams.get("path")?.trim();
+        const listing = await hub.execute(
+          runnerId,
+          "filesystem.listDirectories",
+          "directory-browser",
+          path ? { path } : {},
+          { timeoutMs: 15_000 },
+        ) as RunnerDirectoryListing;
+        this.json(response, listing);
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/agents") {
         const body = await readJson(request);
         const agent = await this.options.manager.createAgent(parseAgentDefinition(body));
@@ -295,15 +313,19 @@ export class CommandCenterServer {
       if (request.method === "POST" && workspaceOpenMatch?.[1]) {
         const agentId = decodeURIComponent(workspaceOpenMatch[1]);
         const agent = this.options.manager.getAgent(agentId);
-        if (agent.runnerId !== "local") {
-          throw new Error("Remote worktrees cannot be opened in the control plane's local VS Code.");
-        }
         const workspace = await this.options.manager.inspectAgentWorkspace(agentId);
         if (!workspace || workspace.removed) {
           throw new Error(`Agent ${agentId} does not have an available managed worktree.`);
         }
-        await (this.options.workspaceOpener ?? openWorkspaceInVisualStudioCode)(workspace.worktreePath);
-        this.json(response, { agentId, workspace, opened: true });
+        const target = agent.runnerId === "local"
+          ? workspace.worktreePath
+          : remoteVisualStudioCodeUri(
+              this.options.runnerHub?.getRunner(agent.runnerId).sshHost,
+              workspace.worktreePath,
+              agent.runnerId,
+            );
+        await (this.options.workspaceOpener ?? openWorkspaceInVisualStudioCode)(target);
+        this.json(response, { agentId, workspace, target, opened: true });
         return;
       }
 
@@ -684,7 +706,7 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
 
 function parseRunnerRegistration(body: unknown): RunnerRegistration {
   const value = asRecord(body);
-  return {
+  const registration: RunnerRegistration = {
     id: requiredString(value.id, "id"),
     name: requiredString(value.name, "name"),
     hostname: requiredString(value.hostname, "hostname"),
@@ -692,6 +714,9 @@ function parseRunnerRegistration(body: unknown): RunnerRegistration {
     arch: requiredString(value.arch, "arch"),
     version: requiredString(value.version, "version"),
   };
+  const sshHost = optionalString(value.sshHost);
+  if (sshHost) registration.sshHost = sshHost;
+  return registration;
 }
 
 function permissionSettingsForMode(mode: "ask" | "auto-review" | "full-access"): Pick<AgentDefinition, "approvalPolicy" | "approvalsReviewer" | "sandbox"> {
@@ -900,17 +925,23 @@ async function pickNativeDirectory(initialPath: string): Promise<string | null> 
   }
 }
 
-async function openWorkspaceInVisualStudioCode(workspacePath: string): Promise<void> {
-  const resolvedPath = await realpath(workspacePath);
+async function openWorkspaceInVisualStudioCode(workspaceTarget: string): Promise<void> {
+  const target = workspaceTarget.startsWith("vscode://")
+    ? workspaceTarget
+    : await realpath(workspaceTarget);
   try {
     if (process.platform === "darwin") {
-      await execFileAsync("open", ["-a", "Visual Studio Code", resolvedPath], {
+      await execFileAsync("open", target.startsWith("vscode://")
+        ? [target]
+        : ["-a", "Visual Studio Code", target], {
         encoding: "utf8",
         timeout: 30_000,
       });
       return;
     }
-    await execFileAsync("code", ["--new-window", resolvedPath], {
+    await execFileAsync("code", target.startsWith("vscode://")
+      ? ["--new-window", "--folder-uri", target]
+      : ["--new-window", target], {
       encoding: "utf8",
       timeout: 30_000,
     });
@@ -918,6 +949,14 @@ async function openWorkspaceInVisualStudioCode(workspacePath: string): Promise<v
     const details = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not open the workspace in Visual Studio Code: ${details}`, { cause: error });
   }
+}
+
+function remoteVisualStudioCodeUri(sshHost: string | undefined, workspacePath: string, runnerId: string): string {
+  if (!sshHost) {
+    throw new Error(`Runner ${runnerId} is missing its SSH host. Restart it with --ssh-host <mac-ssh-host>.`);
+  }
+  const encodedPath = workspacePath.split("/").map(encodeURIComponent).join("/");
+  return `vscode://vscode-remote/ssh-remote+${encodeURIComponent(sshHost)}${encodedPath.startsWith("/") ? "" : "/"}${encodedPath}`;
 }
 
 function renderHtml(title: string): string {
@@ -1062,6 +1101,30 @@ function renderHtml(title: string): string {
               <button id="delete-agent-button" type="button" class="danger">Delete</button>
             </div>
           </form>
+        </div>
+      </section>
+    </div>
+    <div id="remote-directory-modal" class="settings-modal" hidden>
+      <section class="settings-dialog remote-directory-dialog" role="dialog" aria-modal="true" aria-labelledby="remote-directory-title">
+        <header>
+          <div><span class="settings-kicker">Remote runner</span><h2 id="remote-directory-title">Choose working directory</h2><p id="remote-directory-runner"></p></div>
+          <button id="remote-directory-close" type="button" class="secondary">Close</button>
+        </header>
+        <div class="settings-dialog-body remote-directory-body">
+          <div class="remote-directory-nav">
+            <button id="remote-directory-home" type="button" class="secondary">Home</button>
+            <button id="remote-directory-up" type="button" class="secondary">Up</button>
+          </div>
+          <form id="remote-directory-path-form" class="path-field">
+            <input id="remote-directory-path" autocomplete="off" aria-label="Remote directory path">
+            <button type="submit" class="secondary">Go</button>
+          </form>
+          <div id="remote-directory-status" class="field-hint"></div>
+          <div id="remote-directory-list" class="remote-directory-list"></div>
+          <div class="remote-directory-actions">
+            <button id="remote-directory-cancel" type="button" class="secondary">Cancel</button>
+            <button id="remote-directory-select" type="button">Select this folder</button>
+          </div>
         </div>
       </section>
     </div>
@@ -1286,6 +1349,18 @@ textarea { resize: vertical; }
 .agent-editor-form.disabled { opacity: .55; pointer-events: none; }
 .agent-actions { display: flex; gap: 8px; justify-content: space-between; }
 .agent-actions button { flex: 1; }
+.remote-directory-dialog { width: min(720px, 94vw); }
+.remote-directory-body { display: grid; gap: 12px; }
+.remote-directory-nav { display: flex; gap: 8px; }
+.remote-directory-nav button { padding: 7px 11px; }
+.remote-directory-list { min-height: 220px; max-height: 410px; overflow-y: auto; border: 1px solid #30363d; border-radius: 9px; background: #0d1117; }
+.remote-directory-entry { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: #c9d1d9; background: transparent; border: 0; border-bottom: 1px solid rgba(48,54,61,.68); border-radius: 0; text-align: left; }
+.remote-directory-entry:last-child { border-bottom: 0; }
+.remote-directory-entry:hover { background: rgba(88,166,255,.09); color: #f0f6fc; }
+.remote-directory-entry::before { content: "›"; color: #58a6ff; font-size: 17px; }
+.remote-directory-empty { padding: 28px 18px; color: #8b949e; text-align: center; }
+.remote-directory-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.remote-directory-actions button { min-width: 130px; }
 .empty { color: #8b949e; font-size: 13px; padding: 12px; border: 1px dashed #30363d; border-radius: 10px; }
 .queue-list { display: grid; gap: 7px; }
 .queue-item { border-bottom: 1px solid rgba(48,54,61,.72); padding: 9px 0; background: transparent; display: grid; grid-template-columns: 90px 160px minmax(0, 1fr); gap: 10px; align-items: baseline; }
@@ -1558,6 +1633,15 @@ const deleteAgentButton = document.getElementById("delete-agent-button");
 const agentSettingsModal = document.getElementById("agent-settings-modal");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const closeAgentSettingsButton = document.getElementById("close-agent-settings");
+const remoteDirectoryModal = document.getElementById("remote-directory-modal");
+const remoteDirectoryRunner = document.getElementById("remote-directory-runner");
+const remoteDirectoryPathForm = document.getElementById("remote-directory-path-form");
+const remoteDirectoryPath = document.getElementById("remote-directory-path");
+const remoteDirectoryStatus = document.getElementById("remote-directory-status");
+const remoteDirectoryList = document.getElementById("remote-directory-list");
+const remoteDirectoryHome = document.getElementById("remote-directory-home");
+const remoteDirectoryUp = document.getElementById("remote-directory-up");
+const remoteDirectorySelect = document.getElementById("remote-directory-select");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
 const opsTitle = document.getElementById("ops-title");
@@ -1570,6 +1654,9 @@ let editAgentLoadedId = null;
 let editAgentDirty = false;
 let composerAgentId = null;
 let forceLatestMessage = true;
+let remoteDirectoryTargetForm = null;
+let remoteDirectoryRunnerId = null;
+let remoteDirectoryListing = null;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
@@ -1639,6 +1726,22 @@ editAgentForm.addEventListener("input", () => {
 editAgentForm.elements.model.addEventListener("change", renderModelControls);
 deleteAgentButton.addEventListener("click", deleteSelectedAgent);
 closeAgentSettingsButton.addEventListener("click", closeAgentSettings);
+document.getElementById("remote-directory-close").addEventListener("click", closeRemoteDirectoryPicker);
+document.getElementById("remote-directory-cancel").addEventListener("click", closeRemoteDirectoryPicker);
+remoteDirectoryModal.addEventListener("click", (event) => {
+  if (event.target === remoteDirectoryModal) closeRemoteDirectoryPicker();
+});
+remoteDirectoryPathForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void navigateRemoteDirectory(remoteDirectoryPath.value);
+});
+remoteDirectoryHome.addEventListener("click", () => {
+  if (remoteDirectoryListing?.homePath) void navigateRemoteDirectory(remoteDirectoryListing.homePath);
+});
+remoteDirectoryUp.addEventListener("click", () => {
+  if (remoteDirectoryListing?.parentPath) void navigateRemoteDirectory(remoteDirectoryListing.parentPath);
+});
+remoteDirectorySelect.addEventListener("click", selectRemoteDirectory);
 agentSettingsModal.addEventListener("click", (event) => {
   if (event.target === agentSettingsModal) closeAgentSettings();
 });
@@ -2496,7 +2599,7 @@ function render() {
   workspaceCleanupButton.hidden = !isTerminalInstance || !currentWorkspace || currentWorkspace.removed;
   workspaceCleanupButton.disabled = workspaceCleanupInFlight;
   workspaceCleanupButton.textContent = workspaceCleanupInFlight ? "Cleaning up" : "Clean up";
-  workspaceOpenButton.hidden = !currentWorkspace || currentWorkspace.removed || selected?.runnerId !== "local";
+  workspaceOpenButton.hidden = !currentWorkspace || currentWorkspace.removed;
   workspaceOpenButton.disabled = workspaceOpenInFlight;
   workspaceOpenButton.textContent = workspaceOpenInFlight ? "Opening" : "Open in VS Code";
   messageInput.disabled = isTerminalInstance;
@@ -2636,7 +2739,12 @@ function setupDirectoryBrowse(form) {
   const cwd = form.elements.cwd;
   button.addEventListener("click", async () => {
     if (String(form.elements.runnerId?.value || "local") !== "local") {
-      toast("Enter a path that exists on the selected remote runner.");
+      try {
+        await openRemoteDirectoryPicker(form);
+      } catch (error) {
+        closeRemoteDirectoryPicker();
+        toast(error.message || String(error), "error");
+      }
       return;
     }
     const originalLabel = button.textContent;
@@ -2661,6 +2769,78 @@ function setupDirectoryBrowse(form) {
       button.textContent = originalLabel;
     }
   });
+}
+
+async function openRemoteDirectoryPicker(form) {
+  const runnerId = String(form.elements.runnerId?.value || "");
+  const runner = runners.find((item) => item.id === runnerId);
+  remoteDirectoryTargetForm = form;
+  remoteDirectoryRunnerId = runnerId;
+  remoteDirectoryListing = null;
+  remoteDirectoryRunner.textContent = runner
+    ? runner.name + " · " + runner.hostname + " · " + runner.status
+    : runnerId;
+  remoteDirectoryModal.hidden = false;
+  try {
+    await loadRemoteDirectory(String(form.elements.cwd.value || "").trim());
+  } catch (error) {
+    if (!String(form.elements.cwd.value || "").trim()) throw error;
+    toast("The current path is not available on this runner; showing its home directory.");
+    await loadRemoteDirectory("");
+  }
+}
+
+async function loadRemoteDirectory(path) {
+  if (!remoteDirectoryRunnerId) return;
+  remoteDirectoryStatus.textContent = "Loading directories…";
+  remoteDirectoryList.innerHTML = "";
+  remoteDirectorySelect.disabled = true;
+  const query = new URLSearchParams({ runnerId: remoteDirectoryRunnerId });
+  if (String(path || "").trim()) query.set("path", String(path).trim());
+  const response = await fetch("/api/runner-directories?" + query.toString());
+  const body = await response.json();
+  if (!response.ok) {
+    remoteDirectoryStatus.textContent = body.error || "Could not browse this runner";
+    throw new Error(remoteDirectoryStatus.textContent);
+  }
+  remoteDirectoryListing = body;
+  remoteDirectoryPath.value = body.path;
+  remoteDirectoryStatus.textContent = body.directories.length
+    ? body.directories.length + " folders"
+    : "This folder has no child directories";
+  remoteDirectoryUp.disabled = !body.parentPath;
+  remoteDirectoryHome.disabled = body.path === body.homePath;
+  remoteDirectorySelect.disabled = false;
+  remoteDirectoryList.innerHTML = body.directories.length
+    ? body.directories.map((directory) => '<button type="button" class="remote-directory-entry" data-remote-path="' + escapeAttr(directory.path) + '">' + escapeHtml(directory.name) + '</button>').join("")
+    : '<div class="remote-directory-empty">No folders here</div>';
+  for (const entry of remoteDirectoryList.querySelectorAll("[data-remote-path]")) {
+    entry.addEventListener("click", () => void navigateRemoteDirectory(entry.dataset.remotePath));
+  }
+}
+
+async function navigateRemoteDirectory(path) {
+  try {
+    await loadRemoteDirectory(path);
+  } catch (error) {
+    toast(error.message || String(error), "error");
+  }
+}
+
+function selectRemoteDirectory() {
+  if (!remoteDirectoryTargetForm || !remoteDirectoryListing?.path) return;
+  const cwd = remoteDirectoryTargetForm.elements.cwd;
+  cwd.value = remoteDirectoryListing.path;
+  cwd.dispatchEvent(new Event("input", { bubbles: true }));
+  cwd.dispatchEvent(new Event("change", { bubbles: true }));
+  closeRemoteDirectoryPicker();
+}
+
+function closeRemoteDirectoryPicker() {
+  remoteDirectoryModal.hidden = true;
+  remoteDirectoryTargetForm = null;
+  remoteDirectoryRunnerId = null;
+  remoteDirectoryListing = null;
 }
 
 function updateSkillPickerVisibility(form) {

@@ -60,6 +60,7 @@ export type {
   RunnerCommandCompletion,
   RunnerCommandEvent,
   RunnerCommandType,
+  RunnerDirectoryListing,
   RunnerRegistration,
   RunnerSnapshot,
   RunnerStatus,

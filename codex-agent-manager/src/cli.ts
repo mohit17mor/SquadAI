@@ -44,11 +44,13 @@ if (mode === "runner") {
   if (!controlUrl) throw new Error("Runner mode requires --control-url or CODEX_AGENT_MANAGER_CONTROL_URL.");
   if (!runnerId) throw new Error("Runner mode requires --runner-id or CODEX_AGENT_MANAGER_RUNNER_ID.");
   const runnerName = args.get("runner-name") ?? process.env.CODEX_AGENT_MANAGER_RUNNER_NAME;
+  const sshHost = args.get("ssh-host") ?? process.env.CODEX_AGENT_MANAGER_SSH_HOST;
   const daemon = new RunnerDaemon({
     controlUrl,
     token: runnerToken,
     id: runnerId,
     ...(runnerName ? { name: runnerName } : {}),
+    ...(sshHost ? { sshHost } : {}),
   });
   console.log(`Command Center runner ${runnerId} connecting to ${controlUrl}`);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {

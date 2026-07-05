@@ -11,6 +11,7 @@ import {
   type CodexControlClientContext,
   createCommandCenterServer,
   type CodexControlClientFactory,
+  RunnerHub,
 } from "../src/index.js";
 
 class ImmediateCodexClient {
@@ -333,6 +334,111 @@ test("command center API opens the selected agent worktree in VS Code", async ()
     assert.equal(openedPath, workspacePath);
     assert.equal(response.opened, true);
     assert.equal(response.workspace.worktreePath, workspacePath);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center opens remote worktrees with the owning runner SSH host", async () => {
+  let openedTarget = "";
+  const workspacePath = "/home/postgres/project worktree";
+  const runnerHub = new RunnerHub("secret");
+  runnerHub.register({
+    id: "vm-1",
+    name: "Development VM",
+    hostname: "development-vm.internal",
+    sshHost: "development-vm",
+    platform: "linux",
+    arch: "arm64",
+    version: "test",
+  });
+  const manager = new CodexAgentManager({
+    agents: [],
+    clientFactory: immediateFactory(),
+    workspaceManager: {
+      async prepareBase(definition) { return definition; },
+      async prepareInstance(_base, instance) { return instance; },
+      async inspect() {
+        return {
+          kind: "git-worktree",
+          repositoryRoot: "/home/postgres/repository",
+          worktreePath: workspacePath,
+          branch: "codex/task-example",
+          sourceBranch: "main",
+          dirty: false,
+          removed: false,
+        };
+      },
+      async cleanup(definition) { return definition; },
+    },
+  });
+  const server = createCommandCenterServer({
+    manager,
+    runnerHub,
+    workspaceOpener: async (target) => { openedTarget = target; },
+  });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    await jsonFetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      body: {
+        name: "Remote worktree agent",
+        runnerId: "vm-1",
+        cwd: "/home/postgres/repository",
+        instructions: "Test remote agent.",
+      },
+    });
+    const response = await jsonFetch(
+      `${baseUrl}/api/agents/remote-worktree-agent/workspace/open`,
+      { method: "POST", body: {} },
+    );
+    assert.equal(
+      openedTarget,
+      "vscode://vscode-remote/ssh-remote+development-vm/home/postgres/project%20worktree",
+    );
+    assert.equal(response.target, openedTarget);
+  } finally {
+    await server.close();
+    await manager.close();
+  }
+});
+
+test("command center proxies remote directory browsing through the runner", async () => {
+  const runnerHub = new RunnerHub("secret");
+  runnerHub.register({
+    id: "vm-1",
+    name: "Development VM",
+    hostname: "development-vm.internal",
+    platform: "linux",
+    arch: "arm64",
+    version: "test",
+  });
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const server = createCommandCenterServer({ manager, runnerHub });
+  await server.listen(0);
+
+  try {
+    const request = jsonFetch(
+      `http://127.0.0.1:${server.port}/api/runner-directories?runnerId=vm-1&path=%2Fworkspace`,
+    );
+    const command = await runnerHub.poll("vm-1", 1_000);
+    assert.equal(command?.type, "filesystem.listDirectories");
+    assert.equal(command?.payload.path, "/workspace");
+    runnerHub.complete("vm-1", command?.id ?? "", {
+      ok: true,
+      value: {
+        path: "/workspace",
+        parentPath: "/",
+        homePath: "/home/postgres",
+        directories: [{ name: "repo", path: "/workspace/repo" }],
+      },
+    });
+    const listing = await request;
+    assert.equal(listing.path, "/workspace");
+    assert.equal(listing.directories[0].name, "repo");
   } finally {
     await server.close();
     await manager.close();

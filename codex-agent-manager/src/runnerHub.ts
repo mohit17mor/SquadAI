@@ -217,6 +217,7 @@ export class RunnerHub extends EventEmitter {
       name: record.name,
       status: online ? "online" : "offline",
       hostname: record.hostname,
+      ...(record.sshHost ? { sshHost: record.sshHost } : {}),
       platform: record.platform,
       arch: record.arch,
       version: record.version,

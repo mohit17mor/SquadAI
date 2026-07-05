@@ -1,4 +1,6 @@
-import { hostname } from "node:os";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { GitWorkspaceManager } from "./gitWorkspace.js";
@@ -20,6 +22,7 @@ export type RunnerDaemonOptions = {
   token: string;
   id: string;
   name?: string;
+  sshHost?: string;
   version?: string;
   clientFactory?: CodexControlClientFactory;
   fetch?: typeof fetch;
@@ -46,6 +49,7 @@ export class RunnerDaemon {
       id: this.options.id,
       name: this.options.name?.trim() || this.options.id,
       hostname: hostname(),
+      ...(this.options.sshHost?.trim() ? { sshHost: this.options.sshHost.trim() } : {}),
       platform: process.platform,
       arch: process.arch,
       version: this.options.version ?? "0.1.0",
@@ -141,6 +145,8 @@ export class RunnerDaemon {
           ...(typeof options.forceReload === "boolean" ? { forceReload: options.forceReload } : {}),
         });
       }
+      case "filesystem.listDirectories":
+        return listDirectories(typeof payload.path === "string" ? payload.path : undefined);
       case "session.start": {
         const session = await this.client(command.agentId).startSession(asRecord(payload.options));
         this.setSession(command.agentId, session);
@@ -169,13 +175,17 @@ export class RunnerDaemon {
         await session.interrupt();
         return { interrupted: true };
       }
-      case "workspace.prepareBase":
-        return this.workspaceManager.prepareBase(asDefinition(payload.definition));
-      case "workspace.prepareInstance":
-        return this.workspaceManager.prepareInstance(
-          asDefinition(payload.base),
-          asDefinition(payload.instance),
-        );
+      case "workspace.prepareBase": {
+        const definition = asDefinition(payload.definition);
+        await assertDirectory(definition.cwd);
+        return this.workspaceManager.prepareBase(definition);
+      }
+      case "workspace.prepareInstance": {
+        const base = asDefinition(payload.base);
+        const instance = asDefinition(payload.instance);
+        await assertDirectory(base.cwd);
+        return this.workspaceManager.prepareInstance(base, instance);
+      }
       case "workspace.inspect":
         return this.workspaceManager.inspect(asDefinition(payload.definition));
       case "workspace.cleanup":
@@ -263,4 +273,41 @@ function asDefinition(value: unknown): AgentDefinition {
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Runner command field ${name} is required.`);
   return value;
+}
+
+async function assertDirectory(path: string): Promise<void> {
+  try {
+    const details = await stat(path);
+    if (!details.isDirectory()) throw new Error("not a directory");
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    throw new Error(`Runner working directory does not exist or is not a directory: ${path} (${details})`);
+  }
+}
+
+async function listDirectories(requestedPath?: string) {
+  const homePath = await realpath(homedir());
+  const candidate = requestedPath?.trim()
+    ? expandHome(requestedPath.trim(), homePath)
+    : homePath;
+  const path = await realpath(resolve(candidate));
+  await assertDirectory(path);
+  const entries = await readdir(path, { withFileTypes: true });
+  const directories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ name: entry.name, path: join(path, entry.name) }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  const parent = dirname(path);
+  return {
+    path,
+    parentPath: parent === path ? null : parent,
+    homePath,
+    directories,
+  };
+}
+
+function expandHome(path: string, homePath: string): string {
+  if (path === "~") return homePath;
+  if (path.startsWith("~/")) return join(homePath, path.slice(2));
+  return path;
 }

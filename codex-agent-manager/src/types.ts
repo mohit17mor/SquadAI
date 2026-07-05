@@ -458,6 +458,7 @@ export type RunnerSnapshot = {
   name: string;
   status: RunnerStatus;
   hostname: string;
+  sshHost?: string;
   platform: string;
   arch: string;
   version: string;
@@ -470,6 +471,7 @@ export type RunnerRegistration = {
   id: string;
   name: string;
   hostname: string;
+  sshHost?: string;
   platform: string;
   arch: string;
   version: string;
@@ -484,10 +486,18 @@ export type RunnerCommandType =
   | "session.ask"
   | "session.interrupt"
   | "skills.list"
+  | "filesystem.listDirectories"
   | "workspace.prepareBase"
   | "workspace.prepareInstance"
   | "workspace.inspect"
   | "workspace.cleanup";
+
+export type RunnerDirectoryListing = {
+  path: string;
+  parentPath: string | null;
+  homePath: string;
+  directories: Array<{ name: string; path: string }>;
+};
 
 export type RunnerCommand = {
   id: string;
