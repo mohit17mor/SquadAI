@@ -53,7 +53,7 @@ if (mode === "runner") {
     ...(sshHost ? { sshHost } : {}),
   });
   console.log(`Command Center runner ${runnerId} connecting to ${controlUrl}`);
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const signal of shutdownSignals()) {
     process.once(signal, () => void daemon.close().finally(() => process.exit(0)));
   }
   await daemon.start();
@@ -86,7 +86,7 @@ console.log(`Routing mode: ${routingMode}`);
 console.log(`Mode: ${mode}`);
 console.log(`Remote runners: ${runnerToken ? "token protected" : "development mode (no token)"}`);
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+for (const signal of shutdownSignals()) {
   process.once(signal, () => {
     void shutdown();
   });
@@ -96,6 +96,12 @@ async function shutdown(): Promise<void> {
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);
+}
+
+function shutdownSignals(): NodeJS.Signals[] {
+  return process.platform === "win32"
+    ? ["SIGINT", "SIGTERM", "SIGBREAK"]
+    : ["SIGINT", "SIGTERM"];
 }
 
 function parseRoutingMode(value: string): RoutingMode {

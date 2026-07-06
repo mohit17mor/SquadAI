@@ -1,6 +1,6 @@
 export { CodexControlClient } from "./client.js";
 export { DynamicToolManager } from "./dynamicTools.js";
 export { CodexSession } from "./session.js";
-export { CODEX_DESKTOP_BINARY, resolveCodexBinary, StdioCodexAppServerTransport, } from "./stdioTransport.js";
+export { CODEX_DESKTOP_BINARY, createCodexLaunchSpec, resolveCodexBinary, StdioCodexAppServerTransport, } from "./stdioTransport.js";
 export { CodexAppServerError, CodexControlError, CodexTurnTimeoutError } from "./types.js";
 //# sourceMappingURL=index.js.map

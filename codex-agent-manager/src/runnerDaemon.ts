@@ -288,7 +288,7 @@ async function assertDirectory(path: string): Promise<void> {
 async function listDirectories(requestedPath?: string) {
   const homePath = await realpath(homedir());
   const candidate = requestedPath?.trim()
-    ? expandHome(requestedPath.trim(), homePath)
+    ? expandHomePath(requestedPath.trim(), homePath)
     : homePath;
   const path = await realpath(resolve(candidate));
   await assertDirectory(path);
@@ -306,8 +306,8 @@ async function listDirectories(requestedPath?: string) {
   };
 }
 
-function expandHome(path: string, homePath: string): string {
+export function expandHomePath(path: string, homePath: string): string {
   if (path === "~") return homePath;
-  if (path.startsWith("~/")) return join(homePath, path.slice(2));
+  if (path.startsWith("~/") || path.startsWith("~\\")) return join(homePath, path.slice(2));
   return path;
 }

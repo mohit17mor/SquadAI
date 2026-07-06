@@ -1,0 +1,34 @@
+name: Cross-platform
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            codex-control/package-lock.json
+            codex-agent-manager/package-lock.json
+      - name: Install codex-control
+        run: npm ci
+        working-directory: codex-control
+      - name: Test codex-control
+        run: npm test
+        working-directory: codex-control
+      - name: Install agent manager
+        run: npm ci
+        working-directory: codex-agent-manager
+      - name: Test runner and agent manager
+        run: npm test
+        working-directory: codex-agent-manager

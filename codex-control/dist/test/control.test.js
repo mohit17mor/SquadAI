@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CODEX_DESKTOP_BINARY, CodexAppServerError, CodexControlClient, resolveCodexBinary, } from "../src/index.js";
+import { CODEX_DESKTOP_BINARY, CodexAppServerError, CodexControlClient, createCodexLaunchSpec, resolveCodexBinary, } from "../src/index.js";
 test("resolves the Codex app-server binary from override, Desktop, then PATH", () => {
     assert.equal(resolveCodexBinary({
         env: { CODEX_BINARY: "/custom/codex" },
@@ -17,6 +17,24 @@ test("resolves the Codex app-server binary from override, Desktop, then PATH", (
         platform: "linux",
         isExecutable: () => false,
     }), "codex");
+    assert.equal(resolveCodexBinary({
+        env: { Path: "C:\\Tools;C:\\Users\\dev\\bin" },
+        platform: "win32",
+        isExecutable: (path) => path === "C:\\Users\\dev\\bin\\codex.cmd",
+    }), "C:\\Users\\dev\\bin\\codex.cmd");
+});
+test("launches Windows command shims through cmd.exe without using a shell", () => {
+    assert.deepEqual(createCodexLaunchSpec("C:\\Program Files\\Codex\\codex.cmd", ["app-server"], { platform: "win32", env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" } }), {
+        command: "C:\\Windows\\System32\\cmd.exe",
+        args: ["/d", "/s", "/c", "C:\\Program Files\\Codex\\codex.cmd", "app-server"],
+    });
+    assert.deepEqual(createCodexLaunchSpec("/usr/local/bin/codex", ["app-server"], {
+        platform: "linux",
+        env: {},
+    }), {
+        command: "/usr/local/bin/codex",
+        args: ["app-server"],
+    });
 });
 class FakeTransport {
     sent = [];

@@ -3,9 +3,12 @@ export { DynamicToolManager } from "./dynamicTools.js";
 export { CodexSession } from "./session.js";
 export {
   CODEX_DESKTOP_BINARY,
+  createCodexLaunchSpec,
   resolveCodexBinary,
   StdioCodexAppServerTransport,
   type CodexBinaryResolutionOptions,
+  type CodexLaunchResolutionOptions,
+  type CodexLaunchSpec,
   type StdioTransportOptions,
 } from "./stdioTransport.js";
 export type {

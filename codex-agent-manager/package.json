@@ -12,6 +12,9 @@
     "dist/src",
     "README.md"
   ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "build": "node scripts/tsc.mjs",
     "test": "npm run build && node --test dist/test/*.test.js",

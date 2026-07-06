@@ -10,7 +10,16 @@ export type CodexBinaryResolutionOptions = {
     platform?: NodeJS.Platform;
     isExecutable?: (path: string) => boolean;
 };
+export type CodexLaunchResolutionOptions = {
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+};
+export type CodexLaunchSpec = {
+    command: string;
+    args: string[];
+};
 export declare function resolveCodexBinary(options?: CodexBinaryResolutionOptions): string;
+export declare function createCodexLaunchSpec(command: string, args: string[], options?: CodexLaunchResolutionOptions): CodexLaunchSpec;
 export declare class StdioCodexAppServerTransport implements AppServerTransport {
     private readonly command;
     private readonly args;

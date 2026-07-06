@@ -11,6 +11,7 @@ import {
   RunnerDaemon,
   RunnerHub,
 } from "../src/index.js";
+import { expandHomePath } from "../src/runnerDaemon.js";
 import type {
   AgentDefinition,
   AgentWorkspaceManager,
@@ -82,6 +83,12 @@ test("remote runner advertises its SSH host and browses its filesystem", async (
     await daemon.close();
     await daemonRun;
   }
+});
+
+test("runner expands both Unix and Windows home path syntax", () => {
+  assert.equal(expandHomePath("~/repo", "/home/dev"), join("/home/dev", "repo"));
+  assert.equal(expandHomePath("~\\repo", "C:\\Users\\dev"), join("C:\\Users\\dev", "repo"));
+  assert.equal(expandHomePath("C:\\work\\repo", "C:\\Users\\dev"), "C:\\work\\repo");
 });
 
 test("remote runner executes a Codex turn and forwards activity and approvals", async () => {
