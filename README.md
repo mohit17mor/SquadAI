@@ -7,6 +7,8 @@ observable, event-driven system. Create agents once, assign work from a browser
 or API, keep full conversation and tool history, approve sensitive actions, and
 run agents on the machines where their code and tools already live.
 
+![SquadAI live agent topology](docs/assets/squadai-topology.png)
+
 > SquadAI is an early-stage project. It currently uses Codex as its agent
 > runtime and `codex app-server` as the underlying control interface.
 
