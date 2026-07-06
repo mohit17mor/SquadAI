@@ -213,7 +213,7 @@ function mcpApprovalRequest(query: string) {
     params: {
       threadId: "thread-1",
       turnId: "turn-1",
-      serverName: "mcp-issue-tracker",
+      serverName: "mcp-issues",
       mode: "form",
       _meta: {
         codex_approval_kind: "mcp_tool_call",
@@ -236,9 +236,9 @@ function mcpApprovalRequestWithoutToolTitle(query: string) {
     params: {
       threadId: "thread-1",
       turnId: "turn-1",
-      serverName: "mcp-issue-tracker",
+      serverName: "mcp-issues",
       mode: "form",
-      message: 'Allow the mcp-issue-tracker MCP server to run tool "search_issues"?',
+      message: 'Allow the mcp-issues MCP server to run tool "search_issues"?',
       _meta: {
         codex_approval_kind: "mcp_tool_call",
         persist: ["session"],
@@ -641,7 +641,7 @@ test("rejects concurrent sends to the same agent while allowing another agent to
   const manager = new CodexAgentManager({
     agents: [
       agent(),
-      agent({ id: "storage", name: "storage Debugger", instructions: "You specialize in storage incidents." }),
+      agent({ id: "incident", name: "Incident Engineer", instructions: "You specialize in production incidents." }),
     ],
     clientFactory: fakeFactory(clients),
   });
@@ -653,10 +653,10 @@ test("rejects concurrent sends to the same agent while allowing another agent to
     /already running/i,
   );
 
-  const secondAgent = manager.sendToAgent("storage", "parallel");
+  const secondAgent = manager.sendToAgent("incident", "parallel");
   await waitFor(() => clients.length === 2, "second agent client");
   assert.equal(manager.getAgent("maintenance").status, "running");
-  assert.equal(manager.getAgent("storage").status, "running");
+  assert.equal(manager.getAgent("incident").status, "running");
 
   clients[0]?.session("thread-1").complete("first done");
   clients[1]?.session("thread-1").complete("parallel done");
@@ -1100,9 +1100,9 @@ test("rejects deleting agents with queued or running work", async () => {
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1 needs classification.",
+    body: "INC-1 needs classification.",
   });
   await manager.start();
   const work = await (manager as any).createWorkItemFromDecision(
@@ -1110,7 +1110,7 @@ test("rejects deleting agents with queued or running work", async () => {
     "router",
     {
       targetAgentId: "ops-debugger",
-      prompt: "Classify INC-01-1.",
+      prompt: "Classify INC-1.",
       reason: "Ops ticket classification.",
     },
   );
@@ -1386,7 +1386,7 @@ test("can approve repeated MCP tool calls for the current agent session", async 
   const secondApproval = await context.approvalHandler(mcpApprovalRequest("two"));
   assert.deepEqual(secondApproval, {
     decision: "approved",
-    reason: "Approved by session rule for mcp-issue-tracker/search_issues.",
+    reason: "Approved by session rule for mcp-issues/search_issues.",
   });
   assert.equal(
     manager.listEvents("maintenance").filter((event) => event.type === "approval_requested").length,
@@ -1438,7 +1438,7 @@ test("can approve repeated MCP tool calls when tool name is only in the elicitat
   const secondApproval = await context.approvalHandler(mcpApprovalRequestWithoutToolTitle("two"));
   assert.deepEqual(secondApproval, {
     decision: "approved",
-    reason: "Approved by session rule for mcp-issue-tracker/search_issues.",
+    reason: "Approved by session rule for mcp-issues/search_issues.",
   });
   assert.equal(
     manager.listEvents("maintenance").filter((event) => event.type === "approval_requested").length,
@@ -1463,9 +1463,9 @@ test("records Codex item and compaction events emitted by the session", async ()
 
   session.emitItemCompleted({
     type: "mcpToolCall",
-    serverName: "mcp-issue-tracker",
+    serverName: "mcp-issues",
     toolName: "get_issue",
-    arguments: { ticket_id: "INC-01-1" },
+    arguments: { ticket_id: "INC-1" },
   });
   session.emitThreadCompacted({ threadId: "thread-1", reason: "history limit" });
 
@@ -1477,7 +1477,7 @@ test("records Codex item and compaction events emitted by the session", async ()
     .listEvents("maintenance")
     .find((event) => event.type === "codex_item_completed");
   assert.equal(itemEvent?.payload.itemType, "mcpToolCall");
-  assert.equal(itemEvent?.payload.title, "mcp-issue-tracker/get_issue");
+  assert.equal(itemEvent?.payload.title, "mcp-issues/get_issue");
 
   assert.ok(
     manager
@@ -1559,9 +1559,9 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
         metadata: { role: "router" },
       }),
       agent({
-        id: "storage",
-        name: "storage Debugger",
-        instructions: "You specialize in storage incidents.",
+        id: "incident",
+        name: "Incident Engineer",
+        instructions: "You specialize in production incidents.",
       }),
     ],
     clientFactory: fakeFactory(clients),
@@ -1571,16 +1571,16 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   const event = await manager.ingestSensorEvent({
     source: "jira",
     type: "ticket.created",
-    title: "storage backup stuck",
-    body: "platform-123 reports an storage backup stuck in region-a.",
-    dedupeKey: "jira:platform-123",
-    url: "https://jira.example/browse/platform-123",
+    title: "database backup stuck",
+    body: "INC-123 reports a database backup stuck in region-a.",
+    dedupeKey: "jira:INC-123",
+    url: "https://jira.example/browse/INC-123",
   });
   const duplicate = await manager.ingestSensorEvent({
     source: "jira",
     type: "ticket.created",
     body: "same ticket",
-    dedupeKey: "jira:platform-123",
+    dedupeKey: "jira:INC-123",
   });
 
   assert.equal(event.status, "pending");
@@ -1590,30 +1590,30 @@ test("ingests sensor events, routes them through a router agent, and dispatches 
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 1, "router client");
   await completeRouterRosterUpdate(clients[0], "router event prompt");
-  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /platform-123/);
-  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /storage/);
+  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /INC-123/);
+  assert.match(clients[0]?.session("thread-1").pending?.input ?? "", /database backup/);
   clients[0]?.session("thread-1").complete(
     JSON.stringify({
-      targetAgentId: "storage",
-      prompt: "Investigate platform-123. Customer reports an storage backup stuck in region-a.",
-      reason: "storage backup issue.",
+      targetAgentId: "incident",
+      prompt: "Investigate INC-123. Customer reports a database backup stuck in region-a.",
+      reason: "database backup issue.",
     }),
   );
 
   const work = await route;
   assert.equal(work.status, "queued");
-  assert.equal(work.targetAgentId, "storage");
+  assert.equal(work.targetAgentId, "incident");
   assert.equal(manager.getSensorEvent(event.id).status, "routed");
 
   await manager.dispatchQueuedWork();
   await waitFor(() => clients.length === 2, "worker client");
   assert.equal(manager.getWorkItem(work.id).status, "running");
-  assert.match(clients[1]?.session("thread-1").pending?.input ?? "", /Investigate platform-123/);
+  assert.match(clients[1]?.session("thread-1").pending?.input ?? "", /Investigate INC-123/);
   assert.equal(clients[1]?.session("thread-1").asks[0]?.options.timeoutMs, 1_800_000);
 
-  clients[1]?.session("thread-1").complete("storage investigation complete");
+  clients[1]?.session("thread-1").complete("incident investigation complete");
   await waitFor(() => manager.getWorkItem(work.id).status === "done", "work completion");
-  assert.equal(manager.getWorkItem(work.id).result, "storage investigation complete");
+  assert.equal(manager.getWorkItem(work.id).result, "incident investigation complete");
 });
 
 test("applies new-instance execution after a router selects the base agent", async () => {
@@ -1911,21 +1911,21 @@ test("dispatches only one queued work item per target agent at a time", async ()
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.created",
-    body: "INC-01-1",
+    body: "INC-1",
   });
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.created",
-    body: "INC-01-2",
+    body: "INC-2",
   });
   const first = await (manager as any).createWorkItemFromDecision(
     manager.getSensorEvent("sensor-1"),
     "router",
     {
       targetAgentId: "worker",
-      prompt: "Investigate INC-01-1.",
+      prompt: "Investigate INC-1.",
     },
   );
   const second = await (manager as any).createWorkItemFromDecision(
@@ -1933,7 +1933,7 @@ test("dispatches only one queued work item per target agent at a time", async ()
     "router",
     {
       targetAgentId: "worker",
-      prompt: "Investigate INC-01-2.",
+      prompt: "Investigate INC-2.",
     },
   );
 
@@ -1942,7 +1942,7 @@ test("dispatches only one queued work item per target agent at a time", async ()
   assert.equal(manager.getWorkItem(first.id).status, "running");
   assert.equal(manager.getWorkItem(second.id).status, "queued");
   await waitFor(() => clients.length === 1, "first worker client");
-  assert.equal(clients[0]?.session("thread-1").pending?.input, "Investigate INC-01-1.");
+  assert.equal(clients[0]?.session("thread-1").pending?.input, "Investigate INC-1.");
 
   clients[0]?.session("thread-1").complete("first done");
   await waitFor(() => manager.getWorkItem(first.id).status === "done", "first work done");
@@ -1951,7 +1951,7 @@ test("dispatches only one queued work item per target agent at a time", async ()
   assert.deepEqual(laterStarted.map((item) => item.id), [second.id]);
   assert.equal(manager.getWorkItem(second.id).status, "running");
   await waitFor(
-    () => clients[0]?.session("thread-1").pending?.input === "Investigate INC-01-2.",
+    () => clients[0]?.session("thread-1").pending?.input === "Investigate INC-2.",
     "second worker prompt",
   );
   clients[0]?.session("thread-1").complete("second done");
@@ -1977,9 +1977,9 @@ test("returns immutable sensor and work item snapshots", async () => {
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1",
+    body: "INC-1",
     metadata: { nested: { value: 1 } },
   });
   const work = await (manager as any).createWorkItemFromDecision(
@@ -1987,7 +1987,7 @@ test("returns immutable sensor and work item snapshots", async () => {
     "router",
     {
       targetAgentId: "worker",
-      prompt: "Classify INC-01-1.",
+      prompt: "Classify INC-1.",
       metadata: { nested: { value: 2 } },
     },
   );
@@ -2033,7 +2033,7 @@ test("rejects invalid sensor event and routing inputs", async () => {
   );
   await assert.rejects(
     manager.ingestSensorEvent({
-      source: "issue-tracker",
+      source: "issues",
       type: "ticket.claimed",
       body: "body",
       executionPolicy: "sometimes" as "new",
@@ -2043,9 +2043,9 @@ test("rejects invalid sensor event and routing inputs", async () => {
   await assert.rejects(manager.processNextSensorEvent("router"), /No pending sensor events/);
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1",
+    body: "INC-1",
   });
   await assert.rejects(manager.processNextSensorEvent(), /Expected exactly one router agent, found 2/);
 
@@ -2102,9 +2102,9 @@ test("rejects unsafe or malformed routing decisions", async () => {
     });
 
     await manager.ingestSensorEvent({
-      source: "issue-tracker",
+      source: "issues",
       type: "ticket.claimed",
-      body: `${item.name}: INC-01-1`,
+      body: `${item.name}: INC-1`,
     });
 
     const route = manager.processNextSensorEvent("router");
@@ -2151,9 +2151,9 @@ test("sends compact router roster once and omits long worker instructions from e
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1 needs classification.",
+    body: "INC-1 needs classification.",
   });
   const firstRoute = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 1, "router client");
@@ -2175,20 +2175,20 @@ test("sends compact router roster once and omits long worker instructions from e
   clients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",
-      prompt: "Classify INC-01-1.",
+      prompt: "Classify INC-1.",
       reason: "issue tracker classification.",
     }),
   );
   await firstRoute;
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-2 needs classification.",
+    body: "INC-2 needs classification.",
   });
   const secondRoute = manager.processNextSensorEvent("router");
   await waitFor(
-    () => clients[0]?.session("thread-1").pending?.input.includes("INC-01-2") ?? false,
+    () => clients[0]?.session("thread-1").pending?.input.includes("INC-2") ?? false,
     "second route event prompt",
   );
   const secondEventPrompt = clients[0]?.session("thread-1").pending?.input ?? "";
@@ -2198,7 +2198,7 @@ test("sends compact router roster once and omits long worker instructions from e
   clients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",
-      prompt: "Classify INC-01-2.",
+      prompt: "Classify INC-2.",
       reason: "issue tracker classification.",
     }),
   );
@@ -2230,9 +2230,9 @@ test("does not resend router roster after manager restart when router thread is 
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1 needs routing.",
+    body: "INC-1 needs routing.",
   });
   const firstRoute = manager.processNextSensorEvent("router");
   await waitFor(() => firstClients.length === 1, "initial router client");
@@ -2240,7 +2240,7 @@ test("does not resend router roster after manager restart when router thread is 
   firstClients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-helper",
-      prompt: "Handle INC-01-1.",
+      prompt: "Handle INC-1.",
       reason: "Ops ticket.",
     }),
   );
@@ -2255,16 +2255,16 @@ test("does not resend router roster after manager restart when router thread is 
   });
   await resumed.start();
   await resumed.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-2 needs routing.",
+    body: "INC-2 needs routing.",
   });
 
   const secondRoute = resumed.processNextSensorEvent("router");
   await waitFor(() => resumedClients.length === 1, "resumed router client");
   assert.deepEqual(resumedClients[0]?.resumeCalls, ["thread-1"]);
   await waitFor(
-    () => resumedClients[0]?.session("thread-1").pending?.input.includes("INC-01-2") ?? false,
+    () => resumedClients[0]?.session("thread-1").pending?.input.includes("INC-2") ?? false,
     "resumed router event prompt",
   );
   const resumedPrompt = resumedClients[0]?.session("thread-1").pending?.input ?? "";
@@ -2273,7 +2273,7 @@ test("does not resend router roster after manager restart when router thread is 
   resumedClients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-helper",
-      prompt: "Handle INC-01-2.",
+      prompt: "Handle INC-2.",
       reason: "Ops ticket.",
     }),
   );
@@ -2310,9 +2310,9 @@ test("dispatches queued work to a failed agent so it can recover", async () => {
   assert.equal(manager.getAgent("ops-debugger").status, "failed");
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1 needs classification.",
+    body: "INC-1 needs classification.",
   });
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 2, "router client");
@@ -2320,7 +2320,7 @@ test("dispatches queued work to a failed agent so it can recover", async () => {
   clients[1]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",
-      prompt: "Classify INC-01-1.",
+      prompt: "Classify INC-1.",
       reason: "Ops ticket classification.",
     }),
   );
@@ -2329,7 +2329,7 @@ test("dispatches queued work to a failed agent so it can recover", async () => {
   await manager.dispatchQueuedWork();
   assert.equal(manager.getWorkItem(work.id).status, "running");
   await waitFor(
-    () => clients[0]?.session("thread-1").pending?.input === "Classify INC-01-1.",
+    () => clients[0]?.session("thread-1").pending?.input === "Classify INC-1.",
     "recovery worker prompt",
   );
   clients[0]?.session("thread-1").complete("classification recovered");
@@ -2357,9 +2357,9 @@ test("requeues failed work items so they can be dispatched again", async () => {
   });
 
   await manager.ingestSensorEvent({
-    source: "issue-tracker",
+    source: "issues",
     type: "ticket.claimed",
-    body: "INC-01-1 needs classification.",
+    body: "INC-1 needs classification.",
   });
   const route = manager.processNextSensorEvent("router");
   await waitFor(() => clients.length === 1, "router client for retry test");
@@ -2367,7 +2367,7 @@ test("requeues failed work items so they can be dispatched again", async () => {
   clients[0]?.session("thread-1").complete(
     JSON.stringify({
       targetAgentId: "ops-debugger",
-      prompt: "Classify INC-01-1.",
+      prompt: "Classify INC-1.",
       reason: "Ops ticket classification.",
     }),
   );
@@ -2387,7 +2387,7 @@ test("requeues failed work items so they can be dispatched again", async () => {
 
   await manager.dispatchQueuedWork();
   await waitFor(
-    () => clients[1]?.session("thread-1").pending?.input === "Classify INC-01-1.",
+    () => clients[1]?.session("thread-1").pending?.input === "Classify INC-1.",
     "retry worker prompt",
   );
   clients[1]?.session("thread-1").complete("classification succeeded after retry");

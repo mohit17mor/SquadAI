@@ -56,7 +56,7 @@ export class CommandCenterServer {
   private automationQueued = false;
 
   constructor(private readonly options: CommandCenterServerOptions) {
-    this.title = options.title ?? "Jarvis Command Center";
+    this.title = options.title ?? "SquadAI";
     this.server = http.createServer((request, response) => {
       void this.handle(request, response);
     });

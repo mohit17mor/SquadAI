@@ -52,7 +52,7 @@ if (mode === "runner") {
     ...(runnerName ? { name: runnerName } : {}),
     ...(sshHost ? { sshHost } : {}),
   });
-  console.log(`Command Center runner ${runnerId} connecting to ${controlUrl}`);
+  console.log(`SquadAI runner ${runnerId} connecting to ${controlUrl}`);
   for (const signal of shutdownSignals()) {
     process.once(signal, () => void daemon.close().finally(() => process.exit(0)));
   }
@@ -78,7 +78,7 @@ const server = createCommandCenterServer({ manager, runnerHub });
 
 await manager.start();
 await server.listen(port, host);
-console.log(`Jarvis Command Center listening at http://${host}:${server.port}`);
+console.log(`SquadAI listening at http://${host}:${server.port}`);
 console.log(`Database: ${databasePath}`);
 console.log(`Legacy state backup: ${statePath}`);
 console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);

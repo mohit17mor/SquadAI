@@ -1,12 +1,12 @@
 {
-  "name": "codex-agent-manager",
+  "name": "squadai",
   "version": "0.1.0",
-  "description": "Reusable persistent multi-agent session manager built on codex-control.",
+  "description": "Control plane and distributed runner for teams of Codex agents.",
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "bin": {
-    "codex-agent-manager": "dist/src/cli.js"
+    "squadai": "dist/src/cli.js"
   },
   "files": [
     "dist/src",

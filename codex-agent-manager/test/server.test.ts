@@ -186,7 +186,7 @@ test("command center API creates agents, lists them, sends messages, and exposes
 
     const page = await fetch(`${baseUrl}/`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Jarvis Command Center/);
+    assert.match(await page.text(), /SquadAI/);
   } finally {
     await server.close();
     await manager.close();
@@ -693,8 +693,8 @@ test("command center API ingests sensor events and exposes work queues", async (
       body: {
         source: "jira",
         type: "ticket.created",
-        body: "platform-123 needs triage.",
-        dedupeKey: "jira:platform-123",
+        body: "INC-123 needs triage.",
+        dedupeKey: "jira:INC-123",
       },
     });
     const duplicate = await jsonFetch(`${baseUrl}/api/sensor-events`, {
@@ -703,7 +703,7 @@ test("command center API ingests sensor events and exposes work queues", async (
         source: "jira",
         type: "ticket.created",
         body: "duplicate",
-        dedupeKey: "jira:platform-123",
+        dedupeKey: "jira:INC-123",
       },
     });
     const listed = await jsonFetch(`${baseUrl}/api/sensor-events`);
@@ -741,8 +741,8 @@ test("direct event routing is recorded before its worker starts", async () => {
       body: {
         source: "jira",
         type: "ticket.created",
-        body: "platform-456 needs maintenance triage.",
-        dedupeKey: "jira:platform-456",
+        body: "INC-456 needs maintenance triage.",
+        dedupeKey: "jira:INC-456",
         targetAgentId: "maintenance",
         executionPolicy: "new",
       },
@@ -1094,7 +1094,7 @@ test("command center inline script parses as JavaScript", async () => {
     const end = html.lastIndexOf("</script>");
     assert.ok(start > -1 && end > start);
 
-    const dir = await mkdtemp(join(tmpdir(), "codex-agent-manager-ui-"));
+    const dir = await mkdtemp(join(tmpdir(), "squadai-ui-"));
     const scriptPath = join(dir, "inline.js");
     await writeFile(scriptPath, html.slice(start, end), "utf8");
 

@@ -166,7 +166,7 @@ test("ask starts a turn and resolves with final agent text", async () => {
   });
   transport.server({
     method: "item/completed",
-    params: { item: { type: "agentMessage", text: "Hi Project User." } },
+    params: { item: { type: "agentMessage", text: "Hello from the agent." } },
   });
   transport.server({
     method: "turn/completed",
@@ -174,7 +174,7 @@ test("ask starts a turn and resolves with final agent text", async () => {
   });
 
   const result = await turn;
-  assert.equal(result.finalText, "Hi Project User.");
+  assert.equal(result.finalText, "Hello from the agent.");
   assert.equal(result.threadId, "thread-1");
   assert.equal(result.turnId, "turn-1");
   assert.equal(result.turn.status, "completed");
