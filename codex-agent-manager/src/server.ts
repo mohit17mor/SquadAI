@@ -972,14 +972,16 @@ function renderHtml(title: string): string {
   <main id="shell" class="shell topology-mode">
     <nav class="command-rail">
       <div class="brand">
-        <h1>${escapeHtml(title)}</h1>
+        <div><h1>${escapeHtml(title)}</h1><span>Agent control plane</span></div>
       </div>
       <div class="rail-nav" aria-label="Command center sections">
+        <span class="rail-section-label">Workspace</span>
         <button type="button" class="rail-item active" data-panel="topology">Topology</button>
         <button type="button" class="rail-item" data-panel="jarvis">Jarvis</button>
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <div id="rail-agents" class="rail-agents" aria-label="Agent conversations"></div>
-        <button type="button" class="rail-item" data-panel="create">Create Agent</button>
+        <button type="button" class="rail-item rail-create" data-panel="create">New agent <span aria-hidden="true">+</span></button>
+        <span class="rail-section-label rail-section-activity">Activity</span>
         <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
         <button type="button" class="rail-item" data-panel="events">Event Inbox <span id="event-count">0</span></button>
         <button type="button" class="rail-item" data-panel="work">Work Queue <span id="work-count">0</span></button>
@@ -1041,62 +1043,70 @@ function renderHtml(title: string): string {
         <button id="refresh" type="button" class="secondary">Refresh</button>
       </header>
       <section id="panel-create" class="panel-view">
-        <div class="section-head">
-          <h2>Create Agent</h2>
-          <span>runtime</span>
-        </div>
-        <form id="agent-form">
-          <label>Name<input id="agent-name" name="name" autocomplete="off" placeholder="Maintenance Debugger"></label>
-          <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="auto-generated from name"></label>
-          <div id="agent-id-hint" class="field-hint">Used in API paths and state. Leave empty to derive from name.</div>
-          <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
-          <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
-          <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
-          <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
-          <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
-          <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
-          <div class="field-hint">Controls sandbox access and who reviews actions that require escalation.</div>
-          <div class="field-group"><label for="create-agent-cwd">Working directory</label><div class="path-field"><input id="create-agent-cwd" name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
-          <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
-          <div class="skill-picker" data-skill-picker hidden>
-            <input type="search" data-skill-search placeholder="Search skills">
-            <div class="skill-options" data-skill-options><span>Choose a working directory to load skills.</span></div>
-            <div class="field-hint">Only checked skills are exposed to this agent. Global plugin and MCP settings are unchanged.</div>
-          </div>
-          <label>Routing description<textarea name="routingDescription" rows="2" placeholder="Short capability summary for the router"></textarea></label>
-          <label>Instructions<textarea name="instructions" rows="5" placeholder="You specialize in..."></textarea></label>
-          <button id="create-agent-button" type="submit">Create Agent</button>
+        <form id="agent-form" class="agent-setup-form">
+          <section class="setup-card">
+            <header><span>01</span><div><h3>Identity</h3><p>Name the agent and choose where it runs.</p></div></header>
+            <div class="setup-grid two-column">
+              <label>Name<input id="agent-name" name="name" autocomplete="off" placeholder="Maintenance debugger"></label>
+              <label>ID (optional)<input id="agent-id" name="id" autocomplete="off" placeholder="Generated from name"></label>
+              <div id="agent-id-hint" class="field-hint field-span">Used by API routes and event targets.</div>
+              <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+              <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
+              <div class="field-group field-span"><label for="create-agent-cwd">Working directory</label><div class="path-field"><input id="create-agent-cwd" name="cwd" autocomplete="off" value="${escapeHtml(process.cwd())}"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
+              <label class="field-span">Routing description <span class="label-optional">Optional</span><textarea name="routingDescription" rows="2" placeholder="What work should be routed to this agent?"></textarea></label>
+            </div>
+          </section>
+          <section class="setup-card">
+            <header><span>02</span><div><h3>Runtime</h3><p>Choose the model, permissions, and capabilities.</p></div></header>
+            <div class="setup-grid two-column">
+              <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
+              <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
+              <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
+              <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
+              <div class="field-hint field-span">Permission policy controls sandbox access and escalation review.</div>
+              <label class="field-span">Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
+              <div class="skill-picker field-span" data-skill-picker hidden>
+                <input type="search" data-skill-search placeholder="Search skills">
+                <div class="skill-options" data-skill-options><span>Choose a working directory to load skills.</span></div>
+                <div class="field-hint">Only selected skills are exposed to this agent. Plugin and MCP settings stay unchanged.</div>
+              </div>
+            </div>
+          </section>
+          <section class="setup-card setup-card-instructions">
+            <header><span>03</span><div><h3>Instructions</h3><p>Define the agent's responsibility and operating boundaries.</p></div></header>
+            <label>Developer instructions<textarea name="instructions" rows="10" placeholder="You specialize in..."></textarea></label>
+          </section>
+          <footer class="setup-actions"><button type="button" class="secondary" data-panel="topology">Cancel</button><button id="create-agent-button" type="submit">Create agent</button></footer>
         </form>
       </section>
       <section id="panel-agents" class="panel-view active"></section>
     </aside>
-    <div id="agent-settings-modal" class="settings-modal" hidden>
+    <div id="agent-settings-modal" class="settings-modal agent-settings-page" hidden>
       <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-settings-title">
         <header>
-          <div><span class="settings-kicker">Topology agent</span><h2 id="agent-settings-title">Edit agent</h2><p id="edit-agent-status">select one</p></div>
-          <button id="close-agent-settings" type="button" class="secondary">Close</button>
+          <div><span class="settings-kicker">Agent configuration</span><h2 id="agent-settings-title">Edit agent</h2><p>Update runtime, workspace, skills, and instructions.</p></div>
+          <button id="close-agent-settings" type="button" class="secondary">Done</button>
         </header>
         <div class="settings-dialog-body">
           <form id="edit-agent-form" class="agent-editor-form">
-            <label>Name<input name="name" autocomplete="off"></label>
-            <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
-            <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
-            <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
-            <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
-            <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
-            <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
-            <div class="field-hint">Permission changes apply on the next turn without replacing this thread.</div>
-            <div class="field-group"><label for="edit-agent-cwd">Working directory</label><div class="path-field"><input id="edit-agent-cwd" name="cwd" autocomplete="off"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
-            <label>Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
-            <div class="skill-picker" data-skill-picker hidden>
-              <input type="search" data-skill-search placeholder="Search skills">
-              <div class="skill-options" data-skill-options></div>
-              <div class="field-hint">Changing skill access starts a fresh session on the next turn.</div>
-            </div>
-            <label>Routing description<textarea name="routingDescription" rows="2"></textarea></label>
-            <label>Developer instructions<textarea name="instructions" rows="6"></textarea></label>
-            <div class="field-hint">Saving developer instructions or session settings starts a fresh Codex session on the next turn.</div>
-            <div class="agent-actions">
+            <section class="setup-card"><header><span>01</span><div><h3>Identity</h3><p id="edit-agent-status">Select an agent</p></div></header><div class="setup-grid two-column">
+              <label>Name<input name="name" autocomplete="off"></label>
+              <label>Role<select name="role"><option value="">Worker</option><option value="router">Router</option><option value="jarvis">Jarvis</option></select></label>
+              <label>Runner<select name="runnerId" data-runner-select><option value="local">This machine</option></select></label>
+              <div class="field-group"><label for="edit-agent-cwd">Working directory</label><div class="path-field"><input id="edit-agent-cwd" name="cwd" autocomplete="off"><button type="button" class="secondary" data-browse-cwd>Browse</button></div></div>
+              <label class="field-span">Routing description<textarea name="routingDescription" rows="2"></textarea></label>
+            </div></section>
+            <section class="setup-card"><header><span>02</span><div><h3>Runtime</h3><p>Changes apply to the next turn.</p></div></header><div class="setup-grid two-column">
+              <label>Model<select name="model" data-model-select><option value="">Default Codex model</option></select></label>
+              <label>Thinking<select name="reasoningEffort" data-reasoning-select><option value="">Default</option></select></label>
+              <label>Speed<select name="serviceTier" data-service-tier-select><option value="">Default</option></select></label>
+              <label>Permissions<select name="permissionMode"><option value="ask">Ask for approval</option><option value="auto-review">Approve for me</option><option value="full-access">Full access</option></select></label>
+              <div class="field-hint field-span">Permission changes apply on the next turn without replacing this thread.</div>
+              <label class="field-span">Skills<select name="skillMode"><option value="all">All available skills</option><option value="selected">Selected skills only</option></select></label>
+              <div class="skill-picker field-span" data-skill-picker hidden><input type="search" data-skill-search placeholder="Search skills"><div class="skill-options" data-skill-options></div><div class="field-hint">Changing skill access starts a fresh session on the next turn.</div></div>
+            </div></section>
+            <section class="setup-card setup-card-instructions"><header><span>03</span><div><h3>Instructions</h3><p>Saving these starts a fresh Codex session on the next turn.</p></div></header><label>Developer instructions<textarea name="instructions" rows="10"></textarea></label></section>
+            <div class="agent-actions setup-actions">
               <button type="submit">Save Changes</button>
               <button id="delete-agent-button" type="button" class="danger">Delete</button>
             </div>
@@ -1527,6 +1537,153 @@ textarea { resize: vertical; }
 .live-activity-batch { color: #8b949e; }
 .live-activity-batch .live-activity-text { font-weight: 500; }
 @media (max-width: 980px) { body { overflow: auto; } .shell, .shell.jarvis-mode, .shell.agents-mode, .shell.ops-mode, .shell.topology-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; } .shell.jarvis-mode .workspace, .shell.agents-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; } .command-rail { min-height: auto; } .rail-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .rail-agents { grid-column: 1 / -1; grid-template-columns: repeat(2,minmax(0,1fr)); padding-left: 5px; } .side-panel { min-height: 420px; border-right: 0; border-bottom: 1px solid #30363d; } .workspace { min-height: 78vh; } .ops-workspace { min-height: 70vh; } .topology-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 68vh auto auto; } .topology-toolbar { flex-wrap: wrap; } .topology-toolbar-group { overflow-x: auto; } .topology-health { margin-left: 0; } .topology-inspector { grid-column: 1; grid-row: 3; max-height: none; border-left: 0; border-top: 1px solid #202638; } .topology-timeline { grid-row: 4; } .message-row { max-width: 92%; } .queue-item { grid-template-columns: 76px minmax(0, 1fr); } .queue-item .queue-message, .queue-actions { grid-column: 1 / -1; } }
+
+/* SquadAI product shell */
+:root {
+  color-scheme: dark;
+  --bg: #090a0c;
+  --sidebar: #0d0e11;
+  --surface: #111216;
+  --surface-raised: #17181d;
+  --surface-hover: #1b1d23;
+  --line: #24262d;
+  --line-strong: #31343d;
+  --text: #f2f3f5;
+  --text-secondary: #a1a6b0;
+  --text-muted: #696f7c;
+  --accent: #6d7df7;
+  --accent-soft: rgba(109,125,247,.12);
+  --success: #45cf8c;
+  --warning: #e4a853;
+  --danger: #f46b72;
+}
+body { font-size: 13px; color: var(--text); background: var(--bg); }
+button { min-height: 36px; padding: 8px 13px; border-color: var(--line); border-radius: 9px; background: var(--accent); box-shadow: none; font-size: 12px; }
+button:hover { background: #7b89fa; }
+button.secondary { color: var(--text-secondary); background: transparent; border-color: var(--line); }
+button.secondary:hover { color: var(--text); border-color: var(--line-strong); background: var(--surface-hover); }
+button.danger { color: var(--danger); background: transparent; border-color: var(--line); }
+button.danger:hover { color: #ff858b; border-color: rgba(244,107,114,.45); background: rgba(244,107,114,.08); }
+.shell, .shell.jarvis-mode, .shell.agents-mode, .shell.ops-mode, .shell.topology-mode, .shell.create-mode { grid-template-columns: 236px minmax(0,1fr); background: var(--bg); }
+.command-rail { background: var(--sidebar); border-color: var(--line); }
+.brand { min-height: 70px; display: flex; align-items: center; gap: 11px; padding: 15px 17px; border-color: var(--line); }
+.brand h1 { color: var(--text); font-size: 14px; font-weight: 680; letter-spacing: -.01em; }
+.brand div > span { color: var(--text-muted); font-size: 10px; }
+.rail-nav { gap: 2px; padding: 14px 10px; }
+.rail-section-label { margin: 8px 10px 5px; color: #565c68; font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.rail-section-label:first-child { margin-top: 0; }
+.rail-section-activity { margin-top: 13px; }
+.rail-item { min-height: 34px; padding: 7px 10px; border-radius: 7px; color: #858b96; font-size: 12px; font-weight: 520; }
+.rail-item:hover { color: var(--text); background: #15171b; }
+.rail-item.active { color: var(--text); background: #1a1c22; font-weight: 600; }
+.rail-item span { min-width: 19px; padding: 0 6px; color: #727986; background: #17191e; font-size: 10px; }
+.rail-create { margin-top: 3px; color: #a9aeb8; border: 1px dashed #282b33; }
+.rail-create span { color: #9ba2af; background: transparent; font-size: 15px; }
+.rail-agents { gap: 1px; margin: 1px 0 4px; padding: 0 0 7px 8px; border-color: rgba(36,38,45,.7); }
+.rail-agent { min-height: 30px; padding: 6px 8px; border-radius: 6px; color: #747b87; font-size: 11px; }
+.rail-agent:hover, .rail-agent.active { color: #d8dbe1; background: #15171b; }
+.rail-agent.active { box-shadow: inset 2px 0 var(--accent); }
+.rail-footer { min-height: 48px; padding: 12px 17px; border-color: var(--line); color: var(--text-muted); font-size: 11px; }
+.dot { width: 6px; height: 6px; }
+
+.shell.create-mode .topology-workspace, .shell.create-mode .workspace, .shell.create-mode .ops-workspace { display: none; }
+.shell.create-mode .side-panel { display: grid; grid-column: 2; grid-template-rows: auto minmax(0,1fr); min-width: 0; background: var(--bg); border: 0; }
+.shell.create-mode #panel-agents { display: none; }
+.shell.create-mode .panel-header { min-height: 92px; align-items: center; padding: 20px clamp(28px,5vw,72px); background: var(--bg); border-color: var(--line); }
+.shell.create-mode .panel-header h2 { color: var(--text); font-size: 22px; font-weight: 650; letter-spacing: -.03em; }
+.shell.create-mode .panel-header p { margin-top: 5px; color: var(--text-secondary); font-size: 12px; }
+.shell.create-mode .panel-header #refresh { display: none; }
+.shell.create-mode #panel-create { min-height: 0; padding: 30px clamp(28px,5vw,72px) 56px; overflow-y: auto; }
+.agent-setup-form { width: min(1040px,100%); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; margin: 0 auto; }
+.setup-card { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.setup-card > header { display: flex; gap: 12px; margin-bottom: 22px; }
+.setup-card > header > span { width: 25px; height: 25px; display: grid; place-items: center; flex: 0 0 auto; color: #9ca6ff; background: var(--accent-soft); border-radius: 7px; font-size: 9px; font-weight: 750; }
+.setup-card h3 { margin: 1px 0 3px; color: var(--text); font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+.setup-card header p { margin: 0; color: var(--text-muted); font-size: 11px; }
+.setup-card-instructions { grid-column: 1 / -1; }
+.setup-grid { display: grid; gap: 13px 14px; }
+.setup-grid.two-column { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.field-span { grid-column: 1 / -1; }
+.label-optional { margin-left: 4px; color: var(--text-muted); font-size: 10px; font-weight: 450; }
+.setup-card label { margin: 0; color: #949aa5; font-size: 11px; font-weight: 560; }
+.setup-card input, .setup-card textarea, .setup-card select { border-color: var(--line); border-radius: 9px; background: #0c0d10; color: var(--text); }
+.setup-card input, .setup-card select { min-height: 40px; }
+.setup-card textarea { line-height: 1.55; }
+.setup-card input:focus, .setup-card textarea:focus, .setup-card select:focus { border-color: #5968ce; box-shadow: 0 0 0 3px rgba(109,125,247,.1); }
+.setup-card .field-hint { margin: -7px 0 0; color: var(--text-muted); }
+.setup-card .field-group { margin: 0; }
+.setup-card .skill-picker { margin: 0; border-color: var(--line); background: #0c0d10; }
+.setup-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 9px; padding-top: 2px; }
+.setup-actions button { min-width: 112px; }
+
+.agent-settings-page { padding: 0; background: var(--bg); backdrop-filter: none; }
+.agent-settings-page .settings-dialog { width: 100%; height: 100%; max-height: none; grid-template-rows: 82px minmax(0,1fr); border: 0; border-radius: 0; background: var(--bg); box-shadow: none; }
+.agent-settings-page .settings-dialog > header { align-items: center; padding: 16px clamp(28px,5vw,72px); border-color: var(--line); }
+.agent-settings-page .settings-dialog > header h2 { margin: 2px 0 1px; color: var(--text); font-size: 21px; font-weight: 650; letter-spacing: -.03em; }
+.agent-settings-page .settings-dialog > header p { color: var(--text-muted); }
+.agent-settings-page .settings-dialog-body { padding: 30px clamp(28px,5vw,72px) 56px; }
+.agent-editor-form { width: min(1040px,100%); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; margin: 0 auto; }
+.agent-editor-form .setup-card-instructions, .agent-editor-form .setup-actions { grid-column: 1 / -1; }
+.agent-editor-form .agent-actions { justify-content: flex-end; }
+.agent-editor-form .agent-actions button { flex: 0 0 auto; min-width: 120px; }
+
+.topology-workspace { grid-template-columns: minmax(0,1fr) 316px; grid-template-rows: 62px minmax(0,1fr) 46px; background: var(--bg); }
+.topology-toolbar { gap: 10px; padding: 10px 15px; background: rgba(13,14,17,.96); border-color: var(--line); }
+.topology-toolbar-group { gap: 5px; }
+.topology-tool { min-height: 32px; padding: 6px 10px; color: #858c99; background: transparent; border-color: transparent; border-radius: 7px; font-size: 11px; }
+.topology-tool:hover, .topology-tool.active { color: var(--text); background: var(--surface-hover); border-color: var(--line); }
+.topology-tool.primary { color: #fff; background: var(--accent); border-color: transparent; }
+.topology-tool:disabled { color: #444953; border-color: transparent; opacity: 1; }
+.topology-search-label { max-width: 310px; }
+.topology-search-label input { height: 34px; border-color: var(--line); border-radius: 8px; background: #0a0b0e; }
+.topology-health { gap: 10px; color: var(--text-muted); font-size: 10px; }
+.topology-stage { background: radial-gradient(circle at 50% 44%,#0f121a 0,#090a0e 55%,#07080a 100%); }
+.topology-inspector { color: var(--text); background: #0d0e11; border-color: var(--line); }
+.topology-inspector header { padding: 21px 20px 17px; border-color: var(--line); }
+.topology-inspector header h2 { font-size: 18px; font-weight: 650; }
+.topology-inspector section { padding: 17px 20px; border-color: var(--line); }
+.topology-inspector footer { padding: 17px 20px 22px; }
+.topology-label { padding: 7px 10px; color: #e9ebf0; background: rgba(12,13,17,.9); border-color: rgba(74,79,93,.58); border-radius: 8px; box-shadow: 0 9px 24px rgba(0,0,0,.28); }
+.topology-label:hover, .topology-label.selected { background: rgba(20,21,27,.96); border-color: rgba(109,125,247,.9); }
+.topology-legend { color: #656c79; background: rgba(10,11,14,.72); border-color: var(--line); }
+.topology-view-controls { background: rgba(13,14,17,.9); border-color: var(--line); }
+.topology-timeline { padding: 10px 17px; color: #5f6673; background: #0d0e11; border-color: var(--line); }
+
+.workspace { background: var(--bg); }
+.topbar { min-height: 70px; padding: 13px 22px; background: rgba(13,14,17,.96); border-color: var(--line); }
+.topbar h2 { color: var(--text); font-size: 16px; font-weight: 630; }
+.topbar p { max-width: min(760px,62vw); color: var(--text-muted); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.topbar-actions { gap: 6px; }
+.message-list { padding: 30px clamp(24px,7vw,96px); gap: 16px; }
+.message-row { max-width: min(760px,76%); }
+.message-meta { color: var(--text-muted); font-size: 10px; }
+.message-bubble { padding: 11px 14px; border-radius: 12px; line-height: 1.6; }
+.message-bubble.user { color: #e9ebf0; background: #1a1c22; border: 1px solid #2a2d35; border-bottom-right-radius: 5px; }
+.message-bubble.agent { color: #e2e4e9; background: #131519; border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.composer { width: min(880px,calc(100% - 40px)); margin: 0 auto 20px; border-color: var(--line-strong); border-radius: 15px; background: var(--surface); box-shadow: 0 18px 50px rgba(0,0,0,.22); }
+.composer:focus-within { border-color: #4e5bb3; box-shadow: 0 18px 50px rgba(0,0,0,.25),0 0 0 3px rgba(109,125,247,.08); }
+.composer textarea { background: transparent; }
+.composer-send { color: #fff; background: var(--accent); }
+.composer-send:hover { color: #fff; background: #7b89fa; border-color: transparent; }
+.ops-workspace { background: var(--bg); }
+.ops-header { min-height: 78px; padding: 17px 28px; background: #0d0e11; border-color: var(--line); }
+.ops-header h2 { color: var(--text); font-size: 18px; font-weight: 650; }
+.ops-body { padding: 22px 32px 40px; }
+
+@media (max-width: 980px) {
+  body { overflow: auto; }
+  .shell, .shell.jarvis-mode, .shell.agents-mode, .shell.ops-mode, .shell.topology-mode, .shell.create-mode { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+  .command-rail { min-height: auto; }
+  .brand { min-height: 58px; }
+  .rail-section-label { display: none; }
+  .shell.create-mode .side-panel, .shell.jarvis-mode .workspace, .shell.agents-mode .workspace, .shell.ops-mode .ops-workspace, .shell.topology-mode .topology-workspace { grid-column: 1; }
+  .agent-setup-form, .agent-editor-form { grid-template-columns: 1fr; }
+  .agent-setup-form .setup-card, .agent-editor-form .setup-card, .agent-editor-form .setup-actions { grid-column: 1; }
+  .setup-grid.two-column { grid-template-columns: 1fr; }
+  .field-span { grid-column: 1; }
+  .topology-workspace { grid-template-columns: 1fr; }
+  .message-list { padding: 24px 16px; }
+}
 `;
 }
 
@@ -2914,10 +3071,12 @@ function renderPanel() {
   const [title, subtitle] = titles[activePanel] || titles.agents;
   const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
   const topologyMode = activePanel === "topology";
+  const createMode = activePanel === "create";
   shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
   shell.classList.toggle("agents-mode", activePanel === "agents");
   shell.classList.toggle("ops-mode", opsMode);
   shell.classList.toggle("topology-mode", topologyMode);
+  shell.classList.toggle("create-mode", createMode);
   if (opsMode) {
     opsTitle.textContent = title;
     opsSubtitle.textContent = subtitle;
