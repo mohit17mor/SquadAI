@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   CODEX_DESKTOP_BINARY,
   CodexAppServerError,
   CodexControlClient,
+  StdioCodexAppServerTransport,
   createCodexLaunchSpec,
   resolveCodexBinary,
   type AppServerTransport,
@@ -12,6 +16,36 @@ import {
   type DynamicToolHandler,
   type JsonRpcMessage,
 } from "../src/index.js";
+
+test("stdio transport shutdown terminates App Server tool descendants", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-control-process-tree-"));
+  const pidFile = join(directory, "child.pid");
+  const script = [
+    'const { spawn } = require("node:child_process");',
+    'const { writeFileSync } = require("node:fs");',
+    `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+    `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  const transport = new StdioCodexAppServerTransport({
+    command: process.execPath,
+    args: ["-e", script],
+  });
+
+  try {
+    await transport.start();
+    const descendantPid = Number(await waitForFile(pidFile));
+    assert.equal(processExists(descendantPid), true);
+    await transport.close();
+    await waitForCondition(() => !processExists(descendantPid));
+    assert.equal(processExists(descendantPid), false);
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("resolves the Codex app-server binary from override, Desktop, then PATH", () => {
   assert.equal(resolveCodexBinary({
@@ -35,6 +69,36 @@ test("resolves the Codex app-server binary from override, Desktop, then PATH", (
     isExecutable: (path) => path === "C:\\Users\\dev\\bin\\codex.cmd",
   }), "C:\\Users\\dev\\bin\\codex.cmd");
 });
+
+async function waitForFile(path: string): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw lastError;
+}
+
+async function waitForCondition(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("condition was not met before timeout");
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
 
 test("launches Windows command shims through cmd.exe without using a shell", () => {
   assert.deepEqual(createCodexLaunchSpec(

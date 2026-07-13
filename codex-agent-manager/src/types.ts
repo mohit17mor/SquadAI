@@ -469,6 +469,7 @@ export type RunnerSnapshot = {
 
 export type RunnerRegistration = {
   id: string;
+  instanceId?: string;
   name: string;
   hostname: string;
   sshHost?: string;

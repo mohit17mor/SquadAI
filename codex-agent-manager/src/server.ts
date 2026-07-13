@@ -161,6 +161,14 @@ export class CommandCenterServer {
         return;
       }
 
+      const runnerDisconnectMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/disconnect$/);
+      if (request.method === "POST" && runnerDisconnectMatch?.[1]) {
+        const hub = this.requireRunnerHub(request);
+        const runner = hub.disconnect(decodeURIComponent(runnerDisconnectMatch[1]));
+        this.json(response, { runner });
+        return;
+      }
+
       const runnerPollMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/poll$/);
       if (request.method === "POST" && runnerPollMatch?.[1]) {
         const hub = this.requireRunnerHub(request);
@@ -714,6 +722,8 @@ function parseRunnerRegistration(body: unknown): RunnerRegistration {
     arch: requiredString(value.arch, "arch"),
     version: requiredString(value.version, "version"),
   };
+  const instanceId = optionalString(value.instanceId);
+  if (instanceId) registration.instanceId = instanceId;
   const sshHost = optionalString(value.sshHost);
   if (sshHost) registration.sshHost = sshHost;
   return registration;
@@ -931,9 +941,7 @@ async function openWorkspaceInVisualStudioCode(workspaceTarget: string): Promise
     : await realpath(workspaceTarget);
   try {
     if (process.platform === "darwin") {
-      await execFileAsync("open", target.startsWith("vscode://")
-        ? [target]
-        : ["-a", "Visual Studio Code", target], {
+      await execFileAsync("open", ["-a", "Visual Studio Code", target], {
         encoding: "utf8",
         timeout: 30_000,
       });

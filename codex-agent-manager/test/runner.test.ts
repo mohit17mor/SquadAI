@@ -42,6 +42,69 @@ test("runner hub dispatches commands and tracks runner health", async () => {
   assert.equal(hub.getRunner("vm-1").activeCommands, 0);
 });
 
+test("runner disconnect rejects active commands immediately", async () => {
+  const hub = new RunnerHub("secret");
+  hub.register(registration("vm-1"));
+
+  const result = hub.execute("vm-1", "session.ask", "worker", { input: "work" });
+  await hub.poll("vm-1", 100);
+  const snapshot = hub.disconnect("vm-1");
+
+  assert.equal(snapshot.status, "offline");
+  assert.equal(snapshot.activeCommands, 0);
+  await assert.rejects(result, /disconnected.*session\.ask.*cancelled/i);
+});
+
+test("a new runner process replaces stale commands from the previous process", async () => {
+  const hub = new RunnerHub("secret");
+  hub.register({ ...registration("vm-1"), instanceId: "process-1" });
+  const result = hub.execute("vm-1", "session.ask", "worker", { input: "work" });
+  await hub.poll("vm-1", 100);
+
+  const snapshot = hub.register({ ...registration("vm-1"), instanceId: "process-2" });
+
+  assert.equal(snapshot.status, "online");
+  assert.equal(snapshot.activeCommands, 0);
+  await assert.rejects(result, /reconnected.*session\.ask.*cancelled/i);
+});
+
+test("runner force-closes an agent process tree when an interrupted turn does not settle", async () => {
+  const hub = new RunnerHub("secret");
+  const state = { interrupts: 0, closes: 0 };
+  const daemon = new RunnerDaemon({
+    controlUrl: "http://control.test",
+    token: "secret",
+    id: "vm-stubborn",
+    clientFactory: stubbornRunnerClientFactory(state),
+    fetch: hubFetch(hub),
+  });
+  const daemonRun = daemon.start();
+
+  try {
+    await waitFor(() => hub.listRunners().some((runner) => runner.id === "vm-stubborn"));
+    await hub.execute("vm-stubborn", "session.start", "worker", { options: {} });
+    const ask = hub.execute("vm-stubborn", "session.ask", "worker", {
+      input: "run a long test",
+      options: {},
+    });
+    ask.catch(() => {});
+    await waitFor(() => hub.getRunner("vm-stubborn").activeCommands === 1);
+
+    const result = await hub.execute("vm-stubborn", "session.interrupt", "worker") as {
+      interrupted: boolean;
+      forced: boolean;
+    };
+
+    assert.deepEqual(result, { interrupted: true, forced: true });
+    assert.equal(state.interrupts, 1);
+    assert.equal(state.closes, 1);
+    await assert.rejects(ask, /client closed/);
+  } finally {
+    await daemon.close();
+    await daemonRun;
+  }
+});
+
 test("remote runner advertises its SSH host and browses its filesystem", async () => {
   const root = await mkdtemp(join(tmpdir(), "command-center-runner-directory-"));
   await mkdir(join(root, "alpha"));
@@ -180,6 +243,33 @@ function fakeRunnerClientFactory(): CodexControlClientFactory {
   };
 }
 
+function stubbornRunnerClientFactory(state: { interrupts: number; closes: number }): CodexControlClientFactory {
+  return () => {
+    let rejectAsk: ((error: Error) => void) | null = null;
+    const session: CodexSessionLike = {
+      threadId: "stubborn-thread",
+      async ask() {
+        return await new Promise((_, reject) => {
+          rejectAsk = reject;
+        });
+      },
+      async interrupt() {
+        state.interrupts += 1;
+      },
+    };
+    return {
+      async startSession() { return session; },
+      async resumeSession() { return session; },
+      async close() {
+        state.closes += 1;
+        const reject = rejectAsk as ((error: Error) => void) | null;
+        rejectAsk = null;
+        reject?.(new Error("client closed"));
+      },
+    };
+  };
+}
+
 class FakeSession extends EventEmitter implements CodexSessionLike {
   readonly threadId = "remote-thread-1";
 
@@ -221,6 +311,8 @@ function hubFetch(hub: RunnerHub): typeof fetch {
       }
       const heartbeat = url.pathname.match(/^\/api\/runners\/([^/]+)\/heartbeat$/);
       if (heartbeat?.[1]) return jsonResponse({ runner: hub.heartbeat(decodeURIComponent(heartbeat[1])) });
+      const disconnect = url.pathname.match(/^\/api\/runners\/([^/]+)\/disconnect$/);
+      if (disconnect?.[1]) return jsonResponse({ runner: hub.disconnect(decodeURIComponent(disconnect[1])) });
       const poll = url.pathname.match(/^\/api\/runners\/([^/]+)\/poll$/);
       if (poll?.[1]) {
         const command = await hub.poll(

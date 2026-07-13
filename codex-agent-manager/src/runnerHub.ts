@@ -25,6 +25,7 @@ const RUNNER_OFFLINE_AFTER_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 1_900_000;
 
 type RunnerRecord = RunnerRegistration & {
+  connected: boolean;
   connectedAt: string;
   lastSeenAt: string;
   queue: RunnerCommand[];
@@ -65,13 +66,20 @@ export class RunnerHub extends EventEmitter {
     validateRunnerRegistration(input);
     const now = this.clock().toISOString();
     const existing = this.runners.get(input.id);
+    const replacedProcess = existing?.instanceId && input.instanceId
+      ? existing.instanceId !== input.instanceId
+      : existing ? this.snapshot(existing).status === "offline" : false;
+    if (existing && replacedProcess) {
+      this.rejectRunnerCommands(existing, "Runner reconnected before its previous commands completed.");
+    }
     const record: RunnerRecord = {
       ...input,
+      connected: true,
       connectedAt: existing?.connectedAt ?? now,
       lastSeenAt: now,
-      queue: existing?.queue ?? [],
-      waiter: existing?.waiter ?? null,
-      activeCommands: existing?.activeCommands ?? new Set(),
+      queue: replacedProcess ? [] : existing?.queue ?? [],
+      waiter: replacedProcess ? null : existing?.waiter ?? null,
+      activeCommands: replacedProcess ? new Set() : existing?.activeCommands ?? new Set(),
     };
     this.runners.set(input.id, record);
     this.emit("changed", this.snapshot(record));
@@ -80,17 +88,30 @@ export class RunnerHub extends EventEmitter {
 
   heartbeat(runnerId: string): RunnerSnapshot {
     const record = this.requireRunner(runnerId);
+    record.connected = true;
     record.lastSeenAt = this.clock().toISOString();
     this.emit("changed", this.snapshot(record));
     return this.snapshot(record);
   }
 
   listRunners(): RunnerSnapshot[] {
+    this.sweepOfflineRunners();
     return Array.from(this.runners.values()).map((record) => this.snapshot(record));
   }
 
   getRunner(runnerId: string): RunnerSnapshot {
-    return this.snapshot(this.requireRunner(runnerId));
+    const record = this.requireRunner(runnerId);
+    this.expireRunnerIfOffline(record);
+    return this.snapshot(record);
+  }
+
+  disconnect(runnerId: string): RunnerSnapshot {
+    const record = this.requireRunner(runnerId);
+    record.connected = false;
+    this.rejectRunnerCommands(record, `Runner ${runnerId} disconnected.`);
+    const snapshot = this.snapshot(record);
+    this.emit("changed", snapshot);
+    return snapshot;
   }
 
   async poll(runnerId: string, timeoutMs = 25_000, signal?: AbortSignal): Promise<RunnerCommand | null> {
@@ -211,7 +232,8 @@ export class RunnerHub extends EventEmitter {
   }
 
   private snapshot(record: RunnerRecord): RunnerSnapshot {
-    const online = this.clock().getTime() - Date.parse(record.lastSeenAt) <= RUNNER_OFFLINE_AFTER_MS;
+    const online = record.connected
+      && this.clock().getTime() - Date.parse(record.lastSeenAt) <= RUNNER_OFFLINE_AFTER_MS;
     return {
       id: record.id,
       name: record.name,
@@ -228,7 +250,37 @@ export class RunnerHub extends EventEmitter {
   }
 
   private touch(runnerId: string): void {
-    this.requireRunner(runnerId).lastSeenAt = this.clock().toISOString();
+    const record = this.requireRunner(runnerId);
+    record.connected = true;
+    record.lastSeenAt = this.clock().toISOString();
+  }
+
+  private sweepOfflineRunners(): void {
+    for (const record of this.runners.values()) this.expireRunnerIfOffline(record);
+  }
+
+  private expireRunnerIfOffline(record: RunnerRecord): void {
+    if (!record.connected) return;
+    if (this.clock().getTime() - Date.parse(record.lastSeenAt) <= RUNNER_OFFLINE_AFTER_MS) return;
+    record.connected = false;
+    this.rejectRunnerCommands(record, `Runner ${record.id} went offline.`);
+    this.emit("changed", this.snapshot(record));
+  }
+
+  private rejectRunnerCommands(record: RunnerRecord, reason: string): void {
+    if (record.waiter) {
+      const waiter = record.waiter;
+      record.waiter = null;
+      waiter(null);
+    }
+    record.queue.length = 0;
+    for (const [commandId, pending] of this.pending) {
+      if (pending.runnerId !== record.id) continue;
+      clearTimeout(pending.timer);
+      this.pending.delete(commandId);
+      pending.reject(new Error(`${reason} Pending command ${pending.command.type} was cancelled.`));
+    }
+    record.activeCommands.clear();
   }
 
   private requireRunner(runnerId: string): RunnerRecord {

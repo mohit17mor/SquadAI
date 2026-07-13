@@ -55,6 +55,9 @@ export class StdioCodexAppServerTransport {
         const child = spawn(launch.command, launch.args, {
             env: this.env ?? process.env,
             stdio: ["pipe", "pipe", "pipe"],
+            // Isolate App Server and its tool subprocesses so shutdown can target
+            // the complete tree without signalling the runner's parent shell.
+            detached: process.platform !== "win32",
             windowsHide: true,
         });
         this.child = child;
@@ -108,16 +111,77 @@ export class StdioCodexAppServerTransport {
         const child = this.child;
         this.child = null;
         child.stdin.end();
-        if (await waitForExit(child, 1_000))
+        if (process.platform === "win32") {
+            // taskkill must see the root process in order to traverse descendants.
+            // The turn was already interrupted by the runner, so tree termination is
+            // the final cleanup guarantee rather than the normal stop mechanism.
+            await terminateProcessTree(child, true);
+            await waitForExit(child, 1_000);
             return;
-        child.kill("SIGTERM");
+        }
         await waitForExit(child, 1_000);
+        await terminateProcessTree(child, false);
+        await waitForProcessGroupExit(child.pid, 1_000);
+        if (!processGroupExists(child.pid))
+            return;
+        await terminateProcessTree(child, true);
+        await waitForProcessGroupExit(child.pid, 1_000);
     }
     emitClose(error) {
         for (const handler of this.closeHandlers) {
             handler(error);
         }
     }
+}
+async function terminateProcessTree(child, force) {
+    const pid = child.pid;
+    if (!pid)
+        return;
+    if (process.platform === "win32") {
+        await runTaskkill(pid, force);
+        return;
+    }
+    try {
+        process.kill(-pid, force ? "SIGKILL" : "SIGTERM");
+    }
+    catch (error) {
+        if (error.code !== "ESRCH") {
+            child.kill(force ? "SIGKILL" : "SIGTERM");
+        }
+    }
+}
+function runTaskkill(pid, force) {
+    return new Promise((resolve) => {
+        const args = ["/pid", String(pid), "/t"];
+        if (force)
+            args.push("/f");
+        const taskkill = spawn("taskkill.exe", args, {
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        taskkill.once("error", () => resolve());
+        taskkill.once("exit", () => resolve());
+    });
+}
+function processGroupExists(pid) {
+    if (!pid || process.platform === "win32")
+        return false;
+    try {
+        process.kill(-pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === "EPERM";
+    }
+}
+async function waitForProcessGroupExit(pid, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (processGroupExists(pid)) {
+        if (Date.now() >= deadline)
+            return false;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return true;
 }
 function resolveWindowsCommand(command, env, isExecutable) {
     if (win32.isAbsolute(command) || command.includes("/") || command.includes("\\")) {

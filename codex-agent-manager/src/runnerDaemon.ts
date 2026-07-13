@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +30,7 @@ export type RunnerDaemonOptions = {
 };
 
 export class RunnerDaemon {
+  private readonly instanceId = randomUUID();
   private readonly fetchImpl: typeof fetch;
   private readonly clientFactory: CodexControlClientFactory;
   private readonly workspaceManager = new GitWorkspaceManager();
@@ -38,6 +40,7 @@ export class RunnerDaemon {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private pollAbort: AbortController | null = null;
   private running = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(private readonly options: RunnerDaemonOptions) {
     this.fetchImpl = options.fetch ?? fetch;
@@ -47,6 +50,7 @@ export class RunnerDaemon {
   get registration(): RunnerRegistration {
     return {
       id: this.options.id,
+      instanceId: this.instanceId,
       name: this.options.name?.trim() || this.options.id,
       hostname: hostname(),
       ...(this.options.sshHost?.trim() ? { sshHost: this.options.sshHost.trim() } : {}),
@@ -67,14 +71,29 @@ export class RunnerDaemon {
   }
 
   async close(): Promise<void> {
+    this.closePromise ??= this.closeOnce();
+    return this.closePromise;
+  }
+
+  private async closeOnce(): Promise<void> {
     this.running = false;
     this.pollAbort?.abort();
     this.pollAbort = null;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+
+    const activeSessions = Array.from(this.activeCommandByAgent.keys())
+      .map((agentId) => this.sessions.get(agentId))
+      .filter((session): session is CodexSessionLike => Boolean(session?.interrupt));
+    await Promise.all(activeSessions.map((session) => withTimeout(
+      session.interrupt!().catch(() => {}),
+      2_000,
+    )));
     await Promise.all(Array.from(this.clients.values()).map((client) => client.close().catch(() => {})));
     this.clients.clear();
     this.sessions.clear();
+    this.activeCommandByAgent.clear();
+    await this.post(`/api/runners/${encodeURIComponent(this.options.id)}/disconnect`, {}).catch(() => {});
   }
 
   private async pollLoop(): Promise<void> {
@@ -172,8 +191,24 @@ export class RunnerDaemon {
       case "session.interrupt": {
         const session = this.requireSession(command.agentId);
         if (!session.interrupt) throw new Error(`Agent ${command.agentId} does not support interruption.`);
-        await session.interrupt();
-        return { interrupted: true };
+        const activeCommandId = this.activeCommandByAgent.get(command.agentId);
+        const interruptSettled = await settleWithin(session.interrupt(), 2_000);
+        if (activeCommandId) {
+          await waitUntil(
+            () => this.activeCommandByAgent.get(command.agentId) !== activeCommandId,
+            1_500,
+          );
+        }
+        const forced = !interruptSettled || Boolean(
+          activeCommandId && this.activeCommandByAgent.get(command.agentId) === activeCommandId,
+        );
+        if (forced) {
+          const client = this.clients.get(command.agentId);
+          if (client) await client.close().catch(() => {});
+          this.clients.delete(command.agentId);
+          this.sessions.delete(command.agentId);
+        }
+        return { interrupted: true, forced };
       }
       case "workspace.prepareBase": {
         const definition = asDefinition(payload.definition);
@@ -258,6 +293,32 @@ function ensureTrailingSlash(value: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise: Promise<unknown>, milliseconds: number): Promise<void> {
+  return settleWithin(promise, milliseconds).then(() => undefined);
+}
+
+function settleWithin(promise: Promise<unknown>, milliseconds: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), milliseconds);
+    promise.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    }, () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await delay(25);
+  }
+  return true;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
