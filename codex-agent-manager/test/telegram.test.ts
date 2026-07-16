@@ -7,7 +7,9 @@ import test from "node:test";
 import {
   SqliteTelegramAgentBindingStore,
   SqliteTelegramMessageStore,
+  SqliteTelegramRequestStore,
   TelegramAgentBindingService,
+  TelegramMentionIntake,
   TelegramListener,
 } from "../src/index.js";
 
@@ -50,6 +52,7 @@ test("telegram listener stores only group text messages and advances its durable
   const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-listener-"));
   const store = new SqliteTelegramMessageStore(join(directory, "command-center.db"));
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const receivedMessages: number[] = [];
   const responses = [
     {
       ok: true,
@@ -84,6 +87,16 @@ test("telegram listener stores only group text messages and advances its durable
             from: { id: 42, first_name: "Mohit", is_bot: false },
           },
         },
+        {
+          update_id: 504,
+          message: {
+            message_id: 71,
+            date: 1_784_200_000,
+            text: "hello team",
+            chat: { id: -100777, type: "supergroup", title: "Product Team" },
+            from: { id: 42, first_name: "Mohit", username: "mohit", is_bot: false },
+          },
+        },
       ],
     },
     { ok: true, result: [] },
@@ -103,6 +116,9 @@ test("telegram listener stores only group text messages and advances its durable
     store,
     fetch: fetchImpl,
     clock: () => new Date("2026-07-16T04:31:00.000Z"),
+    onMessage: (message) => {
+      receivedMessages.push(message.messageId);
+    },
   });
 
   try {
@@ -116,7 +132,8 @@ test("telegram listener stores only group text messages and advances its durable
       timeout: 25,
       allowed_updates: ["message"],
     });
-    assert.equal(requests[1]?.body.offset, 504);
+    assert.equal(requests[1]?.body.offset, 505);
+    assert.deepEqual(receivedMessages, [71, 71]);
 
     assert.deepEqual(store.listRecentMessages("-100777", 20), [{
       updateId: 501,
@@ -223,5 +240,91 @@ test("telegram agent binding rejects unknown agents and prevents one bot from re
     assert.deepEqual(service.listBindings(), []);
   } finally {
     await store.close();
+  }
+});
+
+test("telegram mention intake creates requests only for agents tagged in the latest human message", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-mentions-"));
+  const databasePath = join(directory, "command-center.db");
+  const bindingStore = new SqliteTelegramAgentBindingStore(databasePath);
+  const requestStore = new SqliteTelegramRequestStore(databasePath);
+  const bindings = new TelegramAgentBindingService({
+    store: bindingStore,
+    agentExists: () => true,
+    fetch: async (input) => {
+      const token = String(input).match(/bot([^/]+)\/getMe/)?.[1] ?? "";
+      const coder = token === "coder-token";
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          id: coder ? 101 : 202,
+          is_bot: true,
+          first_name: coder ? "Coder" : "Reviewer",
+          username: coder ? "squadai_coder_bot" : "squadai_reviewer_bot",
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  await bindings.bindAgent("coder", "coder-token");
+  await bindings.bindAgent("reviewer", "reviewer-token");
+  const intake = new TelegramMentionIntake({ bindings, store: requestStore });
+  const baseMessage = {
+    updateId: 700,
+    chatId: "-100999",
+    messageId: 80,
+    chatType: "supergroup" as const,
+    chatTitle: "Product Team",
+    senderId: "42",
+    senderName: "Mohit",
+    senderUsername: "mohit",
+    authoredByBot: false,
+    sentAt: "2026-07-16T06:00:00.000Z",
+    receivedAt: "2026-07-16T06:00:01.000Z",
+  };
+
+  try {
+    assert.deepEqual(
+      intake.processMessage({
+        ...baseMessage,
+        text: "Earlier we asked @squadai_coder_bot. Now @squadai_reviewer_bot please review it.",
+      }).map((request) => request.agentId),
+      ["coder", "reviewer"],
+    );
+    assert.deepEqual(
+      intake.processMessage({
+        ...baseMessage,
+        messageId: 81,
+        updateId: 701,
+        text: "Only @squadai_reviewer_bot should receive this latest request.",
+      }).map((request) => request.agentId),
+      ["reviewer"],
+    );
+    assert.deepEqual(
+      intake.processMessage({
+        ...baseMessage,
+        messageId: 81,
+        updateId: 701,
+        text: "Only @squadai_reviewer_bot should receive this latest request.",
+      }),
+      [],
+    );
+    assert.deepEqual(
+      intake.processMessage({
+        ...baseMessage,
+        messageId: 82,
+        updateId: 702,
+        authoredByBot: true,
+        text: "@squadai_coder_bot mentioned by another bot",
+      }),
+      [],
+    );
+    assert.equal(requestStore.listRequests().length, 3);
+    assert.deepEqual(
+      requestStore.listRequests().map((request) => [request.messageId, request.agentId]),
+      [[80, "coder"], [80, "reviewer"], [81, "reviewer"]],
+    );
+  } finally {
+    await requestStore.close();
+    await bindingStore.close();
   }
 });

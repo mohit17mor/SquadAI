@@ -13,7 +13,9 @@ import {
   type CodexControlClientFactory,
   RunnerHub,
   SqliteTelegramAgentBindingStore,
+  SqliteTelegramRequestStore,
   TelegramAgentBindingService,
+  TelegramMentionIntake,
 } from "../src/index.js";
 
 class ImmediateCodexClient {
@@ -146,7 +148,16 @@ test("command center API manages Telegram bot bindings without exposing tokens",
       headers: { "content-type": "application/json" },
     }),
   });
-  const server = createCommandCenterServer({ manager, telegramBindings });
+  const requestStore = new SqliteTelegramRequestStore(join(directory, "command-center.db"));
+  const telegramMentionIntake = new TelegramMentionIntake({
+    bindings: telegramBindings,
+    store: requestStore,
+  });
+  const server = createCommandCenterServer({
+    manager,
+    telegramBindings,
+    telegramMentionIntake,
+  });
   await server.listen(0);
 
   try {
@@ -161,6 +172,23 @@ test("command center API manages Telegram bot bindings without exposing tokens",
     assert.equal(listed.bindings.length, 1);
     assert.equal(JSON.stringify(listed).includes("987654:secret"), false);
 
+    telegramMentionIntake.processMessage({
+      updateId: 501,
+      chatId: "-100777",
+      messageId: 71,
+      chatType: "supergroup",
+      chatTitle: "Product Team",
+      senderId: "42",
+      senderName: "Mohit",
+      senderUsername: "mohit",
+      authoredByBot: false,
+      text: "@squadai_coder_bot fix the login bug",
+      sentAt: "2026-07-16T06:00:00.000Z",
+      receivedAt: "2026-07-16T06:00:01.000Z",
+    });
+    const detected = await jsonFetch(`${baseUrl}/api/telegram/requests`);
+    assert.deepEqual(detected.requests.map((request: { agentId: string }) => request.agentId), ["coder"]);
+
     const removed = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings/coder`, {
       method: "DELETE",
     });
@@ -168,6 +196,7 @@ test("command center API manages Telegram bot bindings without exposing tokens",
   } finally {
     await server.close();
     await manager.close();
+    await requestStore.close();
     await store.close();
   }
 });

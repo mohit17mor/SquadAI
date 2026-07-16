@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import type { CodexAgentManager } from "./manager.js";
 import type { RunnerHub } from "./runnerHub.js";
 import type { TelegramAgentBindingService } from "./telegramBindings.js";
+import type { TelegramMentionIntake } from "./telegramRequests.js";
 import type {
   AgentDefinition,
   AgentDefinitionUpdate,
@@ -41,6 +42,7 @@ export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   runnerHub?: RunnerHub;
   telegramBindings?: TelegramAgentBindingService;
+  telegramMentionIntake?: TelegramMentionIntake;
   title?: string;
   directoryPicker?: (initialPath: string) => Promise<string | null>;
   workspaceOpener?: (workspacePath: string) => Promise<void>;
@@ -151,6 +153,13 @@ export class CommandCenterServer {
       if (request.method === "GET" && url.pathname === "/api/telegram/agent-bindings") {
         this.json(response, {
           bindings: this.requireTelegramBindings().listBindings(),
+        });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/telegram/requests") {
+        this.json(response, {
+          requests: this.requireTelegramMentionIntake().listRequests(),
         });
         return;
       }
@@ -521,6 +530,12 @@ export class CommandCenterServer {
     const bindings = this.options.telegramBindings;
     if (!bindings) throw new Error("Telegram agent bindings are not configured.");
     return bindings;
+  }
+
+  private requireTelegramMentionIntake(): TelegramMentionIntake {
+    const intake = this.options.telegramMentionIntake;
+    if (!intake) throw new Error("Telegram mention intake is not configured.");
+    return intake;
   }
 
   private json(response: ServerResponse, body: unknown, status = 200): void {

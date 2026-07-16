@@ -142,6 +142,7 @@ export type TelegramListenerOptions = {
   apiBaseUrl?: string;
   pollTimeoutSeconds?: number;
   clock?: () => Date;
+  onMessage?: (message: TelegramGroupMessage) => void | Promise<void>;
 };
 
 export class TelegramListener {
@@ -203,7 +204,10 @@ export class TelegramListener {
       let nextOffset = this.options.store.getUpdateOffset();
       for (const update of result) {
         const message = groupTextMessage(update, this.clock());
-        if (message && await this.options.store.appendMessage(message)) stored += 1;
+        if (message) {
+          if (await this.options.store.appendMessage(message)) stored += 1;
+          await this.options.onMessage?.(message);
+        }
         nextOffset = Math.max(nextOffset, update.update_id + 1);
       }
       if (nextOffset !== this.options.store.getUpdateOffset()) {

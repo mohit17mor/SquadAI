@@ -10,6 +10,7 @@ import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
 import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 import { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";
+import { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
@@ -90,9 +91,25 @@ const telegramBindings = new TelegramAgentBindingService({
     }
   },
 });
-const server = createCommandCenterServer({ manager, runnerHub, telegramBindings });
+const telegramRequestStore = new SqliteTelegramRequestStore(databasePath);
+const telegramMentionIntake = new TelegramMentionIntake({
+  bindings: telegramBindings,
+  store: telegramRequestStore,
+});
+const server = createCommandCenterServer({
+  manager,
+  runnerHub,
+  telegramBindings,
+  telegramMentionIntake,
+});
 const telegramListener = telegramToken && telegramStore
-  ? new TelegramListener({ token: telegramToken, store: telegramStore })
+  ? new TelegramListener({
+      token: telegramToken,
+      store: telegramStore,
+      onMessage: (message) => {
+        telegramMentionIntake.processMessage(message);
+      },
+    })
   : null;
 let telegramRun: Promise<void> | undefined;
 
@@ -119,6 +136,7 @@ async function shutdown(): Promise<void> {
   await telegramRun?.catch(() => {});
   await telegramStore?.close().catch(() => {});
   await telegramBindingStore.close().catch(() => {});
+  await telegramRequestStore.close().catch(() => {});
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);
