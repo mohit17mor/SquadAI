@@ -14,6 +14,7 @@ export type {
 export { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
 export type {
   TelegramAgentRequest,
+  TelegramAgentResponse,
   TelegramAgentRequestStatus,
   TelegramMentionIntakeOptions,
 } from "./telegramRequests.js";

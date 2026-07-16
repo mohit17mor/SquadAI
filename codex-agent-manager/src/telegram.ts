@@ -12,6 +12,7 @@ export type TelegramGroupMessage = {
   senderName: string;
   senderUsername: string | null;
   authoredByBot: boolean;
+  replyToMessageId?: number | null;
   text: string;
   sentAt: string;
   receivedAt: string;
@@ -40,10 +41,11 @@ export class SqliteTelegramMessageStore {
         sender_name,
         sender_username,
         authored_by_bot,
+        reply_to_message_id,
         text,
         sent_at,
         received_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       message.chatId,
       message.messageId,
@@ -54,6 +56,7 @@ export class SqliteTelegramMessageStore {
       message.senderName,
       message.senderUsername,
       message.authoredByBot ? 1 : 0,
+      message.replyToMessageId ?? null,
       message.text,
       message.sentAt,
       message.receivedAt,
@@ -74,6 +77,7 @@ export class SqliteTelegramMessageStore {
         sender_name,
         sender_username,
         authored_by_bot,
+        reply_to_message_id,
         text,
         sent_at,
         received_at
@@ -97,6 +101,7 @@ export class SqliteTelegramMessageStore {
         sender_name,
         sender_username,
         authored_by_bot,
+        reply_to_message_id,
         text,
         sent_at,
         received_at
@@ -141,6 +146,7 @@ export class SqliteTelegramMessageStore {
         sender_name TEXT NOT NULL,
         sender_username TEXT,
         authored_by_bot INTEGER NOT NULL,
+        reply_to_message_id INTEGER,
         text TEXT NOT NULL,
         sent_at TEXT NOT NULL,
         received_at TEXT NOT NULL,
@@ -153,6 +159,10 @@ export class SqliteTelegramMessageStore {
         value TEXT NOT NULL
       );
     `);
+    const columns = this.database.prepare("PRAGMA table_info(telegram_messages)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "reply_to_message_id")) {
+      this.database.exec("ALTER TABLE telegram_messages ADD COLUMN reply_to_message_id INTEGER");
+    }
   }
 }
 
@@ -257,6 +267,7 @@ type TelegramMessageRow = {
   sender_name: string;
   sender_username: string | null;
   authored_by_bot: number;
+  reply_to_message_id: number | null;
   text: string;
   sent_at: string;
   received_at: string;
@@ -280,6 +291,9 @@ type TelegramUpdate = {
       last_name?: string;
       username?: string;
     };
+    reply_to_message?: {
+      message_id?: number;
+    };
   };
 };
 
@@ -294,6 +308,7 @@ function messageFromRow(row: TelegramMessageRow): TelegramGroupMessage {
     senderName: row.sender_name,
     senderUsername: row.sender_username,
     authoredByBot: Boolean(row.authored_by_bot),
+    replyToMessageId: row.reply_to_message_id === null ? null : Number(row.reply_to_message_id),
     text: row.text,
     sentAt: row.sent_at,
     receivedAt: row.received_at,
@@ -338,6 +353,9 @@ function groupTextMessage(update: TelegramUpdate, receivedAt: Date): TelegramGro
     senderName,
     senderUsername: typeof sender?.username === "string" ? sender.username : null,
     authoredByBot: sender?.is_bot === true,
+    replyToMessageId: Number.isSafeInteger(message.reply_to_message?.message_id)
+      ? message.reply_to_message!.message_id!
+      : null,
     text: message.text,
     sentAt: new Date(message.date! * 1_000).toISOString(),
     receivedAt: receivedAt.toISOString(),

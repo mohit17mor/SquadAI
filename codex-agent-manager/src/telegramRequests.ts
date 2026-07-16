@@ -32,6 +32,14 @@ export type TelegramAgentRequest = {
 
 type TelegramRequestKey = Pick<TelegramAgentRequest, "chatId" | "messageId" | "agentId">;
 
+export type TelegramAgentResponse = {
+  chatId: string;
+  messageId: number;
+  baseAgentId: string;
+  effectiveAgentId: string;
+  createdAt: string;
+};
+
 export class SqliteTelegramRequestStore {
   private readonly database: DatabaseSync;
 
@@ -127,6 +135,39 @@ export class SqliteTelegramRequestStore {
       LIMIT 1
     `).get(approvalId) as TelegramRequestRow | undefined;
     return row ? requestFromRow(row) : null;
+  }
+
+  saveAgentResponse(response: TelegramAgentResponse): void {
+    this.database.prepare(`
+      INSERT OR REPLACE INTO telegram_agent_responses (
+        chat_id,
+        message_id,
+        base_agent_id,
+        effective_agent_id,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      response.chatId,
+      response.messageId,
+      response.baseAgentId,
+      response.effectiveAgentId,
+      response.createdAt,
+    );
+  }
+
+  findAgentResponse(chatId: string, messageId: number): TelegramAgentResponse | null {
+    const row = this.database.prepare(`
+      SELECT chat_id, message_id, base_agent_id, effective_agent_id, created_at
+      FROM telegram_agent_responses
+      WHERE chat_id = ? AND message_id = ?
+    `).get(chatId, messageId) as TelegramAgentResponseRow | undefined;
+    return row ? {
+      chatId: row.chat_id,
+      messageId: Number(row.message_id),
+      baseAgentId: row.base_agent_id,
+      effectiveAgentId: row.effective_agent_id,
+      createdAt: row.created_at,
+    } : null;
   }
 
   markQueued(
@@ -259,6 +300,14 @@ export class SqliteTelegramRequestStore {
       CREATE UNIQUE INDEX IF NOT EXISTS telegram_agent_requests_work_item
         ON telegram_agent_requests(work_item_id)
         WHERE work_item_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS telegram_agent_responses (
+        chat_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        base_agent_id TEXT NOT NULL,
+        effective_agent_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id)
+      );
     `);
   }
 }
@@ -333,6 +382,14 @@ type TelegramRequestRow = {
   response_sent_at: string | null;
   created_at: string;
   updated_at: string | null;
+};
+
+type TelegramAgentResponseRow = {
+  chat_id: string;
+  message_id: number;
+  base_agent_id: string;
+  effective_agent_id: string;
+  created_at: string;
 };
 
 function requestFromRow(row: TelegramRequestRow): TelegramAgentRequest {

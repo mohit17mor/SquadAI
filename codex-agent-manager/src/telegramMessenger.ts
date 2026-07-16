@@ -84,10 +84,18 @@ function outgoingGroupMessage(value: Record<string, unknown>, receivedAt: Date):
     senderName,
     senderUsername: typeof sender?.username === "string" ? sender.username : null,
     authoredByBot: true,
+    replyToMessageId: outgoingReplyToMessageId(value),
     text: value.text,
     sentAt,
     receivedAt: receivedAt.toISOString(),
   };
+}
+
+function outgoingReplyToMessageId(value: Record<string, unknown>): number | null {
+  const reply = isRecord(value.reply_to_message) ? value.reply_to_message : null;
+  return reply && Number.isSafeInteger(reply.message_id)
+    ? Number(reply.message_id)
+    : null;
 }
 
 function splitTelegramText(text: string): string[] {

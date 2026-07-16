@@ -32,6 +32,7 @@ test("telegram message store persists group messages and deduplicates Telegram r
     senderName: "Mohit",
     senderUsername: "mohit",
     authoredByBot: false,
+    replyToMessageId: null,
     text: "@coder_bot fix the login bug",
     sentAt: "2026-07-16T04:30:00.000Z",
     receivedAt: "2026-07-16T04:30:01.000Z",
@@ -70,6 +71,7 @@ test("telegram listener stores only group text messages and advances its durable
             text: "hello team",
             chat: { id: -100777, type: "supergroup", title: "Product Team" },
             from: { id: 42, first_name: "Mohit", username: "mohit", is_bot: false },
+            reply_to_message: { message_id: 70 },
           },
         },
         {
@@ -100,6 +102,7 @@ test("telegram listener stores only group text messages and advances its durable
             text: "hello team",
             chat: { id: -100777, type: "supergroup", title: "Product Team" },
             from: { id: 42, first_name: "Mohit", username: "mohit", is_bot: false },
+            reply_to_message: { message_id: 70 },
           },
         },
       ],
@@ -150,6 +153,7 @@ test("telegram listener stores only group text messages and advances its durable
       senderName: "Mohit",
       senderUsername: "mohit",
       authoredByBot: false,
+      replyToMessageId: 70,
       text: "hello team",
       sentAt: new Date(1_784_200_000 * 1_000).toISOString(),
       receivedAt: "2026-07-16T04:31:00.000Z",
@@ -373,6 +377,12 @@ test("telegram coordinator queues tagged work with chat context and replies thro
       runnerId: "vm-1",
       cwd: directory,
       instructions: "Implement coding tasks.",
+    }, {
+      id: "reviewer",
+      name: "Reviewer",
+      runnerId: "vm-2",
+      cwd: directory,
+      instructions: "Review coding tasks.",
     }],
     clientFactory,
     workspaceManager: passthroughWorkspaceManager(),
@@ -380,17 +390,21 @@ test("telegram coordinator queues tagged work with chat context and replies thro
   const bindings = new TelegramAgentBindingService({
     store: bindingStore,
     agentExists: () => true,
-    fetch: async () => new Response(JSON.stringify({
-      ok: true,
-      result: {
-        id: 101,
-        is_bot: true,
-        first_name: "Coder",
-        username: "squadai_coder_bot",
-      },
-    }), { status: 200, headers: { "content-type": "application/json" } }),
+    fetch: async (input) => {
+      const reviewer = String(input).includes("reviewer-token");
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          id: reviewer ? 202 : 101,
+          is_bot: true,
+          first_name: reviewer ? "Reviewer" : "Coder",
+          username: reviewer ? "squadai_reviewer_bot" : "squadai_coder_bot",
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
   });
   await bindings.bindAgent("coder", "coder-token", "new");
+  await bindings.bindAgent("reviewer", "reviewer-token", "reuse");
   const mentionIntake = new TelegramMentionIntake({ bindings, store: requestStore });
   const sentMessages: Array<{ token: string; body: Record<string, unknown> }> = [];
   let outgoingMessageId = 900;
@@ -399,7 +413,8 @@ test("telegram coordinator queues tagged work with chat context and replies thro
     const token = url.match(/bot([^/]+)\/sendMessage/)?.[1] ?? "";
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     sentMessages.push({ token, body });
-    const agentBot = token === "coder-token";
+    const agentBot = token === "coder-token" || token === "reviewer-token";
+    const reviewerBot = token === "reviewer-token";
     return new Response(JSON.stringify({
       ok: true,
       result: {
@@ -408,10 +423,12 @@ test("telegram coordinator queues tagged work with chat context and replies thro
         text: body.text,
         chat: { id: -100999, type: "supergroup", title: "Product Team" },
         from: {
-          id: agentBot ? 101 : 303,
+          id: reviewerBot ? 202 : agentBot ? 101 : 303,
           is_bot: true,
-          first_name: agentBot ? "Coder" : "SquadAI",
-          username: agentBot ? "squadai_coder_bot" : "squadai_control_bot",
+          first_name: reviewerBot ? "Reviewer" : agentBot ? "Coder" : "SquadAI",
+          username: reviewerBot
+            ? "squadai_reviewer_bot"
+            : agentBot ? "squadai_coder_bot" : "squadai_control_bot",
         },
       },
     }), { status: 200, headers: { "content-type": "application/json" } });
@@ -467,10 +484,11 @@ test("telegram coordinator queues tagged work with chat context and replies thro
     assert.match(clientContexts[0]?.agentId ?? "", /^coder--sensor-/);
     assert.match(prompts[0] ?? "", /Earlier agent result that should be included as context/);
     assert.match(prompts[0] ?? "", /please implement the login fix/);
+    assert.equal(prompts[0]?.match(/please implement the login fix/g)?.length, 1);
     assert.doesNotMatch(prompts[0] ?? "", /Oldest message that must fall outside/);
     assert.equal(sentMessages[0]?.token, "control-token");
     assert.match(String(sentMessages[0]?.body.text), /Queued for Coder/);
-    assert.match(String(sentMessages[0]?.body.text), /new instance/);
+    assert.match(String(sentMessages[0]?.body.text), /agent instance/);
     assert.equal(sentMessages[1]?.token, "coder-token");
     assert.match(String(sentMessages[1]?.body.text), /Completed by coder--sensor-/);
     assert.deepEqual(
@@ -478,9 +496,76 @@ test("telegram coordinator queues tagged work with chat context and replies thro
       ["squadai_control_bot", "squadai_coder_bot"],
     );
 
+    const initialInstanceId = request?.effectiveAgentId ?? "";
+    const initialAgentResponseId = 901;
+    for (let messageId = 902; messageId <= 921; messageId += 1) {
+      await messageStore.appendMessage(telegramMessage({
+        updateId: 800 + messageId,
+        messageId,
+        text: `Newer conversation ${messageId}`,
+      }));
+    }
+    outgoingMessageId = 1_000;
+    const replyToInstance = telegramMessage({
+      updateId: 1_622,
+      messageId: 922,
+      replyToMessageId: initialAgentResponseId,
+      text: "Please add tests for that change.",
+    });
+    await messageStore.appendMessage(replyToInstance);
+    await coordinator.processMessage(replyToInstance);
+    await waitFor(
+      () => requestStore.listRequests().filter((item) => item.status === "completed").length === 2,
+      "exact instance Telegram reply",
+    );
+    const exactReplyRequest = requestStore.listRequests()[1];
+    assert.equal(exactReplyRequest?.effectiveAgentId, initialInstanceId);
+    assert.equal(clientContexts.length, 1);
+    assert.match(prompts[1] ?? "", /Please add tests for that change/);
+    assert.match(prompts[1] ?? "", /Completed by coder--sensor-/);
+    assert.match(prompts[1] ?? "", /outside the latest 20/);
+
+    await manager.resolveAgentInstance(initialInstanceId, "done");
+    outgoingMessageId = 1_100;
+    const replyAfterClose = telegramMessage({
+      updateId: 1_623,
+      messageId: 1_002,
+      replyToMessageId: initialAgentResponseId,
+      text: "Please make one final adjustment.",
+    });
+    await messageStore.appendMessage(replyAfterClose);
+    await coordinator.processMessage(replyAfterClose);
+    await waitFor(
+      () => requestStore.listRequests().filter((item) => item.status === "completed").length === 3,
+      "base-agent fallback Telegram reply",
+    );
+    const fallbackRequest = requestStore.listRequests()[2];
+    assert.equal(fallbackRequest?.effectiveAgentId, "coder");
+    assert.equal(clientContexts[1]?.agentId, "coder");
+    assert.equal(clientContexts[1]?.runnerId, "vm-1");
+
+    outgoingMessageId = 1_200;
+    const taggedReviewerReply = telegramMessage({
+      updateId: 1_624,
+      messageId: 1_102,
+      replyToMessageId: initialAgentResponseId,
+      text: "@squadai_reviewer_bot please review the original Coder result.",
+    });
+    await messageStore.appendMessage(taggedReviewerReply);
+    await coordinator.processMessage(taggedReviewerReply);
+    await waitFor(
+      () => requestStore.listRequests().filter((item) => item.status === "completed").length === 4,
+      "explicit tag overriding Telegram reply",
+    );
+    const reviewerRequest = requestStore.listRequests()[3];
+    assert.equal(reviewerRequest?.agentId, "reviewer");
+    assert.equal(reviewerRequest?.effectiveAgentId, "reviewer");
+    assert.equal(clientContexts[2]?.agentId, "reviewer");
+    assert.equal(clientContexts[2]?.runnerId, "vm-2");
+
     const botAuthoredTag = telegramMessage({
       updateId: 701,
-      messageId: 81,
+      messageId: 1_202,
       authoredByBot: true,
       senderId: "404",
       senderName: "Newsbot",
@@ -489,7 +574,7 @@ test("telegram coordinator queues tagged work with chat context and replies thro
     });
     await messageStore.appendMessage(botAuthoredTag);
     assert.deepEqual(await coordinator.processMessage(botAuthoredTag), []);
-    assert.equal(requestStore.listRequests().length, 1);
+    assert.equal(requestStore.listRequests().length, 4);
   } finally {
     await coordinator.close();
     await manager.close();
@@ -607,6 +692,7 @@ function telegramMessage(overrides: Partial<{
   senderName: string;
   senderUsername: string;
   text: string;
+  replyToMessageId: number | null;
 }> = {}) {
   return {
     updateId: overrides.updateId ?? 700,
@@ -618,6 +704,7 @@ function telegramMessage(overrides: Partial<{
     senderName: overrides.senderName ?? "Mohit",
     senderUsername: overrides.senderUsername ?? "mohit",
     authoredByBot: overrides.authoredByBot ?? false,
+    replyToMessageId: overrides.replyToMessageId ?? null,
     text: overrides.text ?? "hello",
     sentAt: "2026-07-16T06:00:00.000Z",
     receivedAt: "2026-07-16T06:00:01.000Z",
