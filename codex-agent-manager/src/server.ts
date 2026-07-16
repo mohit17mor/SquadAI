@@ -1322,6 +1322,18 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .topology-runtime small { color: #697590; }
 .topology-permissions { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; color: #aab4cd; font-size: 11px; }
 .topology-permissions li::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 9px 1px 1px; border-radius: 50%; background: #54e59a; box-shadow: 0 0 8px rgba(84,229,154,.45); }
+.topology-telegram { display: grid; gap: 11px; }
+.topology-telegram p { margin: 0; color: #8994ae; font-size: 11px; line-height: 1.5; }
+.topology-telegram form { display: grid; gap: 9px; }
+.topology-telegram label { display: grid; gap: 6px; color: #8994ae; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.topology-telegram input { width: 100%; padding: 9px 10px; color: #e8edff; background: #090d17; border: 1px solid #293149; border-radius: 7px; }
+.topology-telegram button { width: 100%; }
+.telegram-connected { display: flex; align-items: center; gap: 10px; padding: 10px; background: #111728; border: 1px solid #293149; border-radius: 8px; }
+.telegram-connected > div { display: grid; gap: 2px; min-width: 0; }
+.telegram-connected strong { overflow: hidden; color: #eef2ff; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.telegram-connected small { overflow: hidden; color: #7f8aa4; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.telegram-avatar { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; color: white; background: #2aabee; border-radius: 50%; font-size: 12px; font-weight: 800; }
+.telegram-feedback { min-height: 16px; color: #f5aa42; font-size: 10px; line-height: 1.4; }
 .topology-inspector footer { display: grid; gap: 8px; padding: 18px 20px 24px; }
 .topology-inspector footer button { width: 100%; }
 .topology-inspector-empty { height: 100%; display: grid; place-content: center; gap: 6px; padding: 24px; text-align: center; color: #76819a; }

@@ -40,6 +40,15 @@ type SensorEventSnapshot = {
   targetAgentId?: string;
 };
 
+type TelegramAgentBinding = {
+  agentId: string;
+  botId: string;
+  botUsername: string;
+  botName: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type NodeRecord = {
   agent: AgentSnapshot;
   group: THREE.Group;
@@ -142,6 +151,7 @@ function startTopology(
   let runners: RunnerSnapshot[] = [];
   let sensorSources: string[] = [];
   let sensorEvents: SensorEventSnapshot[] = [];
+  let telegramBindings: TelegramAgentBinding[] = [];
   let routingMode = "explicit";
   let selectedAgentId: string | null = null;
   let panning = false;
@@ -302,11 +312,12 @@ function startTopology(
 
   async function refreshAgents(): Promise<void> {
     workspaceElement.setAttribute("aria-busy", "true");
-    const [response, sensorResponse, routingResponse, runnersResponse] = await Promise.all([
+    const [response, sensorResponse, routingResponse, runnersResponse, telegramResponse] = await Promise.all([
       fetch("/api/agents"),
       fetch("/api/sensor-events"),
       fetch("/api/routing"),
       fetch("/api/runners"),
+      fetch("/api/telegram/agent-bindings"),
     ]);
     if (!response.ok) {
       workspaceElement.setAttribute("aria-busy", "false");
@@ -322,9 +333,13 @@ function startTopology(
     const runnersBody = runnersResponse.ok
       ? await runnersResponse.json() as { runners?: RunnerSnapshot[] }
       : { runners: [] };
+    const telegramBody = telegramResponse.ok
+      ? await telegramResponse.json() as { bindings?: TelegramAgentBinding[] }
+      : { bindings: [] };
     agents = Array.isArray(body.agents) ? body.agents : [];
     runners = Array.isArray(runnersBody.runners) ? runnersBody.runners : [];
     sensorEvents = Array.isArray(sensorBody.events) ? sensorBody.events : [];
+    telegramBindings = Array.isArray(telegramBody.bindings) ? telegramBody.bindings : [];
     routingMode = routingBody.mode ?? "explicit";
     const agentIds = new Set(agents.map((agent) => agent.id));
     sensorSources = Array.from(new Set(sensorEvents
@@ -619,11 +634,16 @@ function startTopology(
     const machine = agent.runnerId === "local"
       ? "Control plane"
       : runner ? `${runner.hostname} · ${runner.status}` : "Runner unavailable";
+    const telegramBinding = telegramBindings.find((binding) => binding.agentId === agent.id) ?? null;
+    const telegramSection = telegramBinding
+      ? `<section class="topology-telegram"><h3>Telegram identity</h3><div class="telegram-connected"><span class="telegram-avatar">T</span><div><strong>@${escapeHtml(telegramBinding.botUsername)}</strong><small>${escapeHtml(telegramBinding.botName)}</small></div></div><p>This bot represents ${escapeHtml(agent.name)} in Telegram groups.</p><button type="button" class="secondary" data-telegram-disconnect>Disconnect Telegram bot</button><div class="telegram-feedback" data-telegram-feedback aria-live="polite"></div></section>`
+      : `<section class="topology-telegram"><h3>Telegram identity</h3><p>Connect a BotFather bot so this agent can appear under its own identity in Telegram.</p><form data-telegram-connect><label><span>Bot token</span><input name="token" type="password" autocomplete="off" placeholder="Paste BotFather token" required></label><button type="submit">Connect Telegram bot</button><div class="telegram-feedback" data-telegram-feedback aria-live="polite"></div></form></section>`;
     inspectorElement.innerHTML = `
       <header><div><span class="topology-kicker">Selected agent</span><h2>${escapeHtml(agent.name)}</h2><p><i class="status-dot ${escapeHtml(instanceVisualStatus(agent))}"></i>${escapeHtml(displayState(agent))}</p></div><button type="button" data-close-inspector aria-label="Close inspector">×</button></header>
       <section><h3>Current state</h3><dl><div><dt>Role</dt><dd>${escapeHtml(String(agent.metadata.role ?? (typeof agent.metadata.instanceOfAgentId === "string" ? "task instance" : "worker")))}</dd></div><div><dt>Runner</dt><dd>${escapeHtml(runnerName)}</dd></div><div><dt>Machine</dt><dd>${escapeHtml(machine)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(agent.model ?? "default")}</dd></div><div><dt>Thread</dt><dd>${escapeHtml(agent.threadId ?? "not started")}</dd></div>${branch ? `<div><dt>Branch</dt><dd>${escapeHtml(branch)}</dd></div>` : ""}<div><dt>Workspace</dt><dd>${escapeHtml(agent.cwd)}</dd></div><div><dt>Permissions</dt><dd>${escapeHtml(permissionLabel(agent))}</dd></div></dl></section>
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
+      ${telegramSection}
       <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
     inspectorElement.querySelector("[data-close-inspector]")?.addEventListener("click", () => {
       selectedAgentId = null;
@@ -637,6 +657,13 @@ function startTopology(
     });
     inspectorElement.querySelector("[data-pause-agent]")?.addEventListener("click", () => void pauseAgent(agent));
     inspectorElement.querySelector("[data-remove-agent]")?.addEventListener("click", () => void removeAgent(agent));
+    inspectorElement.querySelector<HTMLFormElement>("[data-telegram-connect]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void connectTelegramBot(agent, event.currentTarget as HTMLFormElement);
+    });
+    inspectorElement.querySelector("[data-telegram-disconnect]")?.addEventListener("click", () => {
+      void disconnectTelegramBot(agent);
+    });
   }
 
   function runnerForAgent(agent: AgentSnapshot): RunnerSnapshot | null {
@@ -677,6 +704,50 @@ function startTopology(
       await refreshAgents();
       window.dispatchEvent(new CustomEvent("topology:refresh-main"));
     }
+  }
+
+  async function connectTelegramBot(agent: AgentSnapshot, form: HTMLFormElement): Promise<void> {
+    const tokenInput = form.elements.namedItem("token") as HTMLInputElement | null;
+    const feedback = form.querySelector<HTMLElement>("[data-telegram-feedback]");
+    const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const token = tokenInput?.value.trim() ?? "";
+    if (!token) return;
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Connecting...";
+    }
+    if (feedback) feedback.textContent = "Verifying bot with Telegram...";
+    const response = await fetch("/api/telegram/agent-bindings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId: agent.id, token }),
+    });
+    const body = await response.json() as { binding?: TelegramAgentBinding; error?: string };
+    if (!response.ok) {
+      if (feedback) feedback.textContent = body.error ?? "Could not connect this Telegram bot.";
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Connect Telegram bot";
+      }
+      return;
+    }
+    if (tokenInput) tokenInput.value = "";
+    await refreshAgents();
+  }
+
+  async function disconnectTelegramBot(agent: AgentSnapshot): Promise<void> {
+    if (!window.confirm(`Disconnect the Telegram bot from ${agent.name}?`)) return;
+    const feedback = inspectorElement.querySelector<HTMLElement>("[data-telegram-feedback]");
+    if (feedback) feedback.textContent = "Disconnecting...";
+    const response = await fetch(`/api/telegram/agent-bindings/${encodeURIComponent(agent.id)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const body = await response.json() as { error?: string };
+      if (feedback) feedback.textContent = body.error ?? "Could not disconnect this Telegram bot.";
+      return;
+    }
+    await refreshAgents();
   }
 
   function tick(): void {

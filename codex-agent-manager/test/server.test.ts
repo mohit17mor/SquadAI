@@ -1109,6 +1109,11 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /Approval prompts disabled/);
     assert.match(moduleSource, /data-edit-agent/);
     assert.match(moduleSource, /topology:edit-agent/);
+    assert.match(moduleSource, /Telegram identity/);
+    assert.match(moduleSource, /data-telegram-connect/);
+    assert.match(moduleSource, /data-telegram-disconnect/);
+    assert.match(moduleSource, /\/api\/telegram\/agent-bindings/);
+    assert.match(moduleSource, /Connect Telegram bot/);
     assert.match(moduleSource, /\/api\/sensor-events/);
     assert.match(moduleSource, /createSourceNode/);
     assert.match(moduleSource, /jarvis\.topology\.viewport\.v1/);
