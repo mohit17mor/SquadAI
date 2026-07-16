@@ -30,6 +30,21 @@ export type TelegramAgentRequest = {
   updatedAt: string;
 };
 
+export type TelegramApproval = {
+  approvalId: string;
+  chatId: string;
+  requestMessageId: number;
+  agentId: string;
+  approvalMessageId: number;
+  requesterUserId: string;
+  requesterName: string;
+  status: "pending" | "approved" | "declined";
+  resolvedByUserId: string | null;
+  resolvedByName: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
 type TelegramRequestKey = Pick<TelegramAgentRequest, "chatId" | "messageId" | "agentId">;
 
 export type TelegramAgentResponse = {
@@ -135,6 +150,57 @@ export class SqliteTelegramRequestStore {
       LIMIT 1
     `).get(approvalId) as TelegramRequestRow | undefined;
     return row ? requestFromRow(row) : null;
+  }
+
+  saveApproval(approval: TelegramApproval): void {
+    this.database.prepare(`
+      INSERT OR REPLACE INTO telegram_approvals (
+        approval_id, chat_id, request_message_id, agent_id, approval_message_id,
+        requester_user_id, requester_name, status, resolved_by_user_id,
+        resolved_by_name, created_at, resolved_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      approval.approvalId,
+      approval.chatId,
+      approval.requestMessageId,
+      approval.agentId,
+      approval.approvalMessageId,
+      approval.requesterUserId,
+      approval.requesterName,
+      approval.status,
+      approval.resolvedByUserId,
+      approval.resolvedByName,
+      approval.createdAt,
+      approval.resolvedAt,
+    );
+  }
+
+  getApproval(approvalId: string): TelegramApproval | null {
+    const row = this.database.prepare(`
+      SELECT * FROM telegram_approvals WHERE approval_id = ?
+    `).get(approvalId) as TelegramApprovalRow | undefined;
+    return row ? approvalFromRow(row) : null;
+  }
+
+  resolveTelegramApproval(
+    approvalId: string,
+    status: "approved" | "declined",
+    userId: string,
+    userName: string,
+    resolvedAt: string,
+  ): TelegramApproval {
+    const result = this.database.prepare(`
+      UPDATE telegram_approvals SET
+        status = ?,
+        resolved_by_user_id = ?,
+        resolved_by_name = ?,
+        resolved_at = ?
+      WHERE approval_id = ? AND status = 'pending'
+    `).run(status, userId, userName, resolvedAt, approvalId);
+    if (Number(result.changes) === 0) {
+      throw new Error(`Telegram approval ${approvalId} is already resolved.`);
+    }
+    return this.getApproval(approvalId)!;
   }
 
   saveAgentResponse(response: TelegramAgentResponse): void {
@@ -308,6 +374,20 @@ export class SqliteTelegramRequestStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (chat_id, message_id)
       );
+      CREATE TABLE IF NOT EXISTS telegram_approvals (
+        approval_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        request_message_id INTEGER NOT NULL,
+        agent_id TEXT NOT NULL,
+        approval_message_id INTEGER NOT NULL,
+        requester_user_id TEXT NOT NULL,
+        requester_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        resolved_by_user_id TEXT,
+        resolved_by_name TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
     `);
   }
 }
@@ -392,6 +472,21 @@ type TelegramAgentResponseRow = {
   created_at: string;
 };
 
+type TelegramApprovalRow = {
+  approval_id: string;
+  chat_id: string;
+  request_message_id: number;
+  agent_id: string;
+  approval_message_id: number;
+  requester_user_id: string;
+  requester_name: string;
+  status: TelegramApproval["status"];
+  resolved_by_user_id: string | null;
+  resolved_by_name: string | null;
+  created_at: string;
+  resolved_at: string | null;
+};
+
 function requestFromRow(row: TelegramRequestRow): TelegramAgentRequest {
   return {
     chatId: row.chat_id,
@@ -407,6 +502,23 @@ function requestFromRow(row: TelegramRequestRow): TelegramAgentRequest {
     responseSentAt: row.response_sent_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
+  };
+}
+
+function approvalFromRow(row: TelegramApprovalRow): TelegramApproval {
+  return {
+    approvalId: row.approval_id,
+    chatId: row.chat_id,
+    requestMessageId: Number(row.request_message_id),
+    agentId: row.agent_id,
+    approvalMessageId: Number(row.approval_message_id),
+    requesterUserId: row.requester_user_id,
+    requesterName: row.requester_name,
+    status: row.status,
+    resolvedByUserId: row.resolved_by_user_id,
+    resolvedByName: row.resolved_by_name,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
   };
 }
 

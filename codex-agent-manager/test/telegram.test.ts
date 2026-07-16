@@ -13,6 +13,7 @@ import {
   SqliteTelegramMessageStore,
   SqliteTelegramRequestStore,
   TelegramAgentBindingService,
+  TelegramAgentCallbackListener,
   TelegramCoordinator,
   TelegramMentionIntake,
   TelegramListener,
@@ -158,6 +159,56 @@ test("telegram listener stores only group text messages and advances its durable
       sentAt: new Date(1_784_200_000 * 1_000).toISOString(),
       receivedAt: "2026-07-16T04:31:00.000Z",
     }]);
+  } finally {
+    await listener.close();
+    await store.close();
+  }
+});
+
+test("telegram agent bots poll only approval button clicks", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-callbacks-"));
+  const store = new SqliteTelegramMessageStore(join(directory, "command-center.db"));
+  const requests: Array<Record<string, unknown>> = [];
+  const callbacks: Array<{ botId: string; userId: string; data: string }> = [];
+  let listener: TelegramAgentCallbackListener;
+  listener = new TelegramAgentCallbackListener({
+    store,
+    bots: () => [{ id: "coder", token: "coder-token" }],
+    pollTimeoutSeconds: 0,
+    fetch: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        ok: true,
+        result: [{
+          update_id: 501,
+          callback_query: {
+            id: "callback-1",
+            data: "sqa:approval-1:approve",
+            from: { id: 42, first_name: "Mohit" },
+            message: {
+              message_id: 90,
+              text: "Approval required",
+              chat: { id: -100999, type: "supergroup" },
+            },
+          },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    onCallback: async (botId, callback) => {
+      callbacks.push({ botId, userId: callback.userId, data: callback.data });
+      await listener.close();
+    },
+  });
+
+  try {
+    await listener.start();
+    assert.deepEqual(requests[0]?.allowed_updates, ["callback_query"]);
+    assert.deepEqual(callbacks, [{
+      botId: "coder",
+      userId: "42",
+      data: "sqa:approval-1:approve",
+    }]);
+    assert.equal(store.getListenerOffset("callback_offset:coder"), 502);
   } finally {
     await listener.close();
     await store.close();
@@ -675,6 +726,174 @@ test("telegram coordinator reports agent failures through the bound agent bot", 
     assert.equal(sentMessages.at(-1)?.token, "coder-token");
     assert.match(sentMessages.at(-1)?.text ?? "", /couldn’t complete this request: build failed/i);
     assert.equal(requestStore.listRequests()[0]?.lastError, "build failed");
+  } finally {
+    await coordinator.close();
+    await manager.close();
+    await requestStore.close();
+    await bindingStore.close();
+    await messageStore.close();
+  }
+});
+
+test("telegram approvals can only be answered by the human who started the task", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-approval-"));
+  const databasePath = join(directory, "command-center.db");
+  const messageStore = new SqliteTelegramMessageStore(databasePath);
+  const bindingStore = new SqliteTelegramAgentBindingStore(databasePath);
+  const requestStore = new SqliteTelegramRequestStore(databasePath);
+  const manager = new CodexAgentManager({
+    agents: [{
+      id: "coder",
+      name: "Coder",
+      cwd: directory,
+      instructions: "Implement coding tasks.",
+    }],
+    clientFactory: (context) => ({
+      async startSession() {
+        return {
+          threadId: "approval-thread",
+          async ask() {
+            const result = await context?.approvalHandler?.({
+              timestamp: "2026-07-16T06:00:02.000Z",
+              kind: "command_approval",
+              method: "command/execute",
+              params: { command: ["npm", "install"] },
+              proposedDecision: "approved",
+              proposedResult: null,
+            });
+            return {
+              finalText: `Approval was ${result?.decision}.`,
+              threadId: "approval-thread",
+              turn: { status: "completed" },
+            };
+          },
+        };
+      },
+      async resumeSession() {
+        throw new Error("Unexpected resume.");
+      },
+      async close() {},
+    }),
+    workspaceManager: passthroughWorkspaceManager(),
+  });
+  const bindings = new TelegramAgentBindingService({
+    store: bindingStore,
+    agentExists: () => true,
+    fetch: async () => new Response(JSON.stringify({
+      ok: true,
+      result: {
+        id: 101,
+        is_bot: true,
+        first_name: "Coder",
+        username: "squadai_coder_bot",
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await bindings.bindAgent("coder", "coder-token");
+  const mentionIntake = new TelegramMentionIntake({ bindings, store: requestStore });
+  const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+  let outgoingMessageId = 1_300;
+  const coordinator = new TelegramCoordinator({
+    manager,
+    bindings,
+    mentionIntake,
+    requestStore,
+    messageStore,
+    controlBotToken: "control-token",
+    fetch: async (input, init) => {
+      const method = String(input).split("/").at(-1) ?? "";
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      calls.push({ method, body });
+      if (method !== "sendMessage") {
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          message_id: outgoingMessageId++,
+          date: 1_784_210_000,
+          text: body.text,
+          chat: { id: -100999, type: "supergroup", title: "Product Team" },
+          from: {
+            id: String(input).includes("coder-token") ? 101 : 303,
+            is_bot: true,
+            first_name: String(input).includes("coder-token") ? "Coder" : "SquadAI",
+            username: String(input).includes("coder-token")
+              ? "squadai_coder_bot"
+              : "squadai_control_bot",
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const message = telegramMessage({
+    messageId: 88,
+    senderId: "42",
+    senderName: "Mohit",
+    text: "@squadai_coder_bot install the dependencies.",
+  });
+
+  try {
+    await manager.start();
+    await coordinator.start();
+    await messageStore.appendMessage(message);
+    await coordinator.processMessage(message);
+    await waitFor(
+      () => Boolean(requestStore.getApproval("approval-1")),
+      "Telegram approval buttons",
+    );
+    const approval = requestStore.getApproval("approval-1")!;
+    const approvalSend = calls.find((call) =>
+      call.method === "sendMessage" && String(call.body.text).includes("Approval required")
+    );
+    assert.deepEqual(approvalSend?.body.reply_markup, {
+      inline_keyboard: [[
+        { text: "Deny", callback_data: "sqa:approval-1:deny" },
+        { text: "Approve", callback_data: "sqa:approval-1:approve" },
+      ]],
+    });
+
+    await coordinator.processApprovalCallback("coder", {
+      updateId: 900,
+      id: "friend-click",
+      userId: "77",
+      userName: "Friend",
+      data: "sqa:approval-1:approve",
+      chatId: message.chatId,
+      messageId: approval.approvalMessageId,
+      messageText: String(approvalSend?.body.text),
+    });
+    assert.equal(requestStore.getApproval("approval-1")?.status, "pending");
+    assert.match(
+      String(calls.at(-1)?.body.text),
+      /Only Mohit, who started this task, can answer/,
+    );
+
+    await coordinator.processApprovalCallback("coder", {
+      updateId: 901,
+      id: "owner-click",
+      userId: "42",
+      userName: "Mohit",
+      data: "sqa:approval-1:approve",
+      chatId: message.chatId,
+      messageId: approval.approvalMessageId,
+      messageText: String(approvalSend?.body.text),
+    });
+    await waitFor(
+      () => requestStore.listRequests()[0]?.status === "completed",
+      "Telegram-approved task completion",
+    );
+    assert.equal(requestStore.getApproval("approval-1")?.status, "approved");
+    assert.equal(requestStore.getApproval("approval-1")?.resolvedByUserId, "42");
+    assert.ok(calls.some((call) =>
+      call.method === "editMessageText" && String(call.body.text).includes("Approved by Mohit")
+    ));
+    assert.ok(calls.some((call) =>
+      call.method === "sendMessage" && String(call.body.text).includes("Approval was approved")
+    ));
   } finally {
     await coordinator.close();
     await manager.close();

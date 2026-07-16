@@ -23,6 +23,7 @@ export class TelegramBotMessenger {
     chatId: string,
     text: string,
     replyToMessageId?: number,
+    replyMarkup?: Record<string, unknown>,
   ): Promise<TelegramGroupMessage[]> {
     const messages: TelegramGroupMessage[] = [];
     const chunks = splitTelegramText(text);
@@ -37,6 +38,7 @@ export class TelegramBotMessenger {
           allow_sending_without_reply: true,
         };
       }
+      if (index === 0 && replyMarkup) body.reply_markup = replyMarkup;
       const response = await this.fetchImpl(`${this.apiBaseUrl}/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -51,6 +53,45 @@ export class TelegramBotMessenger {
       messages.push(message);
     }
     return messages;
+  }
+
+  async answerCallback(
+    token: string,
+    callbackQueryId: string,
+    text: string,
+    showAlert = false,
+  ): Promise<void> {
+    await this.call(token, "answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text,
+      show_alert: showAlert,
+    });
+  }
+
+  async resolveApprovalMessage(
+    token: string,
+    chatId: string,
+    messageId: number,
+    text: string,
+  ): Promise<void> {
+    await this.call(token, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+
+  private async call(token: string, method: string, body: Record<string, unknown>): Promise<void> {
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json() as unknown;
+    if (!response.ok || !isRecord(payload) || payload.ok !== true) {
+      throw new Error(telegramApiError(payload, response.status));
+    }
   }
 }
 

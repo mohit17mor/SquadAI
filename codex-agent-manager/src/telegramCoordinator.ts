@@ -1,5 +1,9 @@
 import type { CodexAgentManager } from "./manager.js";
-import type { SqliteTelegramMessageStore, TelegramGroupMessage } from "./telegram.js";
+import type {
+  SqliteTelegramMessageStore,
+  TelegramCallbackQuery,
+  TelegramGroupMessage,
+} from "./telegram.js";
 import type { TelegramAgentBindingService } from "./telegramBindings.js";
 import { TelegramBotMessenger } from "./telegramMessenger.js";
 import type {
@@ -128,6 +132,69 @@ export class TelegramCoordinator {
     return queued;
   }
 
+  async processApprovalCallback(agentId: string, callback: TelegramCallbackQuery): Promise<void> {
+    const match = callback.data.match(/^sqa:(approval-\d+):(approve|deny)$/);
+    if (!match?.[1] || !match[2]) return;
+    const approval = this.options.requestStore.getApproval(match[1]);
+    const token = this.options.bindings.getBotToken(agentId);
+    if (
+      !approval
+      || approval.agentId !== agentId
+      || approval.chatId !== callback.chatId
+      || approval.approvalMessageId !== callback.messageId
+    ) {
+      await this.messenger.answerCallback(token, callback.id, "This approval is no longer available.", true);
+      return;
+    }
+    if (approval.status !== "pending") {
+      await this.messenger.answerCallback(token, callback.id, `This was already ${approval.status}.`, true);
+      return;
+    }
+    if (callback.userId !== approval.requesterUserId) {
+      await this.messenger.answerCallback(
+        token,
+        callback.id,
+        `Only ${approval.requesterName}, who started this task, can answer.`,
+        true,
+      );
+      return;
+    }
+
+    const approved = match[2] === "approve";
+    try {
+      await this.options.manager.resolveApproval(
+        approval.approvalId,
+        approved ? "approved" : "declined",
+        `${approved ? "Approved" : "Declined"} in Telegram by ${callback.userName} (${callback.userId}).`,
+      );
+      this.options.requestStore.resolveTelegramApproval(
+        approval.approvalId,
+        approved ? "approved" : "declined",
+        callback.userId,
+        callback.userName,
+        this.now(),
+      );
+      await this.messenger.answerCallback(
+        token,
+        callback.id,
+        approved ? "Approved. The agent is continuing." : "Denied.",
+      );
+      await this.messenger.resolveApprovalMessage(
+        token,
+        callback.chatId,
+        callback.messageId,
+        `${callback.messageText}\n\n${approved ? "✅ Approved" : "❌ Denied"} by ${callback.userName}.`,
+      );
+    } catch (error) {
+      await this.messenger.answerCallback(
+        token,
+        callback.id,
+        errorMessage(error),
+        true,
+      );
+    }
+  }
+
   async close(): Promise<void> {
     if (!this.started) return;
     this.started = false;
@@ -213,10 +280,7 @@ export class TelegramCoordinator {
       const request = this.options.requestStore.findActiveByEffectiveAgentId(event.agentId);
       if (!request || request.lastApprovalId === event.payload.approvalId) return;
       this.options.requestStore.markApproval(request, event.payload.approvalId, this.now());
-      await this.safeSendAgent(
-        request,
-        `Approval required (${event.payload.approvalId}). Please open SquadAI to approve or decline it.`,
-      );
+      await this.sendTelegramApproval(request, event);
       return;
     }
     if (event.type === "approval_resolved" && typeof event.payload.approvalId === "string") {
@@ -322,6 +386,50 @@ export class TelegramCoordinator {
     } catch (error) {
       this.logger.error(`Telegram agent reply failed: ${errorMessage(error)}`);
     }
+  }
+
+  private async sendTelegramApproval(
+    request: TelegramAgentRequest,
+    event: AgentEvent,
+  ): Promise<void> {
+    const requester = this.options.messageStore.getMessage(request.chatId, request.messageId);
+    if (!requester?.senderId) {
+      await this.safeSendAgent(
+        request,
+        "Approval required. I could not verify who started this task, so please answer it in SquadAI.",
+      );
+      return;
+    }
+    const approvalId = String(event.payload.approvalId);
+    const text = telegramApprovalText(event.payload);
+    const messages = await this.messenger.sendText(
+      this.options.bindings.getBotToken(request.agentId),
+      request.chatId,
+      text,
+      request.messageId,
+      {
+        inline_keyboard: [[
+          { text: "Deny", callback_data: `sqa:${approvalId}:deny` },
+          { text: "Approve", callback_data: `sqa:${approvalId}:approve` },
+        ]],
+      },
+    );
+    const message = messages[0];
+    if (!message) throw new Error("Telegram did not return the approval message.");
+    this.options.requestStore.saveApproval({
+      approvalId,
+      chatId: request.chatId,
+      requestMessageId: request.messageId,
+      agentId: request.agentId,
+      approvalMessageId: message.messageId,
+      requesterUserId: requester.senderId,
+      requesterName: requester.senderName,
+      status: "pending",
+      resolvedByUserId: null,
+      resolvedByName: null,
+      createdAt: this.now(),
+      resolvedAt: null,
+    });
   }
 
   private async safeSendControl(chatId: string, text: string, replyToMessageId: number): Promise<void> {
@@ -502,4 +610,20 @@ function joinLabels(labels: string[]): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function telegramApprovalText(payload: Record<string, unknown>): string {
+  const params = payload.params && typeof payload.params === "object"
+    ? payload.params as Record<string, unknown>
+    : {};
+  const command = Array.isArray(params.command)
+    ? params.command.map((part) => String(part)).join(" ")
+    : typeof params.command === "string" ? params.command : "";
+  const tool = typeof params.toolName === "string"
+    ? params.toolName
+    : typeof params.name === "string" ? params.name : "";
+  const action = command
+    ? `run:\n${command}`
+    : tool ? `use ${tool}` : String(payload.kind ?? "perform this action");
+  return `Approval required\n\nThe agent wants to ${action}.\n\nOnly the person who started this task can answer.`;
 }

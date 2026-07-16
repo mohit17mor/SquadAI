@@ -112,22 +112,30 @@ export class SqliteTelegramMessageStore {
   }
 
   getUpdateOffset(): number {
+    return this.getListenerOffset("update_offset");
+  }
+
+  getListenerOffset(key: string): number {
     const row = this.database.prepare(`
-      SELECT value FROM telegram_listener_state WHERE key = 'update_offset'
-    `).get() as { value: string } | undefined;
+      SELECT value FROM telegram_listener_state WHERE key = ?
+    `).get(key) as { value: string } | undefined;
     const offset = Number(row?.value ?? 0);
     return Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
   }
 
   setUpdateOffset(offset: number): void {
+    this.setListenerOffset("update_offset", offset);
+  }
+
+  setListenerOffset(key: string, offset: number): void {
     if (!Number.isSafeInteger(offset) || offset < 0) {
       throw new Error(`Invalid Telegram update offset: ${offset}`);
     }
     this.database.prepare(`
       INSERT INTO telegram_listener_state (key, value)
-      VALUES ('update_offset', ?)
+      VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(String(offset));
+    `).run(key, String(offset));
   }
 
   async close(): Promise<void> {
@@ -175,6 +183,95 @@ export type TelegramListenerOptions = {
   clock?: () => Date;
   onMessage?: (message: TelegramGroupMessage) => void | Promise<void>;
 };
+
+export type TelegramCallbackQuery = {
+  updateId: number;
+  id: string;
+  userId: string;
+  userName: string;
+  data: string;
+  chatId: string;
+  messageId: number;
+  messageText: string;
+};
+
+export type TelegramAgentCallbackListenerOptions = {
+  bots: () => Array<{ id: string; token: string }>;
+  store: SqliteTelegramMessageStore;
+  fetch?: typeof fetch;
+  apiBaseUrl?: string;
+  pollTimeoutSeconds?: number;
+  onCallback: (botId: string, callback: TelegramCallbackQuery) => void | Promise<void>;
+};
+
+export class TelegramAgentCallbackListener {
+  private readonly fetchImpl: typeof fetch;
+  private readonly apiBaseUrl: string;
+  private readonly pollTimeoutSeconds: number;
+  private running = false;
+  private readonly aborts = new Set<AbortController>();
+
+  constructor(private readonly options: TelegramAgentCallbackListenerOptions) {
+    this.fetchImpl = options.fetch ?? fetch;
+    this.apiBaseUrl = (options.apiBaseUrl ?? "https://api.telegram.org").replace(/\/+$/, "");
+    this.pollTimeoutSeconds = Math.max(0, Math.min(Math.floor(options.pollTimeoutSeconds ?? 25), 50));
+  }
+
+  async start(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    while (this.running) {
+      const bots = this.options.bots();
+      if (!bots.length) {
+        await delay(1_000);
+        continue;
+      }
+      await Promise.all(bots.map((bot) => this.pollBot(bot).catch((error) => {
+        if (this.running) {
+          console.error(`Telegram approval poll failed for ${bot.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      })));
+    }
+  }
+
+  async close(): Promise<void> {
+    this.running = false;
+    for (const abort of this.aborts) abort.abort();
+    this.aborts.clear();
+  }
+
+  private async pollBot(bot: { id: string; token: string }): Promise<void> {
+    const abort = new AbortController();
+    this.aborts.add(abort);
+    const offsetKey = `callback_offset:${bot.id}`;
+    try {
+      const response = await this.fetchImpl(
+        `${this.apiBaseUrl}/bot${bot.token}/getUpdates`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            offset: this.options.store.getListenerOffset(offsetKey),
+            timeout: this.pollTimeoutSeconds,
+            allowed_updates: ["callback_query"],
+          }),
+          signal: abort.signal,
+        },
+      );
+      const body = await response.json() as unknown;
+      if (!response.ok) throw new Error(telegramApiError(body, response.status));
+      let nextOffset = this.options.store.getListenerOffset(offsetKey);
+      for (const update of telegramUpdates(body)) {
+        const callback = callbackQuery(update);
+        if (callback) await this.options.onCallback(bot.id, callback);
+        nextOffset = Math.max(nextOffset, update.update_id + 1);
+      }
+      this.options.store.setListenerOffset(offsetKey, nextOffset);
+    } finally {
+      this.aborts.delete(abort);
+    }
+  }
+}
 
 export class TelegramListener {
   private readonly fetchImpl: typeof fetch;
@@ -295,6 +392,24 @@ type TelegramUpdate = {
       message_id?: number;
     };
   };
+  callback_query?: {
+    id?: string;
+    data?: string;
+    from?: {
+      id?: number | string;
+      first_name?: string;
+      last_name?: string;
+      username?: string;
+    };
+    message?: {
+      message_id?: number;
+      text?: string;
+      chat?: {
+        id?: number | string;
+        type?: string;
+      };
+    };
+  };
 };
 
 function messageFromRow(row: TelegramMessageRow): TelegramGroupMessage {
@@ -359,6 +474,42 @@ function groupTextMessage(update: TelegramUpdate, receivedAt: Date): TelegramGro
     text: message.text,
     sentAt: new Date(message.date! * 1_000).toISOString(),
     receivedAt: receivedAt.toISOString(),
+  };
+}
+
+function callbackQuery(update: TelegramUpdate): TelegramCallbackQuery | null {
+  const callback = update.callback_query;
+  const message = callback?.message;
+  const chat = message?.chat;
+  const sender = callback?.from;
+  if (
+    !callback
+    || typeof callback.id !== "string"
+    || typeof callback.data !== "string"
+    || !message
+    || !Number.isSafeInteger(message.message_id)
+    || !chat
+    || (chat.type !== "group" && chat.type !== "supergroup")
+    || (typeof chat.id !== "number" && typeof chat.id !== "string")
+    || !sender
+    || (typeof sender.id !== "number" && typeof sender.id !== "string")
+  ) {
+    return null;
+  }
+  const userName = [sender.first_name, sender.last_name]
+    .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
+    .join(" ")
+    .trim()
+    || (typeof sender.username === "string" ? sender.username : "Unknown user");
+  return {
+    updateId: update.update_id,
+    id: callback.id,
+    userId: String(sender.id),
+    userName,
+    data: callback.data,
+    chatId: String(chat.id),
+    messageId: Number(message.message_id),
+    messageText: typeof message.text === "string" ? message.text : "Approval required.",
   };
 }
 

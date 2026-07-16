@@ -10,7 +10,11 @@ import { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
-import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
+import {
+  SqliteTelegramMessageStore,
+  TelegramAgentCallbackListener,
+  TelegramListener,
+} from "./telegram.js";
 import { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";
 import { TelegramCoordinator } from "./telegramCoordinator.js";
 import { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
@@ -172,12 +176,27 @@ const telegramListener = telegramToken && telegramStore
       },
     })
   : null;
+const telegramApprovalListener = telegramToken && telegramStore
+  ? new TelegramAgentCallbackListener({
+      store: telegramStore,
+      bots: () => telegramBindings.listBindings().map((binding) => ({
+        id: binding.botId,
+        token: telegramBindings.getBotToken(binding.agentId),
+      })),
+      onCallback: async (botId, callback) => {
+        const binding = telegramBindings.listBindings().find((item) => item.botId === botId);
+        if (binding) await telegramCoordinator!.processApprovalCallback(binding.agentId, callback);
+      },
+    })
+  : null;
 let telegramRun: Promise<void> | undefined;
+let telegramApprovalRun: Promise<void> | undefined;
 
 await manager.start();
 await telegramCoordinator?.start();
 await server.listen(port, host);
 telegramRun = telegramListener?.start();
+telegramApprovalRun = telegramApprovalListener?.start();
 console.log(`SquadAI listening at http://${host}:${server.port}`);
 console.log(`Database: ${databasePath}`);
 console.log(`Legacy state backup: ${statePath}`);
@@ -195,7 +214,9 @@ for (const signal of shutdownSignals()) {
 
 async function shutdown(): Promise<void> {
   await telegramListener?.close().catch(() => {});
+  await telegramApprovalListener?.close().catch(() => {});
   await telegramRun?.catch(() => {});
+  await telegramApprovalRun?.catch(() => {});
   await telegramCoordinator?.close().catch(() => {});
   await telegramStore?.close().catch(() => {});
   await telegramBindingStore.close().catch(() => {});
