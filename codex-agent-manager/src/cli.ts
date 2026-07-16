@@ -9,6 +9,7 @@ import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
 import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
+import { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
@@ -76,8 +77,20 @@ const manager = new CodexAgentManager({
   clientFactory: runnerHub.createClientFactory(localClientFactory),
   workspaceManager: new RunnerAwareWorkspaceManager(runnerHub, new GitWorkspaceManager()),
 });
-const server = createCommandCenterServer({ manager, runnerHub });
 const telegramStore = telegramToken ? new SqliteTelegramMessageStore(databasePath) : null;
+const telegramBindingStore = new SqliteTelegramAgentBindingStore(databasePath);
+const telegramBindings = new TelegramAgentBindingService({
+  store: telegramBindingStore,
+  agentExists: (agentId) => {
+    try {
+      manager.getAgent(agentId);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+});
+const server = createCommandCenterServer({ manager, runnerHub, telegramBindings });
 const telegramListener = telegramToken && telegramStore
   ? new TelegramListener({ token: telegramToken, store: telegramStore })
   : null;
@@ -105,6 +118,7 @@ async function shutdown(): Promise<void> {
   await telegramListener?.close().catch(() => {});
   await telegramRun?.catch(() => {});
   await telegramStore?.close().catch(() => {});
+  await telegramBindingStore.close().catch(() => {});
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);

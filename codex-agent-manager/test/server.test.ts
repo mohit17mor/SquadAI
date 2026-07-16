@@ -12,6 +12,8 @@ import {
   createCommandCenterServer,
   type CodexControlClientFactory,
   RunnerHub,
+  SqliteTelegramAgentBindingStore,
+  TelegramAgentBindingService,
 } from "../src/index.js";
 
 class ImmediateCodexClient {
@@ -108,6 +110,67 @@ function approvalCapturingFactory(
     return new PendingCodexClient();
   };
 }
+
+test("command center API manages Telegram bot bindings without exposing tokens", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-api-"));
+  const manager = new CodexAgentManager({
+    agents: [{
+      id: "coder",
+      name: "Coder",
+      cwd: directory,
+      instructions: "Write code.",
+    }],
+    clientFactory: immediateFactory(),
+  });
+  const store = new SqliteTelegramAgentBindingStore(join(directory, "command-center.db"));
+  const telegramBindings = new TelegramAgentBindingService({
+    store,
+    agentExists: (agentId) => {
+      try {
+        manager.getAgent(agentId);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    fetch: async () => new Response(JSON.stringify({
+      ok: true,
+      result: {
+        id: 987654,
+        is_bot: true,
+        first_name: "Coder",
+        username: "squadai_coder_bot",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  const server = createCommandCenterServer({ manager, telegramBindings });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const created = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings`, {
+      method: "POST",
+      body: { agentId: "coder", token: "987654:secret" },
+    });
+    assert.equal(created.binding.botUsername, "squadai_coder_bot");
+
+    const listed = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings`);
+    assert.equal(listed.bindings.length, 1);
+    assert.equal(JSON.stringify(listed).includes("987654:secret"), false);
+
+    const removed = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings/coder`, {
+      method: "DELETE",
+    });
+    assert.equal(removed.removed, true);
+  } finally {
+    await server.close();
+    await manager.close();
+    await store.close();
+  }
+});
 
 test("command center API creates agents, lists them, sends messages, and exposes events", async () => {
   const manager = new CodexAgentManager({

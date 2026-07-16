@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { SqliteTelegramMessageStore, TelegramListener } from "../src/index.js";
+import {
+  SqliteTelegramAgentBindingStore,
+  SqliteTelegramMessageStore,
+  TelegramAgentBindingService,
+  TelegramListener,
+} from "../src/index.js";
 
 test("telegram message store persists group messages and deduplicates Telegram retries", async () => {
   const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-store-"));
@@ -129,6 +134,94 @@ test("telegram listener stores only group text messages and advances its durable
     }]);
   } finally {
     await listener.close();
+    await store.close();
+  }
+});
+
+test("telegram agent binding verifies a bot token, persists its identity, and never lists the token", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-bindings-"));
+  const databasePath = join(directory, "command-center.db");
+  const store = new SqliteTelegramAgentBindingStore(databasePath);
+  const requests: string[] = [];
+  const service = new TelegramAgentBindingService({
+    store,
+    agentExists: (agentId) => agentId === "coder",
+    fetch: async (input) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          id: 123456,
+          is_bot: true,
+          first_name: "Coder",
+          username: "squadai_coder_bot",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    clock: () => new Date("2026-07-16T05:00:00.000Z"),
+  });
+
+  try {
+    const binding = await service.bindAgent("coder", "123456:secret-token");
+
+    assert.equal(requests[0], "https://api.telegram.org/bot123456:secret-token/getMe");
+    assert.deepEqual(binding, {
+      agentId: "coder",
+      botId: "123456",
+      botUsername: "squadai_coder_bot",
+      botName: "Coder",
+      createdAt: "2026-07-16T05:00:00.000Z",
+      updatedAt: "2026-07-16T05:00:00.000Z",
+    });
+    assert.deepEqual(service.listBindings(), [binding]);
+    assert.equal(store.getBotToken("coder"), "123456:secret-token");
+    assert.equal(JSON.stringify(service.listBindings()).includes("secret-token"), false);
+  } finally {
+    await store.close();
+  }
+
+  const reopened = new SqliteTelegramAgentBindingStore(databasePath);
+  try {
+    assert.equal(reopened.getBotToken("coder"), "123456:secret-token");
+    assert.equal(reopened.listBindings()[0]?.botUsername, "squadai_coder_bot");
+  } finally {
+    await reopened.close();
+  }
+});
+
+test("telegram agent binding rejects unknown agents and prevents one bot from representing two agents", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-binding-rules-"));
+  const store = new SqliteTelegramAgentBindingStore(join(directory, "command-center.db"));
+  const service = new TelegramAgentBindingService({
+    store,
+    agentExists: (agentId) => agentId === "coder" || agentId === "reviewer",
+    fetch: async () => new Response(JSON.stringify({
+      ok: true,
+      result: {
+        id: 123456,
+        is_bot: true,
+        first_name: "Coder",
+        username: "squadai_coder_bot",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+
+  try {
+    await assert.rejects(service.bindAgent("missing", "token"), /unknown agent/i);
+    await service.bindAgent("coder", "token-one");
+    await assert.rejects(
+      service.bindAgent("reviewer", "token-two"),
+      /already represents agent coder/i,
+    );
+    assert.equal(await service.removeBinding("coder"), true);
+    assert.deepEqual(service.listBindings(), []);
+  } finally {
     await store.close();
   }
 });

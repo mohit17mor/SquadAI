@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import type { CodexAgentManager } from "./manager.js";
 import type { RunnerHub } from "./runnerHub.js";
+import type { TelegramAgentBindingService } from "./telegramBindings.js";
 import type {
   AgentDefinition,
   AgentDefinitionUpdate,
@@ -39,6 +40,7 @@ const execFileAsync = promisify(execFile);
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   runnerHub?: RunnerHub;
+  telegramBindings?: TelegramAgentBindingService;
   title?: string;
   directoryPicker?: (initialPath: string) => Promise<string | null>;
   workspaceOpener?: (workspacePath: string) => Promise<void>;
@@ -143,6 +145,32 @@ export class CommandCenterServer {
 
       if (request.method === "GET" && url.pathname === "/api/runners") {
         this.json(response, { runners: this.options.runnerHub?.listRunners() ?? [] });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/telegram/agent-bindings") {
+        this.json(response, {
+          bindings: this.requireTelegramBindings().listBindings(),
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/telegram/agent-bindings") {
+        const body = asRecord(await readJson(request));
+        const binding = await this.requireTelegramBindings().bindAgent(
+          requiredString(body.agentId, "agentId"),
+          requiredString(body.token, "token"),
+        );
+        this.json(response, { binding });
+        return;
+      }
+
+      const telegramBindingMatch = url.pathname.match(/^\/api\/telegram\/agent-bindings\/([^/]+)$/);
+      if (request.method === "DELETE" && telegramBindingMatch?.[1]) {
+        const removed = await this.requireTelegramBindings().removeBinding(
+          decodeURIComponent(telegramBindingMatch[1]),
+        );
+        this.json(response, { removed });
         return;
       }
 
@@ -487,6 +515,12 @@ export class CommandCenterServer {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     if (!hub.authenticate(token)) throw new Error("Runner authentication failed.");
     return hub;
+  }
+
+  private requireTelegramBindings(): TelegramAgentBindingService {
+    const bindings = this.options.telegramBindings;
+    if (!bindings) throw new Error("Telegram agent bindings are not configured.");
+    return bindings;
   }
 
   private json(response: ServerResponse, body: unknown, status = 200): void {
