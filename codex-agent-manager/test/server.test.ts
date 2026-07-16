@@ -10,8 +10,10 @@ import {
   type AgentModelCatalog,
   type CodexControlClientContext,
   createCommandCenterServer,
+  decodeRunnerEnrollmentBundle,
   type CodexControlClientFactory,
   RunnerHub,
+  SqliteRunnerEnrollmentStore,
   SqliteTelegramAgentBindingStore,
   SqliteTelegramRequestStore,
   TelegramAgentBindingService,
@@ -540,6 +542,75 @@ test("command center proxies remote directory browsing through the runner", asyn
   } finally {
     await server.close();
     await manager.close();
+  }
+});
+
+test("command center enrolls a runner and accepts only its issued credential", async () => {
+  const root = await mkdtemp(join(tmpdir(), "squadai-server-runner-enrollment-"));
+  const enrollments = new SqliteRunnerEnrollmentStore(join(root, "command-center.db"));
+  const runnerHub = new RunnerHub(
+    "",
+    () => new Date(),
+    (runnerId, token) => enrollments.authenticate(runnerId, token),
+  );
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const server = createCommandCenterServer({ manager, runnerHub, runnerEnrollments: enrollments });
+  await server.listen(0);
+
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const enrollment = await jsonFetch(`${baseUrl}/api/runner-enrollments`, {
+      method: "POST",
+      body: { controlUrl: baseUrl },
+    });
+    const decoded = decodeRunnerEnrollmentBundle(enrollment.bundle);
+    const credential = await jsonFetch(`${baseUrl}/api/runner-enrollments/exchange`, {
+      method: "POST",
+      body: {
+        code: decoded.code,
+        runner: {
+          id: "review-machine",
+          name: "Review machine",
+          hostname: "review-machine.local",
+          platform: "linux",
+          arch: "arm64",
+          version: "test",
+        },
+      },
+    });
+
+    const registration = {
+      id: credential.runnerId,
+      name: "Review machine",
+      hostname: "review-machine.local",
+      platform: "linux",
+      arch: "arm64",
+      version: "test",
+    };
+    const accepted = await fetch(`${baseUrl}/api/runners/register`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${credential.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(registration),
+    });
+    assert.equal(accepted.status, 200);
+
+    const rejected = await fetch(`${baseUrl}/api/runners/register`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${credential.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ...registration, id: "another-machine" }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.match(await rejected.text(), /authentication failed/i);
+  } finally {
+    await server.close();
+    await manager.close();
+    await enrollments.close();
   }
 });
 
@@ -1126,6 +1197,8 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(html, /id="topology-inspector"/);
     assert.match(html, /id="topology-agent-list"/);
     assert.match(html, /id="topology-add-agent"/);
+    assert.match(html, /id="topology-add-runner"/);
+    assert.match(html, /id="runner-enrollment-modal"/);
     assert.match(html, /id="topology-motion-toggle"/);
     assert.match(html, /id="topology-zoom-out"/);
     assert.match(html, /id="topology-fit-secondary"/);

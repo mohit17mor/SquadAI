@@ -3,6 +3,18 @@ export { CommandCenterServer, createCommandCenterServer } from "./server.js";
 export type { CommandCenterServerOptions } from "./server.js";
 export { createDefaultClientFactory } from "./codexControlFactory.js";
 export { RunnerDaemon } from "./runnerDaemon.js";
+export {
+  decodeRunnerEnrollmentBundle,
+  encodeRunnerEnrollmentBundle,
+  SqliteRunnerEnrollmentStore,
+} from "./runnerEnrollment.js";
+export {
+  enrollRunner,
+  loadRunnerConfig,
+  runnerConfigPath,
+  saveRunnerConfig,
+} from "./runnerConfig.js";
+export type { SavedRunnerConfig } from "./runnerConfig.js";
 export { RemoteSession, RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 export { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 export type { TelegramGroupMessage, TelegramListenerOptions } from "./telegram.js";

@@ -6,6 +6,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type { CodexAgentManager } from "./manager.js";
+import type { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import type { RunnerHub } from "./runnerHub.js";
 import type { TelegramAgentBindingService } from "./telegramBindings.js";
 import type { TelegramMentionIntake } from "./telegramRequests.js";
@@ -41,6 +42,7 @@ const execFileAsync = promisify(execFile);
 export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   runnerHub?: RunnerHub;
+  runnerEnrollments?: SqliteRunnerEnrollmentStore;
   telegramBindings?: TelegramAgentBindingService;
   telegramMentionIntake?: TelegramMentionIntake;
   title?: string;
@@ -150,6 +152,25 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/runner-enrollments") {
+        const body = asRecord(await readJson(request));
+        const enrollment = this.requireRunnerEnrollments().create(
+          requiredString(body.controlUrl, "controlUrl"),
+        );
+        this.json(response, enrollment);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/runner-enrollments/exchange") {
+        const body = asRecord(await readJson(request));
+        const credential = this.requireRunnerEnrollments().exchange(
+          requiredString(body.code, "code"),
+          parseRunnerRegistration(body.runner),
+        );
+        this.json(response, credential);
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/telegram/agent-bindings") {
         this.json(response, {
           bindings: this.requireTelegramBindings().listBindings(),
@@ -194,36 +215,40 @@ export class CommandCenterServer {
       }
 
       if (request.method === "POST" && url.pathname === "/api/runners/register") {
-        const hub = this.requireRunnerHub(request);
-        const runner = hub.register(parseRunnerRegistration(await readJson(request)));
+        const registration = parseRunnerRegistration(await readJson(request));
+        const hub = this.requireRunnerHub(request, registration.id);
+        const runner = hub.register(registration);
         this.json(response, { runner });
         return;
       }
 
       const runnerHeartbeatMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/heartbeat$/);
       if (request.method === "POST" && runnerHeartbeatMatch?.[1]) {
-        const hub = this.requireRunnerHub(request);
-        const runner = hub.heartbeat(decodeURIComponent(runnerHeartbeatMatch[1]));
+        const runnerId = decodeURIComponent(runnerHeartbeatMatch[1]);
+        const hub = this.requireRunnerHub(request, runnerId);
+        const runner = hub.heartbeat(runnerId);
         this.json(response, { runner });
         return;
       }
 
       const runnerDisconnectMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/disconnect$/);
       if (request.method === "POST" && runnerDisconnectMatch?.[1]) {
-        const hub = this.requireRunnerHub(request);
-        const runner = hub.disconnect(decodeURIComponent(runnerDisconnectMatch[1]));
+        const runnerId = decodeURIComponent(runnerDisconnectMatch[1]);
+        const hub = this.requireRunnerHub(request, runnerId);
+        const runner = hub.disconnect(runnerId);
         this.json(response, { runner });
         return;
       }
 
       const runnerPollMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/poll$/);
       if (request.method === "POST" && runnerPollMatch?.[1]) {
-        const hub = this.requireRunnerHub(request);
+        const runnerId = decodeURIComponent(runnerPollMatch[1]);
+        const hub = this.requireRunnerHub(request, runnerId);
         const body = asRecord(await readJson(request));
         const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : 25_000;
         const abort = new AbortController();
         request.once("aborted", () => abort.abort());
-        const command = await hub.poll(decodeURIComponent(runnerPollMatch[1]), timeoutMs, abort.signal);
+        const command = await hub.poll(runnerId, timeoutMs, abort.signal);
         this.json(response, { command });
         return;
       }
@@ -232,9 +257,10 @@ export class CommandCenterServer {
         /^\/api\/runners\/([^/]+)\/commands\/([^/]+)\/events$/,
       );
       if (request.method === "POST" && runnerCommandEventMatch?.[1] && runnerCommandEventMatch[2]) {
-        const hub = this.requireRunnerHub(request);
+        const runnerId = decodeURIComponent(runnerCommandEventMatch[1]);
+        const hub = this.requireRunnerHub(request, runnerId);
         const result = await hub.reportEvent(
-          decodeURIComponent(runnerCommandEventMatch[1]),
+          runnerId,
           decodeURIComponent(runnerCommandEventMatch[2]),
           await readJson(request) as RunnerCommandEvent,
         );
@@ -246,9 +272,10 @@ export class CommandCenterServer {
         /^\/api\/runners\/([^/]+)\/commands\/([^/]+)\/complete$/,
       );
       if (request.method === "POST" && runnerCommandCompleteMatch?.[1] && runnerCommandCompleteMatch[2]) {
-        const hub = this.requireRunnerHub(request);
+        const runnerId = decodeURIComponent(runnerCommandCompleteMatch[1]);
+        const hub = this.requireRunnerHub(request, runnerId);
         hub.complete(
-          decodeURIComponent(runnerCommandCompleteMatch[1]),
+          runnerId,
           decodeURIComponent(runnerCommandCompleteMatch[2]),
           await readJson(request) as RunnerCommandCompletion,
         );
@@ -527,13 +554,19 @@ export class CommandCenterServer {
     response.end(renderHtml(this.title));
   }
 
-  private requireRunnerHub(request: IncomingMessage): RunnerHub {
+  private requireRunnerHub(request: IncomingMessage, runnerId?: string): RunnerHub {
     const hub = this.options.runnerHub;
     if (!hub) throw new Error("Remote runners are not enabled on this control plane.");
     const authorization = request.headers.authorization;
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-    if (!hub.authenticate(token)) throw new Error("Runner authentication failed.");
+    if (!hub.authenticate(token, runnerId)) throw new Error("Runner authentication failed.");
     return hub;
+  }
+
+  private requireRunnerEnrollments(): SqliteRunnerEnrollmentStore {
+    const enrollments = this.options.runnerEnrollments;
+    if (!enrollments) throw new Error("Runner enrollment is not configured.");
+    return enrollments;
   }
 
   private requireTelegramBindings(): TelegramAgentBindingService {
@@ -1070,6 +1103,7 @@ function renderHtml(title: string): string {
           <button type="button" class="topology-tool active">Select</button>
           <button type="button" class="topology-tool" title="Connection editing is coming next" disabled>Connect</button>
           <button id="topology-add-agent" type="button" class="topology-tool primary">Add agent</button>
+          <button id="topology-add-runner" type="button" class="topology-tool">Add runner</button>
           <button type="button" class="topology-tool" title="Event source editing is coming next" disabled>Add event source</button>
           <button id="topology-fit" type="button" class="topology-tool">Fit view</button>
         </div>
@@ -1184,6 +1218,35 @@ function renderHtml(title: string): string {
               <button id="delete-agent-button" type="button" class="danger">Delete</button>
             </div>
           </form>
+        </div>
+      </section>
+    </div>
+    <div id="runner-enrollment-modal" class="settings-modal" hidden>
+      <section class="settings-dialog runner-enrollment-dialog" role="dialog" aria-modal="true" aria-labelledby="runner-enrollment-title">
+        <header>
+          <div><span class="settings-kicker">Remote runner</span><h2 id="runner-enrollment-title">Add a machine</h2><p>Generate one command that enrolls and starts SquadAI on another machine.</p></div>
+          <button id="runner-enrollment-close" type="button" class="secondary">Close</button>
+        </header>
+        <div class="settings-dialog-body runner-enrollment-body">
+          <ol class="runner-enrollment-steps">
+            <li>Install Tailscale, Node.js, Codex, and the SquadAI CLI on the new machine.</li>
+            <li>Make sure both machines are connected to the same Tailscale network.</li>
+            <li>Generate and run the command below on the new machine.</li>
+          </ol>
+          <label>Control plane address
+            <input id="runner-control-url" type="url" autocomplete="off">
+          </label>
+          <div class="field-hint">Use the Tailscale address shown in your browser, not localhost, when connecting another machine.</div>
+          <button id="runner-enrollment-generate" type="button">Generate enrollment command</button>
+          <div id="runner-enrollment-result" class="runner-enrollment-result" hidden>
+            <label>Run this on the new machine
+              <textarea id="runner-enrollment-command" rows="4" readonly></textarea>
+            </label>
+            <div class="runner-enrollment-actions">
+              <span id="runner-enrollment-expiry" class="field-hint"></span>
+              <button id="runner-enrollment-copy" type="button" class="secondary">Copy command</button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -1440,6 +1503,13 @@ textarea { resize: vertical; }
 .settings-dialog > header p { margin: 0; color: #8b949e; font-size: 12px; }
 .settings-kicker { color: #58a6ff; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .settings-dialog-body { min-height: 0; overflow-y: auto; padding: 18px 20px 22px; }
+.runner-enrollment-body { display: grid; gap: 16px; }
+.runner-enrollment-steps { margin: 0; padding-left: 22px; color: #c9d1d9; line-height: 1.65; }
+.runner-enrollment-steps li + li { margin-top: 5px; }
+.runner-enrollment-result { display: grid; gap: 10px; padding: 14px; border: 1px solid #30363d; border-radius: 10px; background: #0d1117; }
+.runner-enrollment-result[hidden] { display: none; }
+.runner-enrollment-result textarea { width: 100%; resize: none; font-family: ui-monospace,SFMono-Regular,Consolas,monospace; font-size: 12px; line-height: 1.5; }
+.runner-enrollment-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .agent-editor-form { padding: 0; }
 .agent-editor-form.disabled { opacity: .55; pointer-events: none; }
 .agent-actions { display: flex; gap: 8px; justify-content: space-between; }
@@ -1875,6 +1945,11 @@ const deleteAgentButton = document.getElementById("delete-agent-button");
 const agentSettingsModal = document.getElementById("agent-settings-modal");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const closeAgentSettingsButton = document.getElementById("close-agent-settings");
+const runnerEnrollmentModal = document.getElementById("runner-enrollment-modal");
+const runnerControlUrl = document.getElementById("runner-control-url");
+const runnerEnrollmentResult = document.getElementById("runner-enrollment-result");
+const runnerEnrollmentCommand = document.getElementById("runner-enrollment-command");
+const runnerEnrollmentExpiry = document.getElementById("runner-enrollment-expiry");
 const remoteDirectoryModal = document.getElementById("remote-directory-modal");
 const remoteDirectoryRunner = document.getElementById("remote-directory-runner");
 const remoteDirectoryPathForm = document.getElementById("remote-directory-path-form");
@@ -1902,6 +1977,43 @@ let remoteDirectoryListing = null;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
+document.getElementById("topology-add-runner").addEventListener("click", () => {
+  runnerControlUrl.value = window.location.origin;
+  runnerEnrollmentResult.hidden = true;
+  runnerEnrollmentModal.hidden = false;
+});
+document.getElementById("runner-enrollment-close").addEventListener("click", () => {
+  runnerEnrollmentModal.hidden = true;
+});
+runnerEnrollmentModal.addEventListener("click", (event) => {
+  if (event.target === runnerEnrollmentModal) runnerEnrollmentModal.hidden = true;
+});
+document.getElementById("runner-enrollment-generate").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/runner-enrollments", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ controlUrl: runnerControlUrl.value.trim() }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not create runner enrollment");
+    runnerEnrollmentCommand.value = body.command;
+    runnerEnrollmentExpiry.textContent = "One-time command · expires " + new Date(body.expiresAt).toLocaleTimeString();
+    runnerEnrollmentResult.hidden = false;
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), "error");
+  }
+});
+document.getElementById("runner-enrollment-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(runnerEnrollmentCommand.value);
+    toast("Runner command copied");
+  } catch {
+    runnerEnrollmentCommand.focus();
+    runnerEnrollmentCommand.select();
+    toast("Select and copy the runner command");
+  }
+});
 for (const button of document.querySelectorAll("[data-panel]")) {
   button.addEventListener("click", () => {
     const previousPanel = activePanel;

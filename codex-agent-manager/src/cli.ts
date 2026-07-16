@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { GitWorkspaceManager } from "./gitWorkspace.js";
 import { CodexAgentManager } from "./manager.js";
+import { enrollRunner, loadRunnerConfig, runnerConfigPath, type SavedRunnerConfig } from "./runnerConfig.js";
 import { RunnerDaemon } from "./runnerDaemon.js";
+import { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
@@ -15,13 +17,16 @@ import { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramReq
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
+const positionals: string[] = [];
 for (let index = 2; index < process.argv.length; index += 1) {
   const arg = process.argv[index];
   if (!arg?.startsWith("--")) {
+    positionals.push(arg ?? "");
     continue;
   }
   const next = process.argv[index + 1];
   args.set(arg.slice(2), next && !next.startsWith("--") ? next : "true");
+  if (next && !next.startsWith("--")) index += 1;
 }
 
 const port = Number(args.get("port") ?? process.env.CODEX_AGENT_MANAGER_PORT ?? 4317);
@@ -41,6 +46,42 @@ const routingMode = parseRoutingMode(
 );
 if (codexBinary) {
   process.env.CODEX_BINARY = codexBinary;
+}
+
+if (positionals[0] === "runner") {
+  const command = positionals[1];
+  if (command === "connect") {
+    const bundle = positionals[2];
+    if (!bundle) throw new Error('Usage: squadai runner connect <bundle> [--runner-name "My machine"]');
+    const runnerName = args.get("runner-name");
+    const sshHost = args.get("ssh-host");
+    const config = await enrollRunner(bundle, {
+      ...(runnerName ? { name: runnerName } : {}),
+      ...(sshHost ? { sshHost } : {}),
+    });
+    console.log(`Runner ${config.id} enrolled. Configuration saved to ${runnerConfigPath()}`);
+    await runRunner(config);
+    process.exit(0);
+  }
+  if (command === "start") {
+    await runRunner(await loadRunnerConfig());
+    process.exit(0);
+  }
+  if (command === "status") {
+    const config = await loadRunnerConfig();
+    const response = await fetch(`${config.controlUrl}/api/runners`);
+    const body = await response.json() as {
+      runners?: Array<{ id: string; status: string; lastSeenAt: string }>;
+      error?: string;
+    };
+    if (!response.ok) throw new Error(body.error || `Control plane returned HTTP ${response.status}.`);
+    const runner = body.runners?.find((item) => item.id === config.id);
+    console.log(runner
+      ? `Runner ${config.id}: ${runner.status} (last seen ${runner.lastSeenAt})`
+      : `Runner ${config.id}: not currently registered with ${config.controlUrl}`);
+    process.exit(0);
+  }
+  throw new Error("Usage: squadai runner <connect|start|status>");
 }
 
 if (mode === "runner") {
@@ -69,7 +110,12 @@ if (mode !== "embedded" && mode !== "control") {
   throw new Error(`Invalid mode: ${mode}. Use embedded, control, or runner.`);
 }
 
-const runnerHub = new RunnerHub(runnerToken);
+const runnerEnrollments = new SqliteRunnerEnrollmentStore(databasePath);
+const runnerHub = new RunnerHub(
+  runnerToken,
+  () => new Date(),
+  (runnerId, token) => runnerEnrollments.authenticate(runnerId, token),
+);
 const localClientFactory = createDefaultClientFactory();
 
 const manager = new CodexAgentManager({
@@ -110,6 +156,7 @@ const telegramCoordinator = telegramToken && telegramStore
 const server = createCommandCenterServer({
   manager,
   runnerHub,
+  runnerEnrollments,
   telegramBindings,
   telegramMentionIntake,
 });
@@ -134,7 +181,7 @@ console.log(`Legacy state backup: ${statePath}`);
 console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);
 console.log(`Routing mode: ${routingMode}`);
 console.log(`Mode: ${mode}`);
-console.log(`Remote runners: ${runnerToken ? "token protected" : "development mode (no token)"}`);
+console.log(`Remote runners: ${runnerToken ? "shared token + per-runner enrollment" : "per-runner enrollment"}`);
 console.log(`Telegram listener: ${telegramListener ? "enabled" : "disabled"}`);
 
 for (const signal of shutdownSignals()) {
@@ -150,6 +197,7 @@ async function shutdown(): Promise<void> {
   await telegramStore?.close().catch(() => {});
   await telegramBindingStore.close().catch(() => {});
   await telegramRequestStore.close().catch(() => {});
+  await runnerEnrollments.close().catch(() => {});
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);
@@ -166,4 +214,19 @@ function parseRoutingMode(value: string): RoutingMode {
     return value;
   }
   throw new Error(`Invalid routing mode: ${value}`);
+}
+
+async function runRunner(config: SavedRunnerConfig): Promise<void> {
+  const daemon = new RunnerDaemon({
+    controlUrl: config.controlUrl,
+    token: config.token,
+    id: config.id,
+    name: config.name,
+    ...(config.sshHost ? { sshHost: config.sshHost } : {}),
+  });
+  console.log(`SquadAI runner ${config.id} connecting to ${config.controlUrl}`);
+  for (const signal of shutdownSignals()) {
+    process.once(signal, () => void daemon.close().finally(() => process.exit(0)));
+  }
+  await daemon.start();
 }

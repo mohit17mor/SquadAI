@@ -50,16 +50,20 @@ export class RunnerHub extends EventEmitter {
   constructor(
     private readonly token: string,
     private readonly clock: () => Date = () => new Date(),
+    private readonly credentialAuthenticator?: (runnerId: string, token: string) => boolean,
   ) {
     super();
   }
 
-  authenticate(candidate: string | undefined): boolean {
-    if (!this.token) return true;
+  authenticate(candidate: string | undefined, runnerId?: string): boolean {
+    if (!this.token && !this.credentialAuthenticator) return true;
     if (!candidate) return false;
-    const expected = Buffer.from(this.token);
-    const received = Buffer.from(candidate);
-    return expected.length === received.length && timingSafeEqual(expected, received);
+    if (this.token) {
+      const expected = Buffer.from(this.token);
+      const received = Buffer.from(candidate);
+      if (expected.length === received.length && timingSafeEqual(expected, received)) return true;
+    }
+    return Boolean(runnerId && this.credentialAuthenticator?.(runnerId, candidate));
   }
 
   register(input: RunnerRegistration): RunnerSnapshot {
