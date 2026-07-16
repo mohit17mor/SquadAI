@@ -8,6 +8,7 @@ import { RunnerDaemon } from "./runnerDaemon.js";
 import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
+import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
@@ -31,6 +32,7 @@ const databasePath = resolve(
   args.get("database") ?? process.env.CODEX_AGENT_MANAGER_DATABASE ?? "./command-center.db",
 );
 const codexBinary = args.get("codex-binary");
+const telegramToken = args.get("telegram-token") ?? process.env.SQUADAI_TELEGRAM_TOKEN;
 const routingMode = parseRoutingMode(
   args.get("routing-mode") ?? process.env.CODEX_AGENT_MANAGER_ROUTING_MODE ?? "explicit",
 );
@@ -75,9 +77,15 @@ const manager = new CodexAgentManager({
   workspaceManager: new RunnerAwareWorkspaceManager(runnerHub, new GitWorkspaceManager()),
 });
 const server = createCommandCenterServer({ manager, runnerHub });
+const telegramStore = telegramToken ? new SqliteTelegramMessageStore(databasePath) : null;
+const telegramListener = telegramToken && telegramStore
+  ? new TelegramListener({ token: telegramToken, store: telegramStore })
+  : null;
+let telegramRun: Promise<void> | undefined;
 
 await manager.start();
 await server.listen(port, host);
+telegramRun = telegramListener?.start();
 console.log(`SquadAI listening at http://${host}:${server.port}`);
 console.log(`Database: ${databasePath}`);
 console.log(`Legacy state backup: ${statePath}`);
@@ -85,6 +93,7 @@ console.log(`Codex binary: ${process.env.CODEX_BINARY ?? "auto"}`);
 console.log(`Routing mode: ${routingMode}`);
 console.log(`Mode: ${mode}`);
 console.log(`Remote runners: ${runnerToken ? "token protected" : "development mode (no token)"}`);
+console.log(`Telegram listener: ${telegramListener ? "enabled" : "disabled"}`);
 
 for (const signal of shutdownSignals()) {
   process.once(signal, () => {
@@ -93,6 +102,9 @@ for (const signal of shutdownSignals()) {
 }
 
 async function shutdown(): Promise<void> {
+  await telegramListener?.close().catch(() => {});
+  await telegramRun?.catch(() => {});
+  await telegramStore?.close().catch(() => {});
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);
