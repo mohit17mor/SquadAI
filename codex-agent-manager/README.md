@@ -26,17 +26,21 @@ native installer or background service.
 
 1. Connect the control-plane machine and the new runner machine to the same
    Tailscale network.
-2. Start SquadAI on the control plane using its Tailscale address, for example:
+2. Start SquadAI normally on the control-plane machine:
 
    ```bash
-   npm start -- --mode control --host 100.64.0.10 --port 4317
+   npm start -- --mode control
    ```
 
-3. Open that address in the browser and choose **Add runner** in the topology
-   toolbar.
-4. On the new machine, install Node.js, Codex, and the SquadAI CLI. From a
+3. Open `http://localhost:4317` and choose **Add runner** in the topology
+   toolbar. SquadAI finds Tailscale even when it is not on `PATH`, privately
+   shares the local control plane through Tailscale Serve, and creates the
+   correct enrollment address automatically.
+4. The first time, Tailscale may open a one-time approval page. Approve it,
+   return to SquadAI, and select **Generate enrollment command** again.
+5. On the new machine, install Node.js, Codex, and the SquadAI CLI. From a
    source checkout, `npm install -g .` installs the CLI.
-5. Run the one-time command shown by the UI. It enrolls the machine, saves its
+6. Run the one-time command shown by the UI. It enrolls the machine, saves its
    runner-specific credential in `~/.squadai/runner.json`, and connects
    immediately.
 

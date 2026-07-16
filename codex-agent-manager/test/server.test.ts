@@ -18,6 +18,8 @@ import {
   SqliteTelegramRequestStore,
   TelegramAgentBindingService,
   TelegramMentionIntake,
+  TailscaleService,
+  TailscaleSetupError,
 } from "../src/index.js";
 
 class ImmediateCodexClient {
@@ -614,6 +616,91 @@ test("command center enrolls a runner and accepts only its issued credential", a
   }
 });
 
+test("command center automatically creates a private Tailscale enrollment address", async () => {
+  const root = await mkdtemp(join(tmpdir(), "squadai-server-tailscale-enrollment-"));
+  const enrollments = new SqliteRunnerEnrollmentStore(join(root, "command-center.db"));
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const tailscale = new TailscaleService({
+    platform: "win32",
+    fileExists: async () => true,
+    run: async (_executable, args) => {
+      if (args[0] === "status") {
+        return {
+          stdout: JSON.stringify({
+            BackendState: "Running",
+            Self: { DNSName: "control-machine.example.ts.net." },
+          }),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    },
+  });
+  const server = createCommandCenterServer({
+    manager,
+    runnerEnrollments: enrollments,
+    tailscale,
+  });
+  await server.listen(0);
+
+  try {
+    const enrollment = await jsonFetch(
+      `http://127.0.0.1:${server.port}/api/runner-enrollments`,
+      { method: "POST", body: {} },
+    );
+    assert.equal(enrollment.controlUrl, "https://control-machine.example.ts.net");
+    assert.equal(enrollment.connection, "tailscale");
+    assert.equal(
+      decodeRunnerEnrollmentBundle(enrollment.bundle).controlUrl,
+      "https://control-machine.example.ts.net",
+    );
+  } finally {
+    await server.close();
+    await manager.close();
+    await enrollments.close();
+  }
+});
+
+test("command center returns the one-time Tailscale approval link", async () => {
+  const root = await mkdtemp(join(tmpdir(), "squadai-server-tailscale-approval-"));
+  const enrollments = new SqliteRunnerEnrollmentStore(join(root, "command-center.db"));
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const tailscale = {
+    async ensurePrivateAccess(): Promise<never> {
+      throw new TailscaleSetupError(
+        "Tailscale needs approval.",
+        "https://login.tailscale.com/f/serve?node=test",
+      );
+    },
+  };
+  const server = createCommandCenterServer({
+    manager,
+    runnerEnrollments: enrollments,
+    tailscale,
+  });
+  await server.listen(0);
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${server.port}/api/runner-enrollments`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "Tailscale needs approval.",
+      approvalUrl: "https://login.tailscale.com/f/serve?node=test",
+    });
+  } finally {
+    await server.close();
+    await manager.close();
+    await enrollments.close();
+  }
+});
+
 test("command center API derives an agent id from name when id is omitted", async () => {
   const manager = new CodexAgentManager({
     agents: [],
@@ -1199,6 +1286,8 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(html, /id="topology-add-agent"/);
     assert.match(html, /id="topology-add-runner"/);
     assert.match(html, /id="runner-enrollment-modal"/);
+    assert.match(html, /SquadAI will create a private Tailscale address automatically/);
+    assert.doesNotMatch(html, /id="runner-control-url"/);
     assert.match(html, /id="topology-motion-toggle"/);
     assert.match(html, /id="topology-zoom-out"/);
     assert.match(html, /id="topology-fit-secondary"/);

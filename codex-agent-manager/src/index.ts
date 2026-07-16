@@ -16,6 +16,8 @@ export {
 } from "./runnerConfig.js";
 export type { SavedRunnerConfig } from "./runnerConfig.js";
 export { RemoteSession, RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
+export { TailscaleService, TailscaleSetupError } from "./tailscale.js";
+export type { TailscalePrivateAccess } from "./tailscale.js";
 export { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 export type { TelegramGroupMessage, TelegramListenerOptions } from "./telegram.js";
 export { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";

@@ -10,6 +10,7 @@ import type { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import type { RunnerHub } from "./runnerHub.js";
 import type { TelegramAgentBindingService } from "./telegramBindings.js";
 import type { TelegramMentionIntake } from "./telegramRequests.js";
+import { TailscaleSetupError, type TailscalePrivateAccess } from "./tailscale.js";
 import type {
   AgentDefinition,
   AgentDefinitionUpdate,
@@ -43,6 +44,9 @@ export type CommandCenterServerOptions = {
   manager: CodexAgentManager;
   runnerHub?: RunnerHub;
   runnerEnrollments?: SqliteRunnerEnrollmentStore;
+  tailscale?: {
+    ensurePrivateAccess(localPort: number): Promise<TailscalePrivateAccess>;
+  };
   telegramBindings?: TelegramAgentBindingService;
   telegramMentionIntake?: TelegramMentionIntake;
   title?: string;
@@ -154,10 +158,17 @@ export class CommandCenterServer {
 
       if (request.method === "POST" && url.pathname === "/api/runner-enrollments") {
         const body = asRecord(await readJson(request));
+        const suppliedControlUrl = optionalString(body.controlUrl);
+        const privateAccess = suppliedControlUrl
+          ? null
+          : await this.requireTailscale().ensurePrivateAccess(this.port);
         const enrollment = this.requireRunnerEnrollments().create(
-          requiredString(body.controlUrl, "controlUrl"),
+          suppliedControlUrl ?? privateAccess!.controlUrl,
         );
-        this.json(response, enrollment);
+        this.json(response, {
+          ...enrollment,
+          connection: suppliedControlUrl ? "manual" : "tailscale",
+        });
         return;
       }
 
@@ -538,6 +549,13 @@ export class CommandCenterServer {
 
       this.json(response, { error: "Not found" }, 404);
     } catch (error) {
+      if (error instanceof TailscaleSetupError) {
+        this.json(response, {
+          error: error.message,
+          ...(error.approvalUrl ? { approvalUrl: error.approvalUrl } : {}),
+        }, error.approvalUrl ? 409 : 400);
+        return;
+      }
       this.json(
         response,
         { error: error instanceof Error ? error.message : String(error) },
@@ -567,6 +585,14 @@ export class CommandCenterServer {
     const enrollments = this.options.runnerEnrollments;
     if (!enrollments) throw new Error("Runner enrollment is not configured.");
     return enrollments;
+  }
+
+  private requireTailscale(): {
+    ensurePrivateAccess(localPort: number): Promise<TailscalePrivateAccess>;
+  } {
+    const tailscale = this.options.tailscale;
+    if (!tailscale) throw new Error("Automatic Tailscale setup is not configured.");
+    return tailscale;
   }
 
   private requireTelegramBindings(): TelegramAgentBindingService {
@@ -1231,13 +1257,12 @@ function renderHtml(title: string): string {
           <ol class="runner-enrollment-steps">
             <li>Install Tailscale, Node.js, Codex, and the SquadAI CLI on the new machine.</li>
             <li>Make sure both machines are connected to the same Tailscale network.</li>
-            <li>Generate and run the command below on the new machine.</li>
+            <li>Click below. SquadAI will create a private Tailscale address automatically.</li>
+            <li>Run the generated command on the new machine.</li>
           </ol>
-          <label>Control plane address
-            <input id="runner-control-url" type="url" autocomplete="off">
-          </label>
-          <div class="field-hint">Use the Tailscale address shown in your browser, not localhost, when connecting another machine.</div>
           <button id="runner-enrollment-generate" type="button">Generate enrollment command</button>
+          <div id="runner-enrollment-status" class="field-hint"></div>
+          <a id="runner-enrollment-approval" class="secondary runner-enrollment-approval" target="_blank" rel="noopener" hidden>Approve Tailscale setup</a>
           <div id="runner-enrollment-result" class="runner-enrollment-result" hidden>
             <label>Run this on the new machine
               <textarea id="runner-enrollment-command" rows="4" readonly></textarea>
@@ -1510,6 +1535,8 @@ textarea { resize: vertical; }
 .runner-enrollment-result[hidden] { display: none; }
 .runner-enrollment-result textarea { width: 100%; resize: none; font-family: ui-monospace,SFMono-Regular,Consolas,monospace; font-size: 12px; line-height: 1.5; }
 .runner-enrollment-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.runner-enrollment-approval { width: fit-content; text-decoration: none; }
+.runner-enrollment-approval[hidden] { display: none; }
 .agent-editor-form { padding: 0; }
 .agent-editor-form.disabled { opacity: .55; pointer-events: none; }
 .agent-actions { display: flex; gap: 8px; justify-content: space-between; }
@@ -1946,7 +1973,8 @@ const agentSettingsModal = document.getElementById("agent-settings-modal");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const closeAgentSettingsButton = document.getElementById("close-agent-settings");
 const runnerEnrollmentModal = document.getElementById("runner-enrollment-modal");
-const runnerControlUrl = document.getElementById("runner-control-url");
+const runnerEnrollmentStatus = document.getElementById("runner-enrollment-status");
+const runnerEnrollmentApproval = document.getElementById("runner-enrollment-approval");
 const runnerEnrollmentResult = document.getElementById("runner-enrollment-result");
 const runnerEnrollmentCommand = document.getElementById("runner-enrollment-command");
 const runnerEnrollmentExpiry = document.getElementById("runner-enrollment-expiry");
@@ -1978,8 +2006,9 @@ let remoteDirectoryListing = null;
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", refresh);
 document.getElementById("topology-add-runner").addEventListener("click", () => {
-  runnerControlUrl.value = window.location.origin;
   runnerEnrollmentResult.hidden = true;
+  runnerEnrollmentApproval.hidden = true;
+  runnerEnrollmentStatus.textContent = "";
   runnerEnrollmentModal.hidden = false;
 });
 document.getElementById("runner-enrollment-close").addEventListener("click", () => {
@@ -1989,19 +2018,35 @@ runnerEnrollmentModal.addEventListener("click", (event) => {
   if (event.target === runnerEnrollmentModal) runnerEnrollmentModal.hidden = true;
 });
 document.getElementById("runner-enrollment-generate").addEventListener("click", async () => {
+  const button = document.getElementById("runner-enrollment-generate");
   try {
+    button.disabled = true;
+    runnerEnrollmentApproval.hidden = true;
+    runnerEnrollmentStatus.textContent = "Checking Tailscale and creating a private connection…";
     const response = await fetch("/api/runner-enrollments", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ controlUrl: runnerControlUrl.value.trim() }),
+      body: JSON.stringify({}),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not create runner enrollment");
+    if (!response.ok) {
+      if (body.approvalUrl) {
+        runnerEnrollmentApproval.href = body.approvalUrl;
+        runnerEnrollmentApproval.hidden = false;
+        window.open(body.approvalUrl, "_blank", "noopener");
+      }
+      throw new Error(body.error || "Could not create runner enrollment");
+    }
     runnerEnrollmentCommand.value = body.command;
     runnerEnrollmentExpiry.textContent = "One-time command · expires " + new Date(body.expiresAt).toLocaleTimeString();
+    runnerEnrollmentStatus.textContent = "Private connection ready at " + body.controlUrl;
     runnerEnrollmentResult.hidden = false;
   } catch (error) {
-    toast(error instanceof Error ? error.message : String(error), "error");
+    const message = error instanceof Error ? error.message : String(error);
+    runnerEnrollmentStatus.textContent = message;
+    toast(message, "error");
+  } finally {
+    button.disabled = false;
   }
 });
 document.getElementById("runner-enrollment-copy").addEventListener("click", async () => {

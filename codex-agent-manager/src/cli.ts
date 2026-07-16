@@ -14,6 +14,7 @@ import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 import { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";
 import { TelegramCoordinator } from "./telegramCoordinator.js";
 import { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
+import { TailscaleService } from "./tailscale.js";
 import type { RoutingMode } from "./types.js";
 
 const args = new Map<string, string>();
@@ -111,6 +112,7 @@ if (mode !== "embedded" && mode !== "control") {
 }
 
 const runnerEnrollments = new SqliteRunnerEnrollmentStore(databasePath);
+const tailscale = new TailscaleService();
 const runnerHub = new RunnerHub(
   runnerToken,
   () => new Date(),
@@ -157,6 +159,7 @@ const server = createCommandCenterServer({
   manager,
   runnerHub,
   runnerEnrollments,
+  tailscale,
   telegramBindings,
   telegramMentionIntake,
 });
