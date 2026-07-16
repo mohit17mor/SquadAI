@@ -85,6 +85,27 @@ export class SqliteTelegramMessageStore {
     return rows.reverse().map(messageFromRow);
   }
 
+  getMessage(chatId: string, messageId: number): TelegramGroupMessage | null {
+    const row = this.database.prepare(`
+      SELECT
+        update_id,
+        chat_id,
+        message_id,
+        chat_type,
+        chat_title,
+        sender_id,
+        sender_name,
+        sender_username,
+        authored_by_bot,
+        text,
+        sent_at,
+        received_at
+      FROM telegram_messages
+      WHERE chat_id = ? AND message_id = ?
+    `).get(chatId, messageId) as TelegramMessageRow | undefined;
+    return row ? messageFromRow(row) : null;
+  }
+
   getUpdateOffset(): number {
     const row = this.database.prepare(`
       SELECT value FROM telegram_listener_state WHERE key = 'update_offset'

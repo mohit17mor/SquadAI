@@ -5,10 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  CodexAgentManager,
+  type CodexControlClientContext,
+  type CodexControlClientFactory,
+  type AgentWorkspaceManager,
   SqliteTelegramAgentBindingStore,
   SqliteTelegramMessageStore,
   SqliteTelegramRequestStore,
   TelegramAgentBindingService,
+  TelegramCoordinator,
   TelegramMentionIntake,
   TelegramListener,
 } from "../src/index.js";
@@ -190,6 +195,7 @@ test("telegram agent binding verifies a bot token, persists its identity, and ne
       botId: "123456",
       botUsername: "squadai_coder_bot",
       botName: "Coder",
+      executionPolicy: "reuse",
       createdAt: "2026-07-16T05:00:00.000Z",
       updatedAt: "2026-07-16T05:00:00.000Z",
     });
@@ -328,3 +334,310 @@ test("telegram mention intake creates requests only for agents tagged in the lat
     await bindingStore.close();
   }
 });
+
+test("telegram coordinator queues tagged work with chat context and replies through an instantiated remote agent bot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-e2e-"));
+  const databasePath = join(directory, "command-center.db");
+  const messageStore = new SqliteTelegramMessageStore(databasePath);
+  const bindingStore = new SqliteTelegramAgentBindingStore(databasePath);
+  const requestStore = new SqliteTelegramRequestStore(databasePath);
+  const clientContexts: CodexControlClientContext[] = [];
+  const prompts: string[] = [];
+  const clientFactory: CodexControlClientFactory = (context) => {
+    assert.ok(context);
+    clientContexts.push(context);
+    return {
+      async startSession() {
+        return {
+          threadId: "telegram-thread",
+          async ask(input) {
+            prompts.push(input);
+            return {
+              finalText: `Completed by ${context.agentId} on ${context.runnerId}.`,
+              threadId: "telegram-thread",
+              turn: { status: "completed" },
+            };
+          },
+        };
+      },
+      async resumeSession() {
+        throw new Error("Unexpected resume.");
+      },
+      async close() {},
+    };
+  };
+  const manager = new CodexAgentManager({
+    agents: [{
+      id: "coder",
+      name: "Coder",
+      runnerId: "vm-1",
+      cwd: directory,
+      instructions: "Implement coding tasks.",
+    }],
+    clientFactory,
+    workspaceManager: passthroughWorkspaceManager(),
+  });
+  const bindings = new TelegramAgentBindingService({
+    store: bindingStore,
+    agentExists: () => true,
+    fetch: async () => new Response(JSON.stringify({
+      ok: true,
+      result: {
+        id: 101,
+        is_bot: true,
+        first_name: "Coder",
+        username: "squadai_coder_bot",
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await bindings.bindAgent("coder", "coder-token", "new");
+  const mentionIntake = new TelegramMentionIntake({ bindings, store: requestStore });
+  const sentMessages: Array<{ token: string; body: Record<string, unknown> }> = [];
+  let outgoingMessageId = 900;
+  const telegramFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const token = url.match(/bot([^/]+)\/sendMessage/)?.[1] ?? "";
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    sentMessages.push({ token, body });
+    const agentBot = token === "coder-token";
+    return new Response(JSON.stringify({
+      ok: true,
+      result: {
+        message_id: outgoingMessageId++,
+        date: 1_784_210_000,
+        text: body.text,
+        chat: { id: -100999, type: "supergroup", title: "Product Team" },
+        from: {
+          id: agentBot ? 101 : 303,
+          is_bot: true,
+          first_name: agentBot ? "Coder" : "SquadAI",
+          username: agentBot ? "squadai_coder_bot" : "squadai_control_bot",
+        },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const coordinator = new TelegramCoordinator({
+    manager,
+    bindings,
+    mentionIntake,
+    requestStore,
+    messageStore,
+    controlBotToken: "control-token",
+    fetch: telegramFetch,
+  });
+  const previousBotReply = telegramMessage({
+    updateId: 699,
+    messageId: 79,
+    authoredByBot: true,
+    senderId: "404",
+    senderName: "Newsbot",
+    senderUsername: "squadai_news_bot",
+    text: "Earlier agent result that should be included as context.",
+  });
+  const latestMessage = telegramMessage({
+    updateId: 700,
+    messageId: 80,
+    text: "@squadai_coder_bot please implement the login fix.",
+  });
+
+  try {
+    await manager.start();
+    await coordinator.start();
+    for (let messageId = 60; messageId <= 78; messageId += 1) {
+      await messageStore.appendMessage(telegramMessage({
+        updateId: 600 + messageId,
+        messageId,
+        text: messageId === 60 ? "Oldest message that must fall outside the 20-message window." : `Context ${messageId}`,
+      }));
+    }
+    await messageStore.appendMessage(previousBotReply);
+    await messageStore.appendMessage(latestMessage);
+    assert.equal(mentionIntake.processMessage(latestMessage).length, 1);
+    await coordinator.processMessage(latestMessage);
+    await waitFor(
+      () => requestStore.listRequests()[0]?.status === "completed",
+      "Telegram request completion",
+    );
+
+    const request = requestStore.listRequests()[0];
+    assert.equal(request?.status, "completed");
+    assert.equal(request?.agentId, "coder");
+    assert.match(request?.effectiveAgentId ?? "", /^coder--sensor-/);
+    assert.equal(clientContexts[0]?.runnerId, "vm-1");
+    assert.match(clientContexts[0]?.agentId ?? "", /^coder--sensor-/);
+    assert.match(prompts[0] ?? "", /Earlier agent result that should be included as context/);
+    assert.match(prompts[0] ?? "", /please implement the login fix/);
+    assert.doesNotMatch(prompts[0] ?? "", /Oldest message that must fall outside/);
+    assert.equal(sentMessages[0]?.token, "control-token");
+    assert.match(String(sentMessages[0]?.body.text), /Queued for Coder/);
+    assert.match(String(sentMessages[0]?.body.text), /new instance/);
+    assert.equal(sentMessages[1]?.token, "coder-token");
+    assert.match(String(sentMessages[1]?.body.text), /Completed by coder--sensor-/);
+    assert.deepEqual(
+      messageStore.listRecentMessages("-100999", 20).slice(-2).map((message) => message.senderUsername),
+      ["squadai_control_bot", "squadai_coder_bot"],
+    );
+
+    const botAuthoredTag = telegramMessage({
+      updateId: 701,
+      messageId: 81,
+      authoredByBot: true,
+      senderId: "404",
+      senderName: "Newsbot",
+      senderUsername: "squadai_news_bot",
+      text: "@squadai_coder_bot please start another task.",
+    });
+    await messageStore.appendMessage(botAuthoredTag);
+    assert.deepEqual(await coordinator.processMessage(botAuthoredTag), []);
+    assert.equal(requestStore.listRequests().length, 1);
+  } finally {
+    await coordinator.close();
+    await manager.close();
+    await requestStore.close();
+    await bindingStore.close();
+    await messageStore.close();
+  }
+});
+
+test("telegram coordinator reports agent failures through the bound agent bot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "squadai-telegram-failure-"));
+  const databasePath = join(directory, "command-center.db");
+  const messageStore = new SqliteTelegramMessageStore(databasePath);
+  const bindingStore = new SqliteTelegramAgentBindingStore(databasePath);
+  const requestStore = new SqliteTelegramRequestStore(databasePath);
+  const manager = new CodexAgentManager({
+    agents: [{
+      id: "coder",
+      name: "Coder",
+      cwd: directory,
+      instructions: "Implement coding tasks.",
+    }],
+    clientFactory: () => ({
+      async startSession() {
+        return {
+          threadId: "failure-thread",
+          async ask() {
+            throw new Error("build failed");
+          },
+        };
+      },
+      async resumeSession() {
+        throw new Error("Unexpected resume.");
+      },
+      async close() {},
+    }),
+    workspaceManager: passthroughWorkspaceManager(),
+  });
+  const bindings = new TelegramAgentBindingService({
+    store: bindingStore,
+    agentExists: () => true,
+    fetch: async () => new Response(JSON.stringify({
+      ok: true,
+      result: {
+        id: 101,
+        is_bot: true,
+        first_name: "Coder",
+        username: "squadai_coder_bot",
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await bindings.bindAgent("coder", "coder-token");
+  const mentionIntake = new TelegramMentionIntake({ bindings, store: requestStore });
+  const sentMessages: Array<{ token: string; text: string }> = [];
+  let outgoingMessageId = 950;
+  const coordinator = new TelegramCoordinator({
+    manager,
+    bindings,
+    mentionIntake,
+    requestStore,
+    messageStore,
+    controlBotToken: "control-token",
+    fetch: async (input, init) => {
+      const token = String(input).match(/bot([^/]+)\/sendMessage/)?.[1] ?? "";
+      const body = JSON.parse(String(init?.body ?? "{}")) as { text: string };
+      sentMessages.push({ token, text: body.text });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          message_id: outgoingMessageId++,
+          date: 1_784_210_000,
+          text: body.text,
+          chat: { id: -100999, type: "supergroup", title: "Product Team" },
+          from: {
+            id: token === "coder-token" ? 101 : 303,
+            is_bot: true,
+            first_name: token === "coder-token" ? "Coder" : "SquadAI",
+            username: token === "coder-token" ? "squadai_coder_bot" : "squadai_control_bot",
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const message = telegramMessage({
+    text: "@squadai_coder_bot run the build.",
+  });
+
+  try {
+    await manager.start();
+    await coordinator.start();
+    await messageStore.appendMessage(message);
+    await coordinator.processMessage(message);
+    await waitFor(
+      () => requestStore.listRequests()[0]?.status === "failed",
+      "Telegram failure delivery",
+    );
+    assert.equal(sentMessages[0]?.token, "control-token");
+    assert.equal(sentMessages.at(-1)?.token, "coder-token");
+    assert.match(sentMessages.at(-1)?.text ?? "", /couldn’t complete this request: build failed/i);
+    assert.equal(requestStore.listRequests()[0]?.lastError, "build failed");
+  } finally {
+    await coordinator.close();
+    await manager.close();
+    await requestStore.close();
+    await bindingStore.close();
+    await messageStore.close();
+  }
+});
+
+function telegramMessage(overrides: Partial<{
+  updateId: number;
+  messageId: number;
+  authoredByBot: boolean;
+  senderId: string;
+  senderName: string;
+  senderUsername: string;
+  text: string;
+}> = {}) {
+  return {
+    updateId: overrides.updateId ?? 700,
+    chatId: "-100999",
+    messageId: overrides.messageId ?? 80,
+    chatType: "supergroup" as const,
+    chatTitle: "Product Team",
+    senderId: overrides.senderId ?? "42",
+    senderName: overrides.senderName ?? "Mohit",
+    senderUsername: overrides.senderUsername ?? "mohit",
+    authoredByBot: overrides.authoredByBot ?? false,
+    text: overrides.text ?? "hello",
+    sentAt: "2026-07-16T06:00:00.000Z",
+    receivedAt: "2026-07-16T06:00:01.000Z",
+  };
+}
+
+function passthroughWorkspaceManager(): AgentWorkspaceManager {
+  return {
+    async prepareBase(definition) { return definition; },
+    async prepareInstance(_base, instance) { return instance; },
+    async inspect() { return null; },
+    async cleanup(definition) { return definition; },
+  };
+}
+
+async function waitFor(condition: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
+}

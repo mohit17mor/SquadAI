@@ -2,11 +2,14 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import type { AgentExecutionPolicy } from "./types.js";
+
 export type TelegramAgentBinding = {
   agentId: string;
   botId: string;
   botUsername: string;
   botName: string;
+  executionPolicy: AgentExecutionPolicy;
   createdAt: string;
   updatedAt: string;
 };
@@ -28,7 +31,7 @@ export class SqliteTelegramAgentBindingStore {
 
   listBindings(): TelegramAgentBinding[] {
     return (this.database.prepare(`
-      SELECT agent_id, bot_id, bot_username, bot_name, created_at, updated_at
+      SELECT agent_id, bot_id, bot_username, bot_name, execution_policy, created_at, updated_at
       FROM telegram_agent_bindings
       ORDER BY agent_id
     `).all() as TelegramBindingRow[]).map(bindingFromRow);
@@ -43,7 +46,7 @@ export class SqliteTelegramAgentBindingStore {
 
   findByBotId(botId: string): TelegramAgentBinding | null {
     const row = this.database.prepare(`
-      SELECT agent_id, bot_id, bot_username, bot_name, created_at, updated_at
+      SELECT agent_id, bot_id, bot_username, bot_name, execution_policy, created_at, updated_at
       FROM telegram_agent_bindings
       WHERE bot_id = ?
     `).get(botId) as TelegramBindingRow | undefined;
@@ -58,14 +61,16 @@ export class SqliteTelegramAgentBindingStore {
         bot_username,
         bot_name,
         bot_token,
+        execution_policy,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET
         bot_id = excluded.bot_id,
         bot_username = excluded.bot_username,
         bot_name = excluded.bot_name,
         bot_token = excluded.bot_token,
+        execution_policy = excluded.execution_policy,
         updated_at = excluded.updated_at
     `).run(
       binding.agentId,
@@ -73,6 +78,7 @@ export class SqliteTelegramAgentBindingStore {
       binding.botUsername,
       binding.botName,
       binding.botToken,
+      binding.executionPolicy,
       binding.createdAt,
       binding.updatedAt,
     );
@@ -84,6 +90,18 @@ export class SqliteTelegramAgentBindingStore {
       DELETE FROM telegram_agent_bindings WHERE agent_id = ?
     `).run(agentId);
     return Number(result.changes) > 0;
+  }
+
+  updateExecutionPolicy(agentId: string, executionPolicy: AgentExecutionPolicy, updatedAt: string): TelegramAgentBinding {
+    const result = this.database.prepare(`
+      UPDATE telegram_agent_bindings
+      SET execution_policy = ?, updated_at = ?
+      WHERE agent_id = ?
+    `).run(executionPolicy, updatedAt, agentId);
+    if (Number(result.changes) === 0) {
+      throw new Error(`No Telegram bot is connected to agent ${agentId}.`);
+    }
+    return this.listBindings().find((binding) => binding.agentId === agentId)!;
   }
 
   async close(): Promise<void> {
@@ -98,10 +116,15 @@ export class SqliteTelegramAgentBindingStore {
         bot_username TEXT NOT NULL UNIQUE COLLATE NOCASE,
         bot_name TEXT NOT NULL,
         bot_token TEXT NOT NULL,
+        execution_policy TEXT NOT NULL DEFAULT 'reuse',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
     `);
+    const columns = this.database.prepare("PRAGMA table_info(telegram_agent_bindings)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "execution_policy")) {
+      this.database.exec("ALTER TABLE telegram_agent_bindings ADD COLUMN execution_policy TEXT NOT NULL DEFAULT 'reuse'");
+    }
   }
 }
 
@@ -128,13 +151,18 @@ export class TelegramAgentBindingService {
     return this.options.store.listBindings();
   }
 
-  async bindAgent(agentId: string, token: string): Promise<TelegramAgentBinding> {
+  async bindAgent(
+    agentId: string,
+    token: string,
+    executionPolicy: AgentExecutionPolicy = "reuse",
+  ): Promise<TelegramAgentBinding> {
     const normalizedAgentId = agentId.trim();
     const normalizedToken = token.trim();
     if (!normalizedAgentId || !this.options.agentExists(normalizedAgentId)) {
       throw new Error(`Unknown agent: ${normalizedAgentId || agentId}`);
     }
     if (!normalizedToken) throw new Error("Telegram bot token is required.");
+    assertExecutionPolicy(executionPolicy);
 
     const identity = await this.getBotIdentity(normalizedToken);
     const owner = this.options.store.findByBotId(identity.id);
@@ -149,9 +177,25 @@ export class TelegramAgentBindingService {
       botUsername: identity.username,
       botName: identity.name,
       botToken: normalizedToken,
+      executionPolicy,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     });
+  }
+
+  getBotToken(agentId: string): string {
+    const token = this.options.store.getBotToken(agentId.trim());
+    if (!token) throw new Error(`No Telegram bot is connected to agent ${agentId}.`);
+    return token;
+  }
+
+  updateExecutionPolicy(agentId: string, executionPolicy: AgentExecutionPolicy): TelegramAgentBinding {
+    assertExecutionPolicy(executionPolicy);
+    return this.options.store.updateExecutionPolicy(
+      agentId.trim(),
+      executionPolicy,
+      this.clock().toISOString(),
+    );
   }
 
   async removeBinding(agentId: string): Promise<boolean> {
@@ -190,6 +234,7 @@ type TelegramBindingRow = {
   bot_id: string;
   bot_username: string;
   bot_name: string;
+  execution_policy: AgentExecutionPolicy;
   created_at: string;
   updated_at: string;
 };
@@ -200,9 +245,16 @@ function bindingFromRow(row: TelegramBindingRow): TelegramAgentBinding {
     botId: row.bot_id,
     botUsername: row.bot_username,
     botName: row.bot_name,
+    executionPolicy: row.execution_policy,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function assertExecutionPolicy(value: string): asserts value is AgentExecutionPolicy {
+  if (value !== "reuse" && value !== "new") {
+    throw new Error("Telegram execution policy must be reuse or new.");
+  }
 }
 
 function telegramApiError(value: unknown, status: number): string {

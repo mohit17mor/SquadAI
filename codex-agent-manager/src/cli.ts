@@ -10,6 +10,7 @@ import { createCommandCenterServer } from "./server.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
 import { SqliteTelegramMessageStore, TelegramListener } from "./telegram.js";
 import { SqliteTelegramAgentBindingStore, TelegramAgentBindingService } from "./telegramBindings.js";
+import { TelegramCoordinator } from "./telegramCoordinator.js";
 import { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
 import type { RoutingMode } from "./types.js";
 
@@ -96,6 +97,16 @@ const telegramMentionIntake = new TelegramMentionIntake({
   bindings: telegramBindings,
   store: telegramRequestStore,
 });
+const telegramCoordinator = telegramToken && telegramStore
+  ? new TelegramCoordinator({
+      manager,
+      bindings: telegramBindings,
+      mentionIntake: telegramMentionIntake,
+      requestStore: telegramRequestStore,
+      messageStore: telegramStore,
+      controlBotToken: telegramToken,
+    })
+  : null;
 const server = createCommandCenterServer({
   manager,
   runnerHub,
@@ -106,14 +117,15 @@ const telegramListener = telegramToken && telegramStore
   ? new TelegramListener({
       token: telegramToken,
       store: telegramStore,
-      onMessage: (message) => {
-        telegramMentionIntake.processMessage(message);
+      onMessage: async (message) => {
+        await telegramCoordinator!.processMessage(message);
       },
     })
   : null;
 let telegramRun: Promise<void> | undefined;
 
 await manager.start();
+await telegramCoordinator?.start();
 await server.listen(port, host);
 telegramRun = telegramListener?.start();
 console.log(`SquadAI listening at http://${host}:${server.port}`);
@@ -134,6 +146,7 @@ for (const signal of shutdownSignals()) {
 async function shutdown(): Promise<void> {
   await telegramListener?.close().catch(() => {});
   await telegramRun?.catch(() => {});
+  await telegramCoordinator?.close().catch(() => {});
   await telegramStore?.close().catch(() => {});
   await telegramBindingStore.close().catch(() => {});
   await telegramRequestStore.close().catch(() => {});

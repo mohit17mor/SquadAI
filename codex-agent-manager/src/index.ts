@@ -12,7 +12,15 @@ export type {
   TelegramAgentBindingServiceOptions,
 } from "./telegramBindings.js";
 export { SqliteTelegramRequestStore, TelegramMentionIntake } from "./telegramRequests.js";
-export type { TelegramAgentRequest, TelegramMentionIntakeOptions } from "./telegramRequests.js";
+export type {
+  TelegramAgentRequest,
+  TelegramAgentRequestStatus,
+  TelegramMentionIntakeOptions,
+} from "./telegramRequests.js";
+export { TelegramBotMessenger } from "./telegramMessenger.js";
+export type { TelegramBotMessengerOptions } from "./telegramMessenger.js";
+export { TelegramCoordinator } from "./telegramCoordinator.js";
+export type { TelegramCoordinatorOptions } from "./telegramCoordinator.js";
 export { GitWorkspaceManager } from "./gitWorkspace.js";
 export type { GitWorkspaceManagerOptions } from "./gitWorkspace.js";
 export { JsonFileAgentStateStore, MemoryAgentStateStore, SqliteAgentStateStore } from "./stateStore.js";

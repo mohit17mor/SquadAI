@@ -167,10 +167,16 @@ test("command center API manages Telegram bot bindings without exposing tokens",
       body: { agentId: "coder", token: "987654:secret" },
     });
     assert.equal(created.binding.botUsername, "squadai_coder_bot");
+    assert.equal(created.binding.executionPolicy, "reuse");
 
     const listed = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings`);
     assert.equal(listed.bindings.length, 1);
     assert.equal(JSON.stringify(listed).includes("987654:secret"), false);
+    const updated = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings/coder`, {
+      method: "PATCH",
+      body: { executionPolicy: "new" },
+    });
+    assert.equal(updated.binding.executionPolicy, "new");
 
     telegramMentionIntake.processMessage({
       updateId: 501,

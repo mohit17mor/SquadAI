@@ -169,12 +169,22 @@ export class CommandCenterServer {
         const binding = await this.requireTelegramBindings().bindAgent(
           requiredString(body.agentId, "agentId"),
           requiredString(body.token, "token"),
+          optionalEnum(body.executionPolicy, ["reuse", "new"]) ?? "reuse",
         );
         this.json(response, { binding });
         return;
       }
 
       const telegramBindingMatch = url.pathname.match(/^\/api\/telegram\/agent-bindings\/([^/]+)$/);
+      if (request.method === "PATCH" && telegramBindingMatch?.[1]) {
+        const body = asRecord(await readJson(request));
+        const binding = this.requireTelegramBindings().updateExecutionPolicy(
+          decodeURIComponent(telegramBindingMatch[1]),
+          requiredEnum(body.executionPolicy, ["reuse", "new"], "executionPolicy"),
+        );
+        this.json(response, { binding });
+        return;
+      }
       if (request.method === "DELETE" && telegramBindingMatch?.[1]) {
         const removed = await this.requireTelegramBindings().removeBinding(
           decodeURIComponent(telegramBindingMatch[1]),
@@ -953,6 +963,12 @@ function optionalEnum<T extends string>(value: unknown, allowed: readonly T[]): 
   return value as T;
 }
 
+function requiredEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  const parsed = optionalEnum(value, allowed);
+  if (!parsed) throw new Error(`Field ${field} is required.`);
+  return parsed;
+}
+
 async function pickNativeDirectory(initialPath: string): Promise<string | null> {
   if (process.platform !== "darwin") {
     throw new Error("The native folder picker is currently available on macOS only.");
@@ -1341,7 +1357,7 @@ button.danger:hover { border-color: #f85149; background: #2d1517; }
 .topology-telegram p { margin: 0; color: #8994ae; font-size: 11px; line-height: 1.5; }
 .topology-telegram form { display: grid; gap: 9px; }
 .topology-telegram label { display: grid; gap: 6px; color: #8994ae; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
-.topology-telegram input { width: 100%; padding: 9px 10px; color: #e8edff; background: #090d17; border: 1px solid #293149; border-radius: 7px; }
+.topology-telegram input, .topology-telegram select { width: 100%; padding: 9px 10px; color: #e8edff; background: #090d17; border: 1px solid #293149; border-radius: 7px; }
 .topology-telegram button { width: 100%; }
 .telegram-connected { display: flex; align-items: center; gap: 10px; padding: 10px; background: #111728; border: 1px solid #293149; border-radius: 8px; }
 .telegram-connected > div { display: grid; gap: 2px; min-width: 0; }
