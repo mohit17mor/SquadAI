@@ -27,9 +27,14 @@ export function createCodexLaunchSpec(command, args, options = {}) {
         return { command, args: [...args] };
     }
     const env = options.env ?? process.env;
+    const commandLine = [
+        `"${command}"`,
+        ...args.map(quoteWindowsCmdArgument),
+    ].join(" ");
     return {
         command: environmentValue(env, "ComSpec") || "cmd.exe",
-        args: ["/d", "/s", "/c", command, ...args],
+        args: ["/d", "/s", "/c", `"${commandLine}"`],
+        windowsVerbatimArguments: true,
     };
 }
 export class StdioCodexAppServerTransport {
@@ -59,6 +64,7 @@ export class StdioCodexAppServerTransport {
             // the complete tree without signalling the runner's parent shell.
             detached: process.platform !== "win32",
             windowsHide: true,
+            ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         });
         this.child = child;
         const stdout = readline.createInterface({
@@ -213,6 +219,11 @@ function resolveWindowsCommand(command, env, isExecutable) {
 function environmentValue(env, name) {
     const entry = Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase());
     return entry?.[1];
+}
+function quoteWindowsCmdArgument(value) {
+    if (/^[A-Za-z0-9_./:=+-]+$/.test(value))
+        return value;
+    return `"${value.replace(/"/g, '""')}"`;
 }
 function waitForExit(child, timeoutMs) {
     if (child.exitCode !== null || child.signalCode !== null)

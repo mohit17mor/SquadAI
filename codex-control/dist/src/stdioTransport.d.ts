@@ -17,6 +17,7 @@ export type CodexLaunchResolutionOptions = {
 export type CodexLaunchSpec = {
     command: string;
     args: string[];
+    windowsVerbatimArguments?: boolean;
 };
 export declare function resolveCodexBinary(options?: CodexBinaryResolutionOptions): string;
 export declare function createCodexLaunchSpec(command: string, args: string[], options?: CodexLaunchResolutionOptions): CodexLaunchSpec;
