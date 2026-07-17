@@ -589,6 +589,43 @@ test("command center streams runner lifecycle changes to connected browsers", as
   }
 });
 
+test("command center shutdown releases pending runner polls before closing", async () => {
+  const runnerHub = new RunnerHub("secret");
+  runnerHub.register({
+    id: "restart-runner",
+    name: "Restart Runner",
+    hostname: "restart-runner.local",
+    platform: "win32",
+    arch: "x64",
+    version: "test",
+  });
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const server = createCommandCenterServer({ manager, runnerHub });
+  await server.listen(0);
+  let closed = false;
+
+  try {
+    const poll = fetch(`http://127.0.0.1:${server.port}/api/runners/restart-runner/poll`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ timeoutMs: 25_000 }),
+    }).catch(() => null);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const startedAt = Date.now();
+    await server.close();
+    closed = true;
+    assert.ok(Date.now() - startedAt < 2_000, "server close waited for the full runner poll timeout");
+    const pollResponse = await poll;
+    assert.ok(pollResponse === null || pollResponse.status === 200);
+  } finally {
+    if (!closed) await server.close();
+    await manager.close();
+  }
+});
+
 test("command center enrolls a runner and accepts only its issued credential", async () => {
   const root = await mkdtemp(join(tmpdir(), "squadai-server-runner-enrollment-"));
   const enrollments = new SqliteRunnerEnrollmentStore(join(root, "command-center.db"));

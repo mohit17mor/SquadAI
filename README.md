@@ -609,7 +609,8 @@ cd ../codex-agent-manager
 npm test
 ```
 
-The repository currently has 106 automated tests. GitHub Actions runs them on
+The SquadAI manager currently has 108 automated tests, with additional control
+library coverage. GitHub Actions runs both suites on
 Linux, macOS, and Windows.
 
 ## Current Scope

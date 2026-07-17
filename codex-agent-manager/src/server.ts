@@ -68,6 +68,7 @@ export class CommandCenterServer {
   private automationRunning = false;
   private automationQueued = false;
   private runnerSweepTimer: NodeJS.Timeout | null = null;
+  private readonly runnerPollAborts = new Set<AbortController>();
   private readonly runnerChanged = (runner: RunnerSnapshot): void => {
     this.broadcast("runner-event", runner);
   };
@@ -115,6 +116,8 @@ export class CommandCenterServer {
     this.options.runnerHub?.off("changed", this.runnerChanged);
     if (this.runnerSweepTimer) clearInterval(this.runnerSweepTimer);
     this.runnerSweepTimer = null;
+    for (const abort of this.runnerPollAborts) abort.abort();
+    this.runnerPollAborts.clear();
     for (const client of this.sseClients) {
       client.end();
     }
@@ -127,6 +130,7 @@ export class CommandCenterServer {
         }
         resolve();
       });
+      this.server.closeAllConnections();
     });
   }
 
@@ -275,9 +279,14 @@ export class CommandCenterServer {
         const body = asRecord(await readJson(request));
         const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs : 25_000;
         const abort = new AbortController();
+        this.runnerPollAborts.add(abort);
         request.once("aborted", () => abort.abort());
-        const command = await hub.poll(runnerId, timeoutMs, abort.signal);
-        this.json(response, { command });
+        try {
+          const command = await hub.poll(runnerId, timeoutMs, abort.signal);
+          this.json(response, { command });
+        } finally {
+          this.runnerPollAborts.delete(abort);
+        }
         return;
       }
 

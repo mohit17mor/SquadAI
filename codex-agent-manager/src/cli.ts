@@ -10,6 +10,7 @@ import { RunnerDaemon } from "./runnerDaemon.js";
 import { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import { RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 import { createCommandCenterServer } from "./server.js";
+import { createControlPlaneShutdown } from "./shutdown.js";
 import { SqliteAgentStateStore } from "./stateStore.js";
 import {
   SqliteTelegramMessageStore,
@@ -214,26 +215,32 @@ console.log(`Mode: ${mode}`);
 console.log(`Remote runners: ${runnerToken ? "shared token + per-runner enrollment" : "per-runner enrollment"}`);
 console.log(`Telegram listener: ${telegramListener ? "enabled" : "disabled"}`);
 
+const shutdown = createControlPlaneShutdown({
+  stopInputs: async () => {
+    await telegramListener?.close().catch(() => {});
+    await telegramApprovalListener?.close().catch(() => {});
+    await telegramRun?.catch(() => {});
+    await telegramApprovalRun?.catch(() => {});
+  },
+  stopServer: async () => {
+    await server.close().catch(() => {});
+  },
+  closeServices: async () => {
+    await telegramCoordinator?.close().catch(() => {});
+    await telegramStore?.close().catch(() => {});
+    await telegramBindingStore.close().catch(() => {});
+    await telegramRequestStore.close().catch(() => {});
+    await runnerEnrollments.close().catch(() => {});
+    await skillLibrary.close().catch(() => {});
+    await manager.close().catch(() => {});
+  },
+  onComplete: () => process.exit(0),
+});
+
 for (const signal of shutdownSignals()) {
   process.once(signal, () => {
     void shutdown();
   });
-}
-
-async function shutdown(): Promise<void> {
-  await telegramListener?.close().catch(() => {});
-  await telegramApprovalListener?.close().catch(() => {});
-  await telegramRun?.catch(() => {});
-  await telegramApprovalRun?.catch(() => {});
-  await telegramCoordinator?.close().catch(() => {});
-  await telegramStore?.close().catch(() => {});
-  await telegramBindingStore.close().catch(() => {});
-  await telegramRequestStore.close().catch(() => {});
-  await runnerEnrollments.close().catch(() => {});
-  await skillLibrary.close().catch(() => {});
-  await server.close().catch(() => {});
-  await manager.close().catch(() => {});
-  process.exit(0);
 }
 
 function shutdownSignals(): NodeJS.Signals[] {

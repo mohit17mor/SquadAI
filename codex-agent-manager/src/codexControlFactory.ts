@@ -64,7 +64,7 @@ export function createDefaultClientFactory(
 }
 
 function importCodexControl(specifier: string): Promise<unknown> {
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("..")) {
+  if (isAbsolute(specifier) || specifier.startsWith(".")) {
     const path = isAbsolute(specifier) ? specifier : resolve(specifier);
     return import(pathToFileURL(path).href);
   }

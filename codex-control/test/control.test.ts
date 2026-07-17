@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -107,7 +108,8 @@ test("launches Windows command shims through cmd.exe without using a shell", () 
     { platform: "win32", env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" } },
   ), {
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/s", "/c", "C:\\Program Files\\Codex\\codex.cmd", "app-server"],
+    args: ["/d", "/s", "/c", '""C:\\Program Files\\Codex\\codex.cmd" app-server"'],
+    windowsVerbatimArguments: true,
   });
   assert.deepEqual(createCodexLaunchSpec("/usr/local/bin/codex", ["app-server"], {
     platform: "linux",
@@ -116,6 +118,30 @@ test("launches Windows command shims through cmd.exe without using a shell", () 
     command: "/usr/local/bin/codex",
     args: ["app-server"],
   });
+});
+
+test("launches a Windows command shim whose path contains spaces", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex shim with spaces-"));
+  const shim = join(directory, "codex.cmd");
+  await writeFile(shim, "@echo off\r\necho launched %1\r\n", "utf8");
+
+  try {
+    const launch = createCodexLaunchSpec(shim, ["app-server"], {
+      platform: "win32",
+      env: { ComSpec: process.env.ComSpec },
+    });
+    const result = spawnSync(launch.command, launch.args, {
+      encoding: "utf8",
+      windowsHide: true,
+      windowsVerbatimArguments: launch.windowsVerbatimArguments,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /launched app-server/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 class FakeTransport implements AppServerTransport {

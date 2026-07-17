@@ -27,6 +27,7 @@ export type CodexLaunchResolutionOptions = {
 export type CodexLaunchSpec = {
   command: string;
   args: string[];
+  windowsVerbatimArguments?: boolean;
 };
 
 export function resolveCodexBinary(options: CodexBinaryResolutionOptions = {}): string {
@@ -61,9 +62,14 @@ export function createCodexLaunchSpec(
     return { command, args: [...args] };
   }
   const env = options.env ?? process.env;
+  const commandLine = [
+    `"${command}"`,
+    ...args.map(quoteWindowsCmdArgument),
+  ].join(" ");
   return {
     command: environmentValue(env, "ComSpec") || "cmd.exe",
-    args: ["/d", "/s", "/c", command, ...args],
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+    windowsVerbatimArguments: true,
   };
 }
 
@@ -100,6 +106,7 @@ export class StdioCodexAppServerTransport implements AppServerTransport {
       // the complete tree without signalling the runner's parent shell.
       detached: process.platform !== "win32",
       windowsHide: true,
+      ...(launch.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     this.child = child;
 
@@ -271,6 +278,11 @@ function resolveWindowsCommand(
 function environmentValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const entry = Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return entry?.[1];
+}
+
+function quoteWindowsCmdArgument(value: string): string {
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
