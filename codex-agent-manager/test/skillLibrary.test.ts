@@ -117,6 +117,39 @@ test("skill library imports from one runner and sends the package to another run
   }
 });
 
+test("skill library excludes namespaced bundled skills from import candidates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "squadai-skill-library-filter-"));
+  const hub = new RunnerHub("secret");
+  const manager = {
+    async listSkillOptions(): Promise<AgentSkillCatalog> {
+      return {
+        cwd: root,
+        skills: [{
+          name: "documents:documents",
+          scope: "user",
+          description: "Bundled document workflow",
+          path: join(root, "plugins", "documents", "SKILL.md"),
+          enabled: true,
+        }],
+        errors: [],
+      };
+    },
+  } as unknown as CodexAgentManager;
+  const service = new SkillLibraryService(
+    join(root, "control.db"),
+    join(root, "library"),
+    manager,
+    hub,
+  );
+
+  try {
+    const snapshot = await service.snapshot();
+    assert.deepEqual(snapshot.discovered, []);
+  } finally {
+    await service.close();
+  }
+});
+
 function catalog(root: string, runnerId: string, hasSkill: boolean): AgentSkillCatalog {
   return {
     cwd: root,

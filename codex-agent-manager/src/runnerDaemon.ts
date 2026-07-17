@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { GitWorkspaceManager } from "./gitWorkspace.js";
-import { exportUserSkill, installUserSkill } from "./skillPackages.js";
+import { exportUserSkill, installUserSkill, isPortableUserSkill } from "./skillPackages.js";
 import type {
   AgentDefinition,
   ApprovalRequest,
@@ -169,7 +169,7 @@ export class RunnerDaemon {
         const client = this.client(command.agentId);
         if (!client.listSkills) throw new Error("This runner does not support skill discovery.");
         const catalog = await client.listSkills({ cwd: homedir(), forceReload: true });
-        return { ...catalog, skills: catalog.skills.filter((skill) => skill.scope === "user") };
+        return { ...catalog, skills: catalog.skills.filter((skill) => skill.scope === "user" && isPortableUserSkill(skill)) };
       }
       case "skills.export":
         return exportUserSkill(

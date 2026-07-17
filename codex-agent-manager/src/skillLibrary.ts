@@ -6,6 +6,8 @@ import type { CodexAgentManager } from "./manager.js";
 import type { RunnerHub } from "./runnerHub.js";
 import {
   exportUserSkill,
+  isPortableUserSkill,
+  isValidSkillName,
   installUserSkill,
   validateSkillPackage,
   type SkillPackage,
@@ -82,7 +84,7 @@ export class SkillLibraryService {
     await Promise.all(runners.filter((runner) => runner.status === "online").map(async (runner) => {
       try {
         const catalog = await this.userSkillCatalog(runner.id);
-        for (const skill of catalog.skills.filter((item) => item.scope === "user")) {
+        for (const skill of catalog.skills.filter((item) => item.scope === "user" && isValidSkillName(item.name))) {
           discovered.push({
             ...skill,
             runnerId: runner.id,
@@ -167,7 +169,8 @@ export class SkillLibraryService {
 
   private async userSkillCatalog(runnerId: string): Promise<AgentSkillCatalog> {
     if (runnerId === "local") {
-      return this.manager.listSkillOptions(process.cwd(), true, "local");
+      const catalog = await this.manager.listSkillOptions(process.cwd(), true, "local");
+      return { ...catalog, skills: catalog.skills.filter((skill) => isPortableUserSkill(skill)) };
     }
     return await this.runnerHub.execute(
       runnerId,

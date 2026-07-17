@@ -23,6 +23,19 @@ export function codexUserSkillsDirectory(environment: NodeJS.ProcessEnv = proces
   return join(environment.CODEX_HOME?.trim() || join(homedir(), ".codex"), "skills");
 }
 
+export function isPortableUserSkill(
+  skill: { name: string; path: string },
+  options: { skillsDirectory?: string } = {},
+): boolean {
+  if (!isValidSkillName(skill.name)) return false;
+  const skillsDirectory = resolve(options.skillsDirectory ?? codexUserSkillsDirectory());
+  const skillFile = resolve(skill.path);
+  const skillDirectory = dirname(skillFile);
+  return skillDirectory !== skillsDirectory
+    && skillFile === join(skillDirectory, "SKILL.md")
+    && pathIsInside(skillsDirectory, skillDirectory);
+}
+
 export async function exportUserSkill(
   skillPath: string,
   options: { name: string; description?: string; skillsDirectory?: string },
@@ -141,8 +154,12 @@ function packageWithFingerprint(value: Omit<SkillPackage, "fingerprint">): Skill
   return { ...value, fingerprint };
 }
 
+export function isValidSkillName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name);
+}
+
 function validateSkillName(name: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) throw new Error(`Invalid skill name: ${name}`);
+  if (!isValidSkillName(name)) throw new Error(`Invalid skill name: ${name}`);
 }
 
 function validatePackagePath(path: string): void {
@@ -159,9 +176,13 @@ function decodeBase64(value: string): Buffer {
 }
 
 function assertInside(parent: string, child: string): void {
-  const path = relative(resolve(parent), resolve(child));
-  if (path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path))) return;
+  if (pathIsInside(parent, child)) return;
   throw new Error("Skill path is outside the allowed user skills directory.");
+}
+
+function pathIsInside(parent: string, child: string): boolean {
+  const path = relative(resolve(parent), resolve(child));
+  return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
 async function exists(path: string): Promise<boolean> {

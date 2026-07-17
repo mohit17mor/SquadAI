@@ -1668,7 +1668,8 @@ textarea { resize: vertical; }
 .skill-card header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
 .skill-card h4 { margin: 0; color: #e6edf3; font-size: 13px; overflow-wrap: anywhere; }
 .skill-card p { margin: 0; color: #8b949e; min-height: 38px; overflow-wrap: anywhere; }
-.skill-card-meta { color: #6e7681; overflow-wrap: anywhere; }
+.skill-card-meta { color: #8b949e; overflow-wrap: anywhere; }
+.skill-machine-name { display: inline-block; color: #e6edf3; font-size: 14px; font-weight: 800; }
 .skill-card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .skill-card-actions button { padding: 7px 10px; }
 .skill-installed { color: #3fb950; font-weight: 700; }
@@ -3561,7 +3562,7 @@ function renderSkillLibrary() {
     '<article class="skill-card">'
       + '<header><h4>' + escapeHtml(item.name) + '</h4><span class="log-status pending">on machine</span></header>'
       + '<p>' + escapeHtml(item.description || item.shortDescription || "No description provided.") + '</p>'
-      + '<div class="skill-card-meta">' + escapeHtml(item.runnerName) + '</div>'
+      + '<div class="skill-card-meta">Available on <strong class="skill-machine-name">' + escapeHtml(item.runnerName) + '</strong></div>'
       + '<div class="skill-card-actions"><button type="button" data-skill-import="' + escapeAttr(item.name) + '" data-skill-path="' + escapeAttr(item.path) + '" data-skill-runner="' + escapeAttr(item.runnerId) + '" data-skill-description="' + escapeAttr(item.description || item.shortDescription || "") + '">Import to library</button></div>'
       + '</article>'
   ).join("") || '<div class="log-empty">Every discovered user skill is already in the library.</div>';
