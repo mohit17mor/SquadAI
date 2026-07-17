@@ -306,6 +306,9 @@ function startTopology(
       animateEvent(event);
       void refreshAgents();
     });
+    stream.addEventListener("runner-event", () => {
+      void refreshAgents();
+    });
   } catch {
     // The REST refresh still keeps the topology usable in browsers without EventSource.
   }

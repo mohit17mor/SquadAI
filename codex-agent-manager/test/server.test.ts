@@ -548,6 +548,47 @@ test("command center proxies remote directory browsing through the runner", asyn
   }
 });
 
+test("command center streams runner lifecycle changes to connected browsers", async () => {
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const runnerHub = new RunnerHub("secret", () => now);
+  const manager = new CodexAgentManager({ agents: [], clientFactory: immediateFactory() });
+  const server = createCommandCenterServer({ manager, runnerHub });
+  await server.listen(0);
+  const controller = new AbortController();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/events/stream`, {
+      signal: controller.signal,
+    });
+    assert.equal(response.status, 200);
+    assert.ok(response.body);
+    const reader = response.body.getReader();
+    const eventPromise = readSseEvent(reader, "runner-event");
+
+    runnerHub.register({
+      id: "demo-runner",
+      name: "Demo Runner",
+      hostname: "demo-runner.local",
+      platform: "linux",
+      arch: "x64",
+      version: "test",
+    });
+
+    const runner = await eventPromise as { id: string; status: string };
+    assert.equal(runner.id, "demo-runner");
+    assert.equal(runner.status, "online");
+
+    const offlineEvent = readSseEvent(reader, "runner-event");
+    now = new Date("2026-01-01T00:00:31.000Z");
+    runnerHub.listRunners();
+    assert.equal((await offlineEvent as { status: string }).status, "offline");
+  } finally {
+    controller.abort();
+    await server.close();
+    await manager.close();
+  }
+});
+
 test("command center enrolls a runner and accepts only its issued credential", async () => {
   const root = await mkdtemp(join(tmpdir(), "squadai-server-runner-enrollment-"));
   const enrollments = new SqliteRunnerEnrollmentStore(join(root, "command-center.db"));
@@ -1052,11 +1093,15 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /id="shell" class="shell topology-mode"/);
     assert.match(html, /data-panel="jarvis"/);
     assert.match(html, /data-panel="create"/);
+    assert.match(html, /data-panel="runners"/);
     assert.match(html, /data-panel="skills"/);
     assert.match(html, /data-panel="events"/);
     assert.match(html, /data-panel="work"/);
     assert.match(html, /data-panel="notifications"/);
     assert.match(html, /id="skill-library"/);
+    assert.match(html, /id="runners-list"/);
+    assert.match(html, /runner-event/);
+    assert.match(html, /connected/);
     assert.match(html, /\/api\/skill-library\/import/);
     assert.match(html, /Install on/);
     assert.match(html, /data-sensor-event-assign/);
@@ -1398,6 +1443,28 @@ async function jsonFetch(
   const body = text ? JSON.parse(text) : {};
   assert.equal(response.status, 200, JSON.stringify(body));
   return body;
+}
+
+async function readSseEvent(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  expectedEvent: string,
+): Promise<unknown> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`SSE stream closed before ${expectedEvent}.`);
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      const event = block.split("\n").find((line) => line.startsWith("event: "))?.slice(7);
+      if (event !== expectedEvent) continue;
+      const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+      if (!data) throw new Error(`SSE event ${expectedEvent} did not include data.`);
+      return JSON.parse(data);
+    }
+  }
 }
 
 async function expectJsonStatus(

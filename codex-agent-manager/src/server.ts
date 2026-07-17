@@ -26,6 +26,7 @@ import type {
   RunnerCommandEvent,
   RunnerDirectoryListing,
   RunnerRegistration,
+  RunnerSnapshot,
 } from "./types.js";
 
 const REASONING_EFFORTS = [
@@ -66,6 +67,10 @@ export class CommandCenterServer {
   private readonly title: string;
   private automationRunning = false;
   private automationQueued = false;
+  private runnerSweepTimer: NodeJS.Timeout | null = null;
+  private readonly runnerChanged = (runner: RunnerSnapshot): void => {
+    this.broadcast("runner-event", runner);
+  };
 
   constructor(private readonly options: CommandCenterServerOptions) {
     this.title = options.title ?? "SquadAI";
@@ -73,7 +78,7 @@ export class CommandCenterServer {
       void this.handle(request, response);
     });
     options.manager.on("event", (event) => {
-      this.broadcast(event as AgentEvent);
+      this.broadcast("agent-event", event as AgentEvent);
       if (![
         "sensor_event_ingested",
         "work_item_created",
@@ -82,6 +87,7 @@ export class CommandCenterServer {
         this.kickAutomation();
       }
     });
+    options.runnerHub?.on("changed", this.runnerChanged);
   }
 
   get port(): number {
@@ -97,9 +103,18 @@ export class CommandCenterServer {
         resolve();
       });
     });
+    if (this.options.runnerHub && !this.runnerSweepTimer) {
+      this.runnerSweepTimer = setInterval(() => {
+        this.options.runnerHub?.listRunners();
+      }, 10_000);
+      this.runnerSweepTimer.unref();
+    }
   }
 
   async close(): Promise<void> {
+    this.options.runnerHub?.off("changed", this.runnerChanged);
+    if (this.runnerSweepTimer) clearInterval(this.runnerSweepTimer);
+    this.runnerSweepTimer = null;
     for (const client of this.sseClients) {
       client.end();
     }
@@ -675,8 +690,8 @@ export class CommandCenterServer {
     });
   }
 
-  private broadcast(event: AgentEvent): void {
-    const data = `event: agent-event\ndata: ${JSON.stringify(event)}\n\n`;
+  private broadcast(eventName: string, event: unknown): void {
+    const data = `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`;
     for (const client of this.sseClients) {
       client.write(data);
     }
@@ -1151,6 +1166,7 @@ function renderHtml(title: string): string {
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <div id="rail-agents" class="rail-agents" aria-label="Agent conversations"></div>
         <button type="button" class="rail-item rail-create" data-panel="create">New agent <span aria-hidden="true">+</span></button>
+        <button type="button" class="rail-item" data-panel="runners">Runners <span id="runner-count">1</span></button>
         <button type="button" class="rail-item" data-panel="skills">Skills</button>
         <span class="rail-section-label rail-section-activity">Activity</span>
         <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
@@ -1396,6 +1412,7 @@ function renderHtml(title: string): string {
         <div id="notifications-list" class="ops-log"></div>
         <div id="sensor-events" class="ops-log"></div>
         <div id="work-items" class="ops-log"></div>
+        <div id="runners-list" class="ops-log"></div>
         <div id="skill-library" class="ops-log"></div>
       </div>
     </section>
@@ -1647,6 +1664,24 @@ textarea { resize: vertical; }
 .skill-card-actions button { padding: 7px 10px; }
 .skill-installed { color: #3fb950; font-weight: 700; }
 .skill-error { margin-bottom: 10px; padding: 9px 11px; border: 1px solid rgba(248,81,73,.35); border-radius: 7px; color: #ff7b72; }
+.runner-overview { display: grid; gap: 18px; }
+.runner-overview-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.runner-overview-header p { margin: 0; color: #8b949e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.runner-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.runner-card { display: grid; gap: 14px; padding: 16px; border: 1px solid #30363d; border-radius: 10px; background: #161b22; }
+.runner-card header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.runner-card h3 { margin: 0 0 3px; color: #e6edf3; font: 650 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.runner-card header p { margin: 0; color: #8b949e; }
+.runner-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin: 0; }
+.runner-card dl div { min-width: 0; }
+.runner-card dt { color: #6e7681; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.runner-card dd { margin: 3px 0 0; color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runner-state { display: inline-flex; align-items: center; gap: 6px; color: #8b949e; font-weight: 700; }
+.runner-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #6e7681; }
+.runner-state.online { color: #3fb950; }
+.runner-state.online::before { background: #3fb950; box-shadow: 0 0 0 3px rgba(63,185,80,.12); }
+.runner-state.offline { color: #f85149; }
+.runner-state.offline::before { background: #f85149; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
 .status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
@@ -1952,7 +1987,7 @@ let activePanel = "topology";
 const previewParams = new URLSearchParams(window.location.search);
 const requestedPanel = previewParams.get("panel");
 const requestedAgentId = previewParams.get("agent");
-const validPanels = ["topology", "jarvis", "agents", "create", "skills", "notifications", "events", "work"];
+const validPanels = ["topology", "jarvis", "agents", "create", "runners", "skills", "notifications", "events", "work"];
 if (validPanels.includes(requestedPanel)) activePanel = requestedPanel;
 let requestedAgentApplied = false;
 let lastAgentListHtml = "";
@@ -2007,6 +2042,7 @@ const composerModelView = document.getElementById("composer-model-view");
 const composerModelOptions = document.getElementById("composer-model-options");
 const composerRuntimeBack = document.getElementById("composer-runtime-back");
 const agentCount = document.getElementById("agent-count");
+const runnerCount = document.getElementById("runner-count");
 const notificationCount = document.getElementById("notification-count");
 const eventCount = document.getElementById("event-count");
 const workCount = document.getElementById("work-count");
@@ -2017,6 +2053,7 @@ const compatibilityHealth = document.getElementById("compatibility-health");
 const notificationList = document.getElementById("notifications-list");
 const sensorEventList = document.getElementById("sensor-events");
 const workItemList = document.getElementById("work-items");
+const runnersList = document.getElementById("runners-list");
 const skillLibrary = document.getElementById("skill-library");
 const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
@@ -2061,12 +2098,13 @@ let remoteDirectoryListing = null;
 
 document.getElementById("refresh").addEventListener("click", refresh);
 opsRefresh.addEventListener("click", () => activePanel === "skills" ? refreshSkillLibrary() : refresh());
-document.getElementById("topology-add-runner").addEventListener("click", () => {
+function openRunnerEnrollment() {
   runnerEnrollmentResult.hidden = true;
   runnerEnrollmentApproval.hidden = true;
   runnerEnrollmentStatus.textContent = "";
   runnerEnrollmentModal.hidden = false;
-});
+}
+document.getElementById("topology-add-runner").addEventListener("click", openRunnerEnrollment);
 document.getElementById("runner-enrollment-close").addEventListener("click", () => {
   runnerEnrollmentModal.hidden = true;
 });
@@ -2256,6 +2294,20 @@ stream.addEventListener("agent-event", (message) => {
   void refreshNotifications();
   render();
 });
+stream.addEventListener("runner-event", (message) => {
+  const runner = JSON.parse(message.data);
+  const previous = runners.find((item) => item.id === runner.id);
+  runners = [...runners.filter((item) => item.id !== runner.id), runner]
+    .sort((left, right) => left.name.localeCompare(right.name));
+  renderRunnerOptions();
+  renderRunners();
+  if (!previous && runner.status === "online") {
+    toast(runner.name + " connected");
+  } else if (previous && previous.status !== runner.status) {
+    toast(runner.name + (runner.status === "online" ? " reconnected" : " went offline"), runner.status === "online" ? "info" : "error");
+  }
+  render();
+});
 
 async function refresh() {
   await Promise.all([refreshAgents(), refreshRunners()]);
@@ -2277,6 +2329,7 @@ async function refreshRunners() {
   const body = await response.json();
   runners = Array.isArray(body.runners) ? body.runners : [];
   renderRunnerOptions();
+  renderRunners();
 }
 
 function renderRunnerOptions() {
@@ -2288,6 +2341,53 @@ function renderRunnerOptions() {
     ).join("");
     select.value = Array.from(select.options).some((option) => option.value === current) ? current : "local";
   }
+}
+
+function renderRunners() {
+  if (!runnersList) return;
+  if (runnerCount) runnerCount.textContent = String(runners.length + 1);
+  const localAgentCount = agents.filter((agent) => !agent.runnerId || agent.runnerId === "local").length;
+  const localCard = renderRunnerCard({
+    id: "local",
+    name: "This machine",
+    status: "online",
+    hostname: "Control plane host",
+    platform: "local",
+    arch: "current",
+    version: "0.1.0",
+    activeCommands: agents.filter((agent) => (!agent.runnerId || agent.runnerId === "local") && agent.status === "running").length,
+    lastSeenAt: new Date().toISOString(),
+  }, localAgentCount, true);
+  const remoteCards = runners.map((runner) => {
+    const assigned = agents.filter((agent) => agent.runnerId === runner.id).length;
+    return renderRunnerCard(runner, assigned, false);
+  }).join("");
+  runnersList.innerHTML = '<section class="runner-overview">'
+    + '<div class="runner-overview-header"><p>Machines available to run SquadAI agents.</p><button type="button" data-runner-add>Add runner</button></div>'
+    + '<div class="runner-grid">' + localCard + remoteCards + '</div>'
+    + '</section>';
+  runnersList.querySelector("[data-runner-add]")?.addEventListener("click", openRunnerEnrollment);
+  if (activePanel === "runners") updateOpsCount();
+}
+
+function renderRunnerCard(runner, assignedAgents, local) {
+  const platform = local ? "Control plane" : runnerPlatformLabel(runner.platform) + " · " + (runner.arch || "unknown");
+  const lastSeen = local ? "Now" : formatShortTime(runner.lastSeenAt) || "Unknown";
+  return '<article class="runner-card">'
+    + '<header><div><h3>' + escapeHtml(runner.name) + '</h3><p>' + escapeHtml(runner.hostname || runner.id) + '</p></div>'
+    + '<span class="runner-state ' + escapeAttr(runner.status) + '">' + escapeHtml(runner.status) + '</span></header>'
+    + '<dl>'
+    + '<div><dt>Agents</dt><dd>' + escapeHtml(String(assignedAgents)) + '</dd></div>'
+    + '<div><dt>Active work</dt><dd>' + escapeHtml(String(runner.activeCommands || 0)) + '</dd></div>'
+    + '<div><dt>System</dt><dd title="' + escapeAttr(platform) + '">' + escapeHtml(platform) + '</dd></div>'
+    + '<div><dt>Last seen</dt><dd>' + escapeHtml(lastSeen) + '</dd></div>'
+    + '<div><dt>Runner ID</dt><dd title="' + escapeAttr(runner.id) + '">' + escapeHtml(runner.id) + '</dd></div>'
+    + '<div><dt>Version</dt><dd>' + escapeHtml(runner.version || "unknown") + '</dd></div>'
+    + '</dl></article>';
+}
+
+function runnerPlatformLabel(platform) {
+  return ({ win32: "Windows", darwin: "macOS", linux: "Linux" })[platform] || platform || "Unknown";
 }
 
 async function refreshModelOptions(runnerId = "local") {
@@ -3364,13 +3464,14 @@ function renderPanel() {
     jarvis: ["Jarvis", "Talk to the command center as a whole."],
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
+    runners: ["Runners", "Machines connected to this SquadAI control plane."],
     skills: ["Skills", "Copy user skills between connected machines without starting an agent."],
     notifications: ["Notifications", "Human-attention items from active agents."],
     events: ["Event Inbox", "Sensor events assigned directly, waiting for assignment, or already routed."],
     work: ["Work Queue", "Durable work assigned to worker agents."],
   };
   const [title, subtitle] = titles[activePanel] || titles.agents;
-  const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work" || activePanel === "skills";
+  const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work" || activePanel === "runners" || activePanel === "skills";
   const topologyMode = activePanel === "topology";
   const createMode = activePanel === "create";
   shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
@@ -3396,9 +3497,11 @@ function renderPanel() {
       (activePanel === "notifications" && log.id === "notifications-list") ||
       (activePanel === "events" && log.id === "sensor-events") ||
       (activePanel === "work" && log.id === "work-items") ||
+      (activePanel === "runners" && log.id === "runners-list") ||
       (activePanel === "skills" && log.id === "skill-library")
     ));
   }
+  if (activePanel === "runners") renderRunners();
   if (activePanel === "skills") renderSkillLibrary();
 }
 
@@ -3692,6 +3795,12 @@ function updateOpsCount() {
   if (activePanel === "skills") {
     const count = skillLibrarySnapshot.library.length;
     opsCount.textContent = count + (count === 1 ? " library skill" : " library skills");
+    return;
+  }
+  if (activePanel === "runners") {
+    const count = runners.length + 1;
+    const online = runners.filter((runner) => runner.status === "online").length + 1;
+    opsCount.textContent = online + " online · " + count + (count === 1 ? " machine" : " machines");
   }
 }
 

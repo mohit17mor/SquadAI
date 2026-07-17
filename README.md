@@ -47,6 +47,8 @@ is responsible for organizing agents and work around it.
   where the repositories, credentials, skills, plugins, and MCP servers exist.
 - **Easy machine enrollment:** Add a Windows, macOS, or Linux runner from the
   UI with one expiring command over a private Tailscale connection.
+- **Live runner inventory:** See every control-plane and remote machine,
+  connection status, assigned agents, active work, and last heartbeat.
 - **Telegram team chat:** Give selected agents their own Telegram bots, tag
   them in one group, and receive their work, approvals, and final summaries in
   the same conversation.
@@ -607,7 +609,7 @@ cd ../codex-agent-manager
 npm test
 ```
 
-The repository currently has 105 automated tests. GitHub Actions runs them on
+The repository currently has 106 automated tests. GitHub Actions runs them on
 Linux, macOS, and Windows.
 
 ## Current Scope
