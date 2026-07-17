@@ -45,13 +45,20 @@ is responsible for organizing agents and work around it.
   agent tasks do not edit the same checkout.
 - **Remote runners:** Keep the control plane on one machine while agents run
   where the repositories, credentials, skills, plugins, and MCP servers exist.
+- **Easy machine enrollment:** Add a Windows, macOS, or Linux runner from the
+  UI with one expiring command over a private Tailscale connection.
+- **Telegram team chat:** Give selected agents their own Telegram bots, tag
+  them in one group, and receive their work, approvals, and final summaries in
+  the same conversation.
+- **Shared skill library:** Import a user skill from one runner and install it
+  on another without creating a temporary agent or spending model tokens.
 - **Upgrade awareness:** Detect incompatible pinned model settings and request
   a migration decision instead of repeatedly failing without explanation.
 
 ## How It Works
 
 ```text
-People / webhooks / monitors
+People / webhooks / monitors / Telegram
             |
             v
   +-----------------------+
@@ -115,6 +122,14 @@ You need:
 - npm, which is included with Node.js;
 - [Git](https://git-scm.com/);
 - the Codex CLI, installed and authenticated.
+
+Optional, depending on how you use SquadAI:
+
+- [Tailscale](https://tailscale.com/download) on every machine when adding
+  remote runners through the recommended private-network flow;
+- Telegram and BotFather when using Telegram group control;
+- [VS Code](https://code.visualstudio.com/) and SSH access to a remote runner
+  when using **Open in VS Code** remotely.
 
 SquadAI supports macOS, Linux, and Windows.
 
@@ -227,6 +242,46 @@ You can close and restart SquadAI later. Its SQLite database preserves agent
 definitions, thread IDs, events, work items, approvals, and conversation
 activity.
 
+## Add Another Machine (Recommended)
+
+This is the simplest way to run agents on another Windows, macOS, or Linux
+machine. The control plane remains on your main machine; source code, Codex,
+credentials, MCP servers, and local tools remain on the runner machine.
+
+1. Install Tailscale, Node.js, Codex, and SquadAI on both machines, then sign
+   in to the same Tailscale network.
+2. Start the control plane on your main machine:
+
+   ```bash
+   npm start -- --mode control --host 127.0.0.1 --port 4317
+   ```
+
+3. In SquadAI, open **Topology** and choose **Add runner**.
+4. Select **Generate enrollment command**. SquadAI finds Tailscale even if its
+   command is not on `PATH`, creates a private address, and gives you one
+   command to copy.
+5. Run that command on the new machine. It enrolls the runner, saves its
+   runner-specific credential in `~/.squadai/runner.json`, and connects it.
+
+The first time Tailscale Serve is used, it may require a browser approval. Use
+the link shown by SquadAI, approve it once, then generate the enrollment command
+again. Enrollment commands expire after ten minutes and can only be used once.
+
+On the runner machine, later reconnect it with:
+
+```bash
+squadai runner start
+```
+
+To check its last recorded state:
+
+```bash
+squadai runner status
+```
+
+There is no native installer or background service required for v1. The runner
+is simply a process you start on the machine where work should run.
+
 ## Permissions
 
 SquadAI exposes three simple presets:
@@ -287,19 +342,28 @@ The control plane stays source-agnostic. Integrations should translate external
 payloads into this small event contract rather than embedding source-specific
 logic in SquadAI.
 
-## Run The Control Plane And Runners Separately
+## Advanced: Manual Runner Connection
 
-Use this mode when agents should work on another laptop, workstation, VM, or
-server.
+The **Add runner** flow above is recommended. Use these commands only when you
+already have a private network, VPN, reverse proxy, or tunnel and want to
+provide the control-plane address yourself.
 
 ### 1. Build SquadAI on both machines
 
 Clone or copy the repository to both machines, install the Codex CLI on every
-runner machine, and run the installation commands from the quick start.
+runner machine, and run the installation commands from the quick start. To use
+the convenient `squadai runner …` commands on the runner machine, install the
+manager package globally from its built checkout:
+
+```bash
+cd codex-agent-manager
+npm install -g .
+```
 
 ### 2. Start the control plane
 
-On a private network, bind the control plane to an address runners can reach:
+Bind the control plane only to an address that runner machines can reach over a
+trusted network:
 
 ```bash
 node codex-agent-manager/dist/src/cli.js \
@@ -337,9 +401,83 @@ node codex-agent-manager/dist/src/cli.js \
   --ssh-host development-machine
 ```
 
-The runner makes outbound HTTP requests to the control plane. If the runner
-cannot directly reach it, use a private overlay network, VPN, or authenticated
-SSH tunnel rather than exposing the port publicly.
+The runner makes outbound HTTP requests to the control plane. If it cannot
+directly reach the control plane, use Tailscale, another private overlay
+network, a VPN, or an authenticated SSH tunnel—do not expose the port publicly.
+
+The legacy shared runner token remains supported for compatibility. New runner
+enrollment creates a distinct runner credential instead.
+
+## Telegram Group Control
+
+Telegram makes SquadAI feel like a team chat: you, your friends, and selected
+agents can share one group while each agent still runs on its assigned runner.
+There is no agent-to-agent automation in v1; only a human message can start or
+resume work.
+
+### 1. Create the control bot
+
+1. In Telegram, open [@BotFather](https://t.me/BotFather) and create a bot for
+   SquadAI's control plane.
+2. Start SquadAI with its token. Passing it as an environment variable is best
+   for a long-running service; this command is convenient for local testing:
+
+   ```bash
+   npm start -- --mode embedded --telegram-token YOUR_CONTROL_BOT_TOKEN
+   ```
+
+3. Add that bot to your Telegram group and make it an administrator. Admin bots
+   can receive ordinary group messages. If Telegram still says the bot cannot
+   access group messages, use BotFather's `/setprivacy` to disable privacy for
+   that bot, then remove and re-add it to the group.
+
+### 2. Connect an agent bot
+
+Create one bot in BotFather for every agent you want to use in Telegram. You do
+not need a bot for every SquadAI agent. Add those bots to the same group, then
+open the agent's inspector in SquadAI's topology and connect its bot token in
+the Telegram section.
+
+Each connected bot represents exactly one agent, which makes replies, running
+updates, approvals, and final answers easy to identify in the group.
+
+### 3. Assign work naturally
+
+Tag the desired agent bot in your newest group message:
+
+```text
+@coder_bot please implement the login validation
+@news_bot give us the five most important AI stories today
+```
+
+SquadAI queues work only for bots tagged in that newest message. It also gives
+the selected agent the preceding group context (currently the most recent 20
+messages) so a reviewer can see what a coder already reported without manual
+copying. Bot-authored messages are ignored as new work requests.
+
+Replying to an agent's message continues that agent's work. If the reply tags a
+different agent bot, the newly tagged agent takes precedence instead. Multiple
+people can use the same group; in v1, the person who started a task is the only
+person who can approve or deny its tool request from Telegram.
+
+## Shared Skill Library
+
+Skills normally live in a machine's `~/.codex/skills` directory. SquadAI can
+now copy a **user-level** skill to another connected runner without asking a
+Codex agent to do the work.
+
+1. Open **Skills** in the SquadAI command rail.
+2. Under **Available to import**, choose **Import to library** beside a skill
+   found on any online runner.
+3. Under **SquadAI library**, choose **Install on …** for any online runner
+   that does not already have that skill.
+
+SquadAI packages the complete skill folder, validates paths and file sizes,
+stores it with a content fingerprint next to the control-plane database, and
+has the target runner write it to its own `~/.codex/skills/<skill-name>` folder.
+It never starts a temporary agent and never transfers repo, system, admin, or
+plugin-scoped skills. Restart Codex sessions after installing a skill if an
+existing session does not refresh its skill catalog immediately.
 
 ## Run Modes
 
@@ -361,6 +499,7 @@ CODEX_AGENT_MANAGER_CONTROL_URL
 CODEX_AGENT_MANAGER_RUNNER_ID
 CODEX_AGENT_MANAGER_RUNNER_NAME
 CODEX_AGENT_MANAGER_SSH_HOST
+CODEX_AGENT_MANAGER_ROUTING_MODE
 CODEX_BINARY
 SQUADAI_TELEGRAM_TOKEN
 ```
@@ -377,10 +516,16 @@ squadai/
 ## Security Notes
 
 - Keep the control plane on localhost or a trusted private network.
+- Prefer the UI's Tailscale enrollment flow for remote runners. Do not expose
+  the control-plane port to the public internet.
 - Always configure a strong runner token when remote runners are enabled.
 - Treat Full access as privileged machine access.
 - A runner can access only the files, credentials, tools, skills, plugins, and
   MCP servers available to the user account running that process.
+- A connected Telegram group can start work on the bots in that group. Add only
+  people you are comfortable letting use those agents.
+- The shared skill library stores imported user-skill files beside the
+  control-plane SQLite database. Import only skills you trust.
 - Review agent worktrees and diffs before merging changes into important
   branches.
 - Do not place secrets in agent instructions or event payloads unless your
@@ -421,6 +566,24 @@ Check that:
 - its runner ID is unique;
 - no firewall or proxy is interrupting long-polling HTTP requests.
 
+For the recommended enrollment flow, also confirm both machines are signed in
+to the same Tailscale network. If SquadAI shows a Tailscale approval link, open
+it once, approve the private Serve configuration, and generate a new enrollment
+command.
+
+### Telegram messages do not queue work
+
+Confirm that the control bot is running with `SQUADAI_TELEGRAM_TOKEN` (or
+`--telegram-token`), is an administrator in the group, and has permission to
+read group messages. Confirm the agent bot is connected to the intended agent
+in SquadAI and that your newest human message tags that exact bot.
+
+### A shared skill is missing
+
+The Skills panel lists only online runners and Codex **user** skills. Confirm
+the source skill is under `~/.codex/skills`, the source runner is online, and
+the target runner has not already installed a skill with the same name.
+
 ### A pinned model stopped working
 
 Open the compatibility notification in SquadAI. The control plane can compare
@@ -444,7 +607,7 @@ cd ../codex-agent-manager
 npm test
 ```
 
-The repository currently has 103 automated tests. GitHub Actions runs them on
+The repository currently has 105 automated tests. GitHub Actions runs them on
 Linux, macOS, and Windows.
 
 ## Current Scope
@@ -453,7 +616,8 @@ SquadAI currently focuses on managing Codex agents. The architecture separates
 the control plane from the runtime so additional agent providers can be added
 later, but they are not implemented today. Visual agent-to-agent workflow
 chaining is also a future direction; current automation uses explicit event
-targets, optional routing, durable work items, and isolated agent instances.
+targets, optional routing, durable work items, Telegram human-to-agent
+handoffs, and isolated agent instances.
 
 ## Codex Documentation
 
