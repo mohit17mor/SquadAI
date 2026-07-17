@@ -17,6 +17,19 @@ export {
 export type { SavedRunnerConfig } from "./runnerConfig.js";
 export { RemoteSession, RunnerAwareWorkspaceManager, RunnerHub } from "./runnerHub.js";
 export { TailscaleService, TailscaleSetupError } from "./tailscale.js";
+export {
+  codexUserSkillsDirectory,
+  exportUserSkill,
+  installUserSkill,
+  validateSkillPackage,
+} from "./skillPackages.js";
+export type { SkillPackage, SkillPackageFile } from "./skillPackages.js";
+export { SkillLibraryService } from "./skillLibrary.js";
+export type {
+  DiscoveredRunnerSkill,
+  SkillLibraryEntry,
+  SkillLibrarySnapshot,
+} from "./skillLibrary.js";
 export type { TailscalePrivateAccess } from "./tailscale.js";
 export {
   SqliteTelegramMessageStore,

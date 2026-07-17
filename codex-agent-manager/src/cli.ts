@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { GitWorkspaceManager } from "./gitWorkspace.js";
 import { CodexAgentManager } from "./manager.js";
+import { SkillLibraryService } from "./skillLibrary.js";
 import { enrollRunner, loadRunnerConfig, runnerConfigPath, type SavedRunnerConfig } from "./runnerConfig.js";
 import { RunnerDaemon } from "./runnerDaemon.js";
 import { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
@@ -159,11 +160,18 @@ const telegramCoordinator = telegramToken && telegramStore
       controlBotToken: telegramToken,
     })
   : null;
+const skillLibrary = new SkillLibraryService(
+  databasePath,
+  join(dirname(databasePath), "skill-library"),
+  manager,
+  runnerHub,
+);
 const server = createCommandCenterServer({
   manager,
   runnerHub,
   runnerEnrollments,
   tailscale,
+  skillLibrary,
   telegramBindings,
   telegramMentionIntake,
 });
@@ -222,6 +230,7 @@ async function shutdown(): Promise<void> {
   await telegramBindingStore.close().catch(() => {});
   await telegramRequestStore.close().catch(() => {});
   await runnerEnrollments.close().catch(() => {});
+  await skillLibrary.close().catch(() => {});
   await server.close().catch(() => {});
   await manager.close().catch(() => {});
   process.exit(0);

@@ -6,6 +6,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type { CodexAgentManager } from "./manager.js";
+import type { SkillLibraryService } from "./skillLibrary.js";
 import type { SqliteRunnerEnrollmentStore } from "./runnerEnrollment.js";
 import type { RunnerHub } from "./runnerHub.js";
 import type { TelegramAgentBindingService } from "./telegramBindings.js";
@@ -47,6 +48,7 @@ export type CommandCenterServerOptions = {
   tailscale?: {
     ensurePrivateAccess(localPort: number): Promise<TailscalePrivateAccess>;
   };
+  skillLibrary?: SkillLibraryService;
   telegramBindings?: TelegramAgentBindingService;
   telegramMentionIntake?: TelegramMentionIntake;
   title?: string;
@@ -547,6 +549,35 @@ export class CommandCenterServer {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/skill-library") {
+        this.json(response, await this.requireSkillLibrary().snapshot());
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/skill-library/import") {
+        const body = asRecord(await readJson(request));
+        const description = optionalString(body.description);
+        const skill = await this.requireSkillLibrary().importSkill({
+          runnerId: requiredString(body.runnerId, "runnerId"),
+          name: requiredString(body.name, "name"),
+          path: requiredString(body.path, "path"),
+          ...(description ? { description } : {}),
+        });
+        this.json(response, { skill });
+        return;
+      }
+
+      const skillInstallMatch = url.pathname.match(/^\/api\/skill-library\/([^/]+)\/install$/);
+      if (request.method === "POST" && skillInstallMatch?.[1]) {
+        const body = asRecord(await readJson(request));
+        const installation = await this.requireSkillLibrary().installSkill(
+          decodeURIComponent(skillInstallMatch[1]),
+          requiredString(body.runnerId, "runnerId"),
+        );
+        this.json(response, { installation });
+        return;
+      }
+
       this.json(response, { error: "Not found" }, 404);
     } catch (error) {
       if (error instanceof TailscaleSetupError) {
@@ -556,6 +587,7 @@ export class CommandCenterServer {
         }, error.approvalUrl ? 409 : 400);
         return;
       }
+
       this.json(
         response,
         { error: error instanceof Error ? error.message : String(error) },
@@ -593,6 +625,12 @@ export class CommandCenterServer {
     const tailscale = this.options.tailscale;
     if (!tailscale) throw new Error("Automatic Tailscale setup is not configured.");
     return tailscale;
+  }
+
+  private requireSkillLibrary(): SkillLibraryService {
+    const library = this.options.skillLibrary;
+    if (!library) throw new Error("The SquadAI skill library is not configured.");
+    return library;
   }
 
   private requireTelegramBindings(): TelegramAgentBindingService {
@@ -1113,6 +1151,7 @@ function renderHtml(title: string): string {
         <button type="button" class="rail-item" data-panel="agents">Agents <span id="agent-count">0</span></button>
         <div id="rail-agents" class="rail-agents" aria-label="Agent conversations"></div>
         <button type="button" class="rail-item rail-create" data-panel="create">New agent <span aria-hidden="true">+</span></button>
+        <button type="button" class="rail-item" data-panel="skills">Skills</button>
         <span class="rail-section-label rail-section-activity">Activity</span>
         <button type="button" class="rail-item" data-panel="notifications">Notifications <span id="notification-count">0</span></button>
         <button type="button" class="rail-item" data-panel="events">Event Inbox <span id="event-count">0</span></button>
@@ -1357,6 +1396,7 @@ function renderHtml(title: string): string {
         <div id="notifications-list" class="ops-log"></div>
         <div id="sensor-events" class="ops-log"></div>
         <div id="work-items" class="ops-log"></div>
+        <div id="skill-library" class="ops-log"></div>
       </div>
     </section>
     <div id="toasts" class="toasts"></div>
@@ -1594,6 +1634,19 @@ textarea { resize: vertical; }
 .log-actions select { min-width: 180px; padding: 7px 9px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 7px; }
 .log-actions button { padding: 7px 11px; }
 .log-empty { display: grid; place-items: center; min-height: 280px; color: #8b949e; border: 1px dashed #30363d; border-radius: 8px; }
+.skill-section { margin-bottom: 28px; }
+.skill-section h3 { margin: 0 0 4px; color: #e6edf3; font: 600 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.skill-section > p { margin: 0 0 12px; color: #8b949e; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 12px; }
+.skill-card { display: grid; gap: 10px; padding: 14px; border: 1px solid #30363d; border-radius: 9px; background: #161b22; }
+.skill-card header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.skill-card h4 { margin: 0; color: #e6edf3; font-size: 13px; overflow-wrap: anywhere; }
+.skill-card p { margin: 0; color: #8b949e; min-height: 38px; overflow-wrap: anywhere; }
+.skill-card-meta { color: #6e7681; overflow-wrap: anywhere; }
+.skill-card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.skill-card-actions button { padding: 7px 10px; }
+.skill-installed { color: #3fb950; font-weight: 700; }
+.skill-error { margin-bottom: 10px; padding: 9px 11px; border: 1px solid rgba(248,81,73,.35); border-radius: 7px; color: #ff7b72; }
 .status-pill { align-self: start; justify-self: end; border-radius: 999px; padding: 2px 8px; background: #1c2128; color: #8b949e; font-size: 11px; font-weight: 700; }
 .status-pill.running, .status-pill.starting { background: rgba(210,153,34,.15); color: #d29922; }
 .status-pill.idle { background: rgba(63,185,80,.12); color: #3fb950; }
@@ -1883,6 +1936,8 @@ let workItems = [];
 let notifications = [];
 let compatibilityApprovals = [];
 let compatibilitySnapshot = null;
+let skillLibrarySnapshot = { library: [], discovered: [], runners: [], errors: [] };
+let skillLibraryLoading = false;
 const modelCatalogs = new Map();
 const modelCatalogRequests = new Map();
 const skillCatalogs = new Map();
@@ -1897,7 +1952,7 @@ let activePanel = "topology";
 const previewParams = new URLSearchParams(window.location.search);
 const requestedPanel = previewParams.get("panel");
 const requestedAgentId = previewParams.get("agent");
-const validPanels = ["topology", "jarvis", "agents", "create", "notifications", "events", "work"];
+const validPanels = ["topology", "jarvis", "agents", "create", "skills", "notifications", "events", "work"];
 if (validPanels.includes(requestedPanel)) activePanel = requestedPanel;
 let requestedAgentApplied = false;
 let lastAgentListHtml = "";
@@ -1962,6 +2017,7 @@ const compatibilityHealth = document.getElementById("compatibility-health");
 const notificationList = document.getElementById("notifications-list");
 const sensorEventList = document.getElementById("sensor-events");
 const workItemList = document.getElementById("work-items");
+const skillLibrary = document.getElementById("skill-library");
 const toasts = document.getElementById("toasts");
 const agentNameInput = document.getElementById("agent-name");
 const agentIdInput = document.getElementById("agent-id");
@@ -2004,7 +2060,7 @@ let remoteDirectoryRunnerId = null;
 let remoteDirectoryListing = null;
 
 document.getElementById("refresh").addEventListener("click", refresh);
-opsRefresh.addEventListener("click", refresh);
+opsRefresh.addEventListener("click", () => activePanel === "skills" ? refreshSkillLibrary() : refresh());
 document.getElementById("topology-add-runner").addEventListener("click", () => {
   runnerEnrollmentResult.hidden = true;
   runnerEnrollmentApproval.hidden = true;
@@ -2069,6 +2125,7 @@ for (const button of document.querySelectorAll("[data-panel]")) {
     }
     render();
     if (activePanel === "agents" || activePanel === "jarvis") void refreshEvents().then(render);
+    if (activePanel === "skills") void refreshSkillLibrary();
   });
 }
 window.addEventListener("topology:open-agent", (event) => {
@@ -2209,6 +2266,7 @@ async function refresh() {
     refreshQueues(),
     refreshNotifications(),
     ...Array.from(runnerCatalogs, (runnerId) => refreshModelOptions(runnerId)),
+    ...(activePanel === "skills" ? [refreshSkillLibrary(false)] : []),
   ]);
   render();
 }
@@ -3306,12 +3364,13 @@ function renderPanel() {
     jarvis: ["Jarvis", "Talk to the command center as a whole."],
     agents: ["Agents", "Select an agent and watch its conversation on the right."],
     create: ["Create Agent", "Add a specialized Codex session to the command center."],
+    skills: ["Skills", "Copy user skills between connected machines without starting an agent."],
     notifications: ["Notifications", "Human-attention items from active agents."],
     events: ["Event Inbox", "Sensor events assigned directly, waiting for assignment, or already routed."],
     work: ["Work Queue", "Durable work assigned to worker agents."],
   };
   const [title, subtitle] = titles[activePanel] || titles.agents;
-  const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work";
+  const opsMode = activePanel === "notifications" || activePanel === "events" || activePanel === "work" || activePanel === "skills";
   const topologyMode = activePanel === "topology";
   const createMode = activePanel === "create";
   shell.classList.toggle("jarvis-mode", activePanel === "jarvis");
@@ -3336,9 +3395,117 @@ function renderPanel() {
     log.classList.toggle("active", (
       (activePanel === "notifications" && log.id === "notifications-list") ||
       (activePanel === "events" && log.id === "sensor-events") ||
-      (activePanel === "work" && log.id === "work-items")
+      (activePanel === "work" && log.id === "work-items") ||
+      (activePanel === "skills" && log.id === "skill-library")
     ));
   }
+  if (activePanel === "skills") renderSkillLibrary();
+}
+
+async function refreshSkillLibrary(renderAfter = true) {
+  if (skillLibraryLoading) return;
+  skillLibraryLoading = true;
+  if (renderAfter) renderSkillLibrary();
+  try {
+    const response = await fetch("/api/skill-library");
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load skills");
+    skillLibrarySnapshot = body;
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    skillLibraryLoading = false;
+    if (renderAfter) {
+      renderSkillLibrary();
+      updateOpsCount();
+    }
+  }
+}
+
+function renderSkillLibrary() {
+  if (!skillLibrary) return;
+  const snapshot = skillLibrarySnapshot || { library: [], discovered: [], runners: [], errors: [] };
+  const onlineRunners = snapshot.runners.filter((runner) => runner.status === "online");
+  const runnerName = (runnerId) => snapshot.runners.find((runner) => runner.id === runnerId)?.name || runnerId;
+  const errorsHtml = snapshot.errors.map((error) =>
+    '<div class="skill-error">' + escapeHtml(runnerName(error.runnerId)) + ': ' + escapeHtml(error.message) + '</div>'
+  ).join("");
+  const libraryHtml = snapshot.library.map((item) => {
+    const targets = onlineRunners.map((runner) => {
+      const installed = item.installedRunnerIds.includes(runner.id);
+      return installed
+        ? '<span class="skill-installed">' + escapeHtml(runner.name) + ' installed</span>'
+        : '<button type="button" data-skill-install="' + escapeAttr(item.name) + '" data-skill-runner="' + escapeAttr(runner.id) + '">Install on ' + escapeHtml(runner.name) + '</button>';
+    }).join("");
+    return '<article class="skill-card">'
+      + '<header><h4>' + escapeHtml(item.name) + '</h4><span class="log-status completed">in library</span></header>'
+      + '<p>' + escapeHtml(item.description || "No description provided.") + '</p>'
+      + '<div class="skill-card-meta">Imported from ' + escapeHtml(runnerName(item.sourceRunnerId)) + '</div>'
+      + '<div class="skill-card-actions">' + targets + '</div>'
+      + '</article>';
+  }).join("") || '<div class="log-empty">No skills have been imported into SquadAI yet.</div>';
+  const discovered = snapshot.discovered.filter((item) => !item.inLibrary);
+  const discoveredHtml = discovered.map((item) =>
+    '<article class="skill-card">'
+      + '<header><h4>' + escapeHtml(item.name) + '</h4><span class="log-status pending">on machine</span></header>'
+      + '<p>' + escapeHtml(item.description || item.shortDescription || "No description provided.") + '</p>'
+      + '<div class="skill-card-meta">' + escapeHtml(item.runnerName) + '</div>'
+      + '<div class="skill-card-actions"><button type="button" data-skill-import="' + escapeAttr(item.name) + '" data-skill-path="' + escapeAttr(item.path) + '" data-skill-runner="' + escapeAttr(item.runnerId) + '" data-skill-description="' + escapeAttr(item.description || item.shortDescription || "") + '">Import to library</button></div>'
+      + '</article>'
+  ).join("") || '<div class="log-empty">Every discovered user skill is already in the library.</div>';
+  skillLibrary.innerHTML = errorsHtml
+    + (skillLibraryLoading ? '<div class="skill-error">Checking connected machines...</div>' : '')
+    + '<section class="skill-section"><h3>SquadAI library</h3><p>Stored centrally and ready to install on any online runner.</p><div class="skill-grid">' + libraryHtml + '</div></section>'
+    + '<section class="skill-section"><h3>Available to import</h3><p>User skills discovered on connected machines.</p><div class="skill-grid">' + discoveredHtml + '</div></section>';
+  bindSkillLibraryActions();
+}
+
+function bindSkillLibraryActions() {
+  for (const button of skillLibrary.querySelectorAll("[data-skill-import]")) {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const response = await fetch("/api/skill-library/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runnerId: button.dataset.skillRunner,
+          name: button.dataset.skillImport,
+          path: button.dataset.skillPath,
+          description: button.dataset.skillDescription,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        toast(body.error || "Skill import failed", "error");
+        button.disabled = false;
+        return;
+      }
+      toast(button.dataset.skillImport + " added to the SquadAI library");
+      await refreshSkillLibrary();
+    });
+  }
+  for (const button of skillLibrary.querySelectorAll("[data-skill-install]")) {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const response = await fetch("/api/skill-library/" + encodeURIComponent(button.dataset.skillInstall) + "/install", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runnerId: button.dataset.skillRunner }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        toast(body.error || "Skill installation failed", "error");
+        button.disabled = false;
+        return;
+      }
+      toast(button.dataset.skillInstall + " installed on " + runnerNameForSkill(button.dataset.skillRunner));
+      await refreshSkillLibrary();
+    });
+  }
+}
+
+function runnerNameForSkill(runnerId) {
+  return skillLibrarySnapshot.runners.find((runner) => runner.id === runnerId)?.name || runnerId;
 }
 
 function renderQueues() {
@@ -3520,6 +3687,11 @@ function updateOpsCount() {
   }
   if (activePanel === "work") {
     opsCount.textContent = workItems.length + (workItems.length === 1 ? " item" : " items");
+    return;
+  }
+  if (activePanel === "skills") {
+    const count = skillLibrarySnapshot.library.length;
+    opsCount.textContent = count + (count === 1 ? " library skill" : " library skills");
   }
 }
 

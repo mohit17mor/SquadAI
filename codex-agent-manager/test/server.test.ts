@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { Script } from "node:vm";
 
 import {
   CodexAgentManager,
@@ -1051,9 +1052,13 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /id="shell" class="shell topology-mode"/);
     assert.match(html, /data-panel="jarvis"/);
     assert.match(html, /data-panel="create"/);
+    assert.match(html, /data-panel="skills"/);
     assert.match(html, /data-panel="events"/);
     assert.match(html, /data-panel="work"/);
     assert.match(html, /data-panel="notifications"/);
+    assert.match(html, /id="skill-library"/);
+    assert.match(html, /\/api\/skill-library\/import/);
+    assert.match(html, /Install on/);
     assert.match(html, /data-sensor-event-assign/);
     assert.match(html, /notification-count/);
     assert.match(html, /instance-done-button/);
@@ -1259,6 +1264,10 @@ test("command center UI exposes chat-style messaging affordances", async () => {
     assert.match(html, /hasCompletion/);
     assert.match(html, /Starting agent session/);
     assert.doesNotMatch(html, /slice\(\)\.reverse\(\)/);
+    const inlineScripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)]
+      .map((match) => match[1] ?? "")
+      .filter((source) => source.trim());
+    assert.doesNotThrow(() => new Script(inlineScripts.at(-1) ?? ""));
   } finally {
     await server.close();
     await manager.close();

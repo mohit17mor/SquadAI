@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { createDefaultClientFactory } from "./codexControlFactory.js";
 import { GitWorkspaceManager } from "./gitWorkspace.js";
+import { exportUserSkill, installUserSkill } from "./skillPackages.js";
 import type {
   AgentDefinition,
   ApprovalRequest,
@@ -164,6 +165,22 @@ export class RunnerDaemon {
           ...(typeof options.forceReload === "boolean" ? { forceReload: options.forceReload } : {}),
         });
       }
+      case "skills.listUser": {
+        const client = this.client(command.agentId);
+        if (!client.listSkills) throw new Error("This runner does not support skill discovery.");
+        const catalog = await client.listSkills({ cwd: homedir(), forceReload: true });
+        return { ...catalog, skills: catalog.skills.filter((skill) => skill.scope === "user") };
+      }
+      case "skills.export":
+        return exportUserSkill(
+          requiredString(payload.path, "path"),
+          {
+            name: requiredString(payload.name, "name"),
+            ...(typeof payload.description === "string" ? { description: payload.description } : {}),
+          },
+        );
+      case "skills.install":
+        return installUserSkill(payload.package);
       case "filesystem.listDirectories":
         return listDirectories(typeof payload.path === "string" ? payload.path : undefined);
       case "session.start": {
