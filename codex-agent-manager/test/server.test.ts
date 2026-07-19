@@ -1378,6 +1378,7 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(html, /id="topology-add-runner"/);
     assert.match(html, /id="runner-enrollment-modal"/);
     assert.match(html, /SquadAI will create a private Tailscale address automatically/);
+    assert.match(html, /Agent created: /);
     assert.doesNotMatch(html, /id="runner-control-url"/);
     assert.match(html, /id="topology-motion-toggle"/);
     assert.match(html, /id="topology-zoom-out"/);

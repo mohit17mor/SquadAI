@@ -1091,15 +1091,18 @@ function requiredEnum<T extends string>(value: unknown, allowed: readonly T[], f
 }
 
 async function pickNativeDirectory(initialPath: string): Promise<string | null> {
-  if (process.platform !== "darwin") {
-    throw new Error("The native folder picker is currently available on macOS only.");
-  }
   const requestedPath = isAbsolute(initialPath) ? initialPath : resolve(process.cwd(), initialPath);
   let defaultPath: string;
   try {
     defaultPath = await realpath(requestedPath);
   } catch {
     defaultPath = await realpath(process.cwd());
+  }
+  if (process.platform === "win32") {
+    return pickWindowsDirectory(defaultPath);
+  }
+  if (process.platform !== "darwin") {
+    throw new Error("The native folder picker is currently available on macOS and Windows only.");
   }
   try {
     const { stdout } = await execFileAsync("osascript", [
@@ -1118,6 +1121,37 @@ async function pickNativeDirectory(initialPath: string): Promise<string | null> 
       : String(error);
     if (/user canceled|-128/i.test(details)) return null;
     throw new Error(`Could not open the native folder picker: ${details}`, { cause: error });
+  }
+}
+
+async function pickWindowsDirectory(defaultPath: string): Promise<string | null> {
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$initialPath = [Environment]::GetEnvironmentVariable('SQUADAI_DIRECTORY_PICKER_INITIAL', 'Process')",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$dialog.Description = 'Choose agent workspace'",
+    "$dialog.SelectedPath = $initialPath",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }",
+  ].join("; ");
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-Command",
+      script,
+    ], {
+      encoding: "utf8",
+      timeout: 300_000,
+      env: { ...process.env, SQUADAI_DIRECTORY_PICKER_INITIAL: defaultPath },
+    });
+    const selectedPath = stdout.trim();
+    return selectedPath ? resolve(selectedPath) : null;
+  } catch (error) {
+    const details = error instanceof Error
+      ? `${error.message} ${String((error as Error & { stderr?: unknown }).stderr ?? "")}`
+      : String(error);
+    throw new Error(`Could not open the native Windows folder picker: ${details}`, { cause: error });
   }
 }
 
@@ -1787,6 +1821,7 @@ textarea { resize: vertical; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 10; }
 .toast { background: #1c2128; border: 1px solid #30363d; border-left: 3px solid #58a6ff; color: #e6edf3; border-radius: 8px; padding: 10px 12px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
 .toast.error { border-left-color: #f85149; }
+.toast.success { border-left-color: #3fb950; }
 
 /* Commentary extends the original dark command-center theme. */
 .message-row.commentary { align-self: flex-start; align-items: flex-start; max-width: min(720px, 88%); }
@@ -2658,6 +2693,7 @@ async function createAgent(event) {
     return;
   }
   upsertAgent(result.agent);
+  toast("Agent created: " + result.agent.name, "success");
   selectedAgentId = result.agent.id;
   lastMessagesHtml = "";
   forceLatestMessage = true;
@@ -2674,7 +2710,6 @@ async function createAgent(event) {
   await refreshAgents();
   await refreshEvents();
   render();
-  toast("Agent created");
 }
 
 function applyCreateRoleDefaults() {
