@@ -1210,6 +1210,7 @@ async function pickWindowsDirectory(defaultPath: string): Promise<string | null>
     ], {
       encoding: "utf8",
       timeout: 300_000,
+      windowsHide: true,
       env: { ...process.env, SQUADAI_DIRECTORY_PICKER_INITIAL: defaultPath },
     });
     const selectedPath = stdout.trim();

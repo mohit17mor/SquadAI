@@ -1408,6 +1408,9 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /jarvis\.topology\.viewport\.v1/);
     assert.match(moduleSource, /panning-view/);
     assert.match(moduleSource, /setCameraDistance/);
+    assert.match(moduleSource, /MAX_CAMERA_DISTANCE = 2_000/);
+    assert.match(moduleSource, /ringCapacity/);
+    assert.doesNotMatch(moduleSource, /clamp\(localPosition/);
     assert.match(moduleSource, /route-selected/);
     assert.doesNotMatch(moduleSource, /sensorSources\.slice\(0, 5\)/);
 

@@ -78,10 +78,12 @@ type NodeDrag = {
   node: NodeRecord;
   plane: THREE.Plane;
   offset: THREE.Vector3;
+  z: number;
 };
 
 const TOPOLOGY_LAYOUT_KEY = "jarvis.topology.agent-positions.v1";
 const TOPOLOGY_VIEW_KEY = "jarvis.topology.viewport.v1";
+const MAX_CAMERA_DISTANCE = 2_000;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#topology-canvas");
 const workspace = document.querySelector<HTMLElement>("#topology-workspace");
@@ -122,8 +124,8 @@ function startTopology(
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x070a12, 0.012);
-  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 240);
+  scene.fog = new THREE.FogExp2(0x070a12, 0.00045);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 10_000);
 
   const world = new THREE.Group();
   const savedView = loadSavedView();
@@ -135,7 +137,7 @@ function startTopology(
   keyLight.position.set(4, 8, 7);
   scene.add(keyLight);
 
-  const floor = new THREE.GridHelper(600, 300, 0x29304a, 0x151a29);
+  const floor = new THREE.GridHelper(10_000, 5_000, 0x29304a, 0x151a29);
   floor.position.y = -2.3;
   floor.material.transparent = true;
   floor.material.opacity = 0.16;
@@ -188,6 +190,7 @@ function startTopology(
         node,
         plane,
         offset: intersection ? worldPosition.clone().sub(intersection) : new THREE.Vector3(),
+        z: node.group.position.z,
       };
       canvasElement.classList.add("dragging-node");
     } else {
@@ -201,9 +204,7 @@ function startTopology(
       const intersection = pointerPlaneIntersection(event, nodeDrag.plane);
       if (!intersection) return;
       const localPosition = world.worldToLocal(intersection.add(nodeDrag.offset));
-      localPosition.x = THREE.MathUtils.clamp(localPosition.x, -7.5, 7.5);
-      localPosition.y = THREE.MathUtils.clamp(localPosition.y, -4.3, 4.3);
-      localPosition.z = THREE.MathUtils.clamp(localPosition.z, -2.5, 2.5);
+      localPosition.z = nodeDrag.z;
       nodeDrag.node.group.position.copy(localPosition);
       updateConnections();
       needsRender = true;
@@ -284,7 +285,7 @@ function startTopology(
       const size = bounds.getSize(new THREE.Vector3());
       world.position.set(-center.x, -center.y, -center.z);
       const verticalSpan = Math.max(size.y + 4, (size.x + 5) / Math.max(camera.aspect, 0.5));
-      setCameraDistance(THREE.MathUtils.clamp(verticalSpan * 1.55, 8, 120));
+      setCameraDistance(Math.max(verticalSpan * 1.55, 8));
     }
     saveView(world.position, camera.position.z);
     needsRender = true;
@@ -830,7 +831,7 @@ function startTopology(
   }
 
   function setCameraDistance(distance: number): void {
-    const next = THREE.MathUtils.clamp(distance, 4.5, 120);
+    const next = THREE.MathUtils.clamp(distance, 4.5, MAX_CAMERA_DISTANCE);
     camera.position.set(0, next * 0.384, next);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
@@ -847,12 +848,19 @@ function nodePosition(
   if (agent.metadata.role === "jarvis") return new THREE.Vector3(0, 2.6, -0.7);
   const workerIndex = routerActive ? Math.max(0, index - 1) : index;
   const workerCount = Math.max(1, routerActive ? count - 1 : count);
-  const ringIndex = Math.floor(workerIndex / 8);
-  const indexInRing = workerIndex % 8;
-  const ringCount = Math.min(8, workerCount - ringIndex * 8);
+  let ringIndex = 0;
+  let ringStart = 0;
+  let ringCapacity = 8;
+  while (workerIndex >= ringStart + ringCapacity) {
+    ringStart += ringCapacity;
+    ringIndex += 1;
+    ringCapacity = 8 + ringIndex * 4;
+  }
+  const indexInRing = workerIndex - ringStart;
+  const ringCount = Math.min(ringCapacity, workerCount - ringStart);
   const angle = (indexInRing / ringCount) * Math.PI * 2 - Math.PI / 2;
-  const radius = 3.8 + ringIndex * 3.15;
-  return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.68, Math.sin(angle) * 0.45);
+  const radius = 5 + ringIndex * 3.8;
+  return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.78, Math.sin(angle) * 0.5);
 }
 
 function loadSavedPositions(): Map<string, THREE.Vector3> {
