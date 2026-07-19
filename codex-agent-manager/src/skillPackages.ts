@@ -44,7 +44,7 @@ export async function exportUserSkill(
   const skillsDirectory = await realpath(resolve(options.skillsDirectory ?? codexUserSkillsDirectory()));
   const skillDirectory = await realpath(resolve(dirname(skillPath)));
   assertInside(skillsDirectory, skillDirectory);
-  const skillFile = resolve(skillPath);
+  const skillFile = await realpath(resolve(skillPath));
   if (skillFile !== join(skillDirectory, "SKILL.md")) {
     throw new Error("A skill package must be imported from its root SKILL.md file.");
   }

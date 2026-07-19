@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import type {
@@ -175,8 +175,12 @@ export class GitWorkspaceManager implements AgentWorkspaceManager {
 async function discoverGitContext(cwd: string): Promise<GitContext | null> {
   const markerRoot = findGitMarker(cwd);
   if (!markerRoot) return null;
-  const normalizedCwd = realpathSync(cwd);
   const worktreeRoot = realpathSync((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
+  const relativeCwd = (await git(cwd, ["rev-parse", "--show-prefix"]))
+    .trim()
+    .replace(/[\\/]+$/, "")
+    .split("/")
+    .join(sep);
   const worktreeList = await git(cwd, ["worktree", "list", "--porcelain"]);
   const repositoryRootValue = firstWorktreePath(worktreeList) ?? worktreeRoot;
   const repositoryRoot = existsSync(repositoryRootValue) ? realpathSync(repositoryRootValue) : repositoryRootValue;
@@ -186,7 +190,7 @@ async function discoverGitContext(cwd: string): Promise<GitContext | null> {
     commandCwd: worktreeRoot,
     repositoryRoot,
     worktreeRoot,
-    relativeCwd: relative(worktreeRoot, normalizedCwd),
+    relativeCwd,
     sourceBranch: branch || sourceRef,
     sourceRef,
   };
