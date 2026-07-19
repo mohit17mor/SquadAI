@@ -140,6 +140,7 @@ export class CodexAgentManager extends EventEmitter {
 
     for (const definition of options.agents) {
       validateDefinition(definition);
+      this.validateEffectiveInstanceLimits(definition);
       if (this.definitions.has(definition.id)) {
         throw new CodexAgentManagerError(`Duplicate agent id: ${definition.id}`);
       }
@@ -311,11 +312,13 @@ export class CodexAgentManager extends EventEmitter {
     this.assertOpen();
     await this.start();
     validateDefinition(definition);
+    this.validateEffectiveInstanceLimits(definition);
     if (this.records.has(definition.id)) {
       throw new CodexAgentManagerError(`Agent already exists: ${definition.id}`);
     }
     const preparedDefinition = await this.workspaceManager.prepareBase(cloneUnknown(definition));
     validateDefinition(preparedDefinition);
+    this.validateEffectiveInstanceLimits(preparedDefinition);
     const record = this.addRecord(preparedDefinition);
     if (preparedDefinition.cwd !== definition.cwd) {
       await this.recordEvent(preparedDefinition.id, "agent_workspace_created", "Git worktree created for agent.", {
@@ -333,11 +336,17 @@ export class CodexAgentManager extends EventEmitter {
     this.assertOpen();
     await this.start();
     const record = this.requireRecord(agentId);
+    const updatesInstanceLimits = "maxActiveInstances" in update || "maxUnresolvedInstances" in update;
+    const updatesOnlyInstanceLimits = updatesInstanceLimits
+      && Object.keys(update).every((key) => key === "maxActiveInstances" || key === "maxUnresolvedInstances");
     const instanceLifecycle = record.definition.metadata?.instanceLifecycle;
     if (instanceLifecycle === "done" || instanceLifecycle === "cancelled") {
       throw new CodexAgentManagerError(`Agent instance ${agentId} is ${instanceLifecycle} and cannot be edited.`);
     }
-    if (record.activeTurn || record.status === "starting" || record.status === "running") {
+    if (this.instanceBaseAgentId(agentId) && updatesInstanceLimits) {
+      throw new CodexAgentManagerError("Instance scaling limits can only be configured on a base agent.");
+    }
+    if (!updatesOnlyInstanceLimits && (record.activeTurn || record.status === "starting" || record.status === "running")) {
       throw new CodexAgentManagerError(`Agent ${agentId} is running and cannot be edited.`);
     }
     const nextDefinition: AgentDefinition = {
@@ -358,6 +367,12 @@ export class CodexAgentManager extends EventEmitter {
       dynamicTools: update.dynamicTools ?? record.definition.dynamicTools,
       skillMode: "skillMode" in update ? update.skillMode : record.definition.skillMode,
       allowedSkills: "allowedSkills" in update ? update.allowedSkills : record.definition.allowedSkills,
+      maxActiveInstances: "maxActiveInstances" in update
+        ? update.maxActiveInstances
+        : record.definition.maxActiveInstances,
+      maxUnresolvedInstances: "maxUnresolvedInstances" in update
+        ? update.maxUnresolvedInstances
+        : record.definition.maxUnresolvedInstances,
     };
     if (update.metadata !== undefined) {
       nextDefinition.metadata = cloneRecord(update.metadata);
@@ -378,6 +393,7 @@ export class CodexAgentManager extends EventEmitter {
       ? nextDefinition
       : await this.workspaceManager.prepareBase(nextDefinition);
     validateDefinition(preparedDefinition);
+    this.validateEffectiveInstanceLimits(preparedDefinition);
     const restartNeeded = requiresFreshSession(record.definition, preparedDefinition);
     if (restartNeeded) {
       await this.closeRecordClient(record);
@@ -394,6 +410,7 @@ export class CodexAgentManager extends EventEmitter {
       restartNeeded,
     });
     await this.persist();
+    if (updatesInstanceLimits) void this.dispatchQueuedWork();
     return this.snapshot(record);
   }
 
@@ -936,7 +953,7 @@ export class CodexAgentManager extends EventEmitter {
       const baseAgentId = this.instanceBaseAgentId(record.definition.id);
       if (
         baseAgentId
-        && (activeInstancesByBaseAgent.get(baseAgentId) ?? 0) >= this.maxConcurrentInstancesPerAgent
+        && (activeInstancesByBaseAgent.get(baseAgentId) ?? 0) >= this.instanceLimits(baseAgentId).maxActiveInstances
       ) {
         continue;
       }
@@ -1360,6 +1377,7 @@ export class CodexAgentManager extends EventEmitter {
       let record = this.records.get(agentId);
       if (!record && persisted.definition) {
         validateDefinition(persisted.definition);
+        this.validateEffectiveInstanceLimits(persisted.definition);
         record = this.addRecord(persisted.definition);
       }
       if (!record) {
@@ -1412,6 +1430,10 @@ export class CodexAgentManager extends EventEmitter {
   }
 
   private snapshot(record: RuntimeRecord): AgentSnapshot {
+    const baseAgentId = typeof record.definition.metadata?.instanceOfAgentId === "string"
+      ? record.definition.metadata.instanceOfAgentId
+      : record.definition.id;
+    const instanceLimits = this.instanceLimits(baseAgentId);
     return {
       id: record.definition.id,
       name: record.definition.name,
@@ -1428,6 +1450,8 @@ export class CodexAgentManager extends EventEmitter {
       sandbox: record.definition.sandbox ?? "workspace-write",
       skillMode: record.definition.skillMode ?? "all",
       allowedSkills: (record.definition.allowedSkills ?? []).map((skill) => ({ ...skill })),
+      maxActiveInstances: instanceLimits.maxActiveInstances,
+      maxUnresolvedInstances: instanceLimits.maxUnresolvedInstances,
       metadata: { ...(record.definition.metadata ?? {}) },
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -1765,7 +1789,7 @@ export class CodexAgentManager extends EventEmitter {
     if (existing) {
       return existing.definition.id;
     }
-    if (this.openInstanceCount(baseAgentId) >= this.maxOpenInstancesPerAgent) {
+    if (this.openInstanceCount(baseAgentId) >= this.instanceLimits(baseAgentId).maxUnresolvedInstances) {
       return baseAgentId;
     }
     let definition = cloneUnknown(base.definition);
@@ -1782,6 +1806,7 @@ export class CodexAgentManager extends EventEmitter {
     };
     definition = await this.workspaceManager.prepareInstance(base.definition, definition);
     validateDefinition(definition);
+    this.validateEffectiveInstanceLimits(definition);
     this.addRecord(definition);
     await this.recordEvent(instanceAgentId, "agent_instantiated", "Agent instance created for sensor event.", {
       baseAgentId,
@@ -1802,6 +1827,27 @@ export class CodexAgentManager extends EventEmitter {
       const lifecycle = record.definition.metadata?.instanceLifecycle;
       return lifecycle !== "done" && lifecycle !== "cancelled";
     }).length;
+  }
+
+  private instanceLimits(baseAgentId: string): {
+    maxActiveInstances: number;
+    maxUnresolvedInstances: number;
+  } {
+    const definition = this.requireRecord(baseAgentId).definition;
+    return {
+      maxActiveInstances: definition.maxActiveInstances ?? this.maxConcurrentInstancesPerAgent,
+      maxUnresolvedInstances: definition.maxUnresolvedInstances ?? this.maxOpenInstancesPerAgent,
+    };
+  }
+
+  private validateEffectiveInstanceLimits(definition: AgentDefinition): void {
+    const maxActiveInstances = definition.maxActiveInstances ?? this.maxConcurrentInstancesPerAgent;
+    const maxUnresolvedInstances = definition.maxUnresolvedInstances ?? this.maxOpenInstancesPerAgent;
+    if (maxUnresolvedInstances < maxActiveInstances) {
+      throw new CodexAgentManagerError(
+        "Maximum unresolved instances cannot be lower than maximum active instances.",
+      );
+    }
   }
 
   private setInstanceLifecycle(agentId: string, lifecycle: AgentInstanceLifecycle): boolean {
@@ -2125,6 +2171,23 @@ function validateDefinition(definition: AgentDefinition): void {
     if (!skill.name.trim() || !["user", "repo", "system", "admin"].includes(skill.scope)) {
       throw new CodexAgentManagerError(`Agent ${definition.id} has an invalid skill selection.`);
     }
+  }
+  validatePositiveInteger(definition.maxActiveInstances, "maximum active instances", definition.id);
+  validatePositiveInteger(definition.maxUnresolvedInstances, "maximum unresolved instances", definition.id);
+  if (
+    definition.maxActiveInstances !== undefined
+    && definition.maxUnresolvedInstances !== undefined
+    && definition.maxUnresolvedInstances < definition.maxActiveInstances
+  ) {
+    throw new CodexAgentManagerError(
+      "Maximum unresolved instances cannot be lower than maximum active instances.",
+    );
+  }
+}
+
+function validatePositiveInteger(value: number | undefined, field: string, agentId: string): void {
+  if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+    throw new CodexAgentManagerError(`Agent ${agentId} ${field} must be a positive whole number.`);
   }
 }
 

@@ -100,8 +100,11 @@ created lazily and persisted for later conversations.
 
 For task-oriented work, SquadAI can create an isolated instance from a base
 agent automatically. Each instance receives its own conversation and, for Git
-repositories, its own worktree and branch. The current defaults allow three
-active instances and five unresolved instances per base agent.
+repositories, its own worktree and branch. The defaults allow three active
+instances and five unresolved instances per base agent. Select a base agent in
+the topology and open **Advanced options** to configure both limits for that
+agent. The unresolved limit must always be equal to or greater than the active
+limit; existing work is never stopped when a limit is lowered.
 
 ### Event and work item
 

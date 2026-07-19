@@ -73,6 +73,8 @@ export type AgentDefinition = {
   dynamicTools?: unknown[] | undefined;
   skillMode?: "all" | "selected" | undefined;
   allowedSkills?: AgentSkillReference[] | undefined;
+  maxActiveInstances?: number | undefined;
+  maxUnresolvedInstances?: number | undefined;
   metadata?: Record<string, unknown> | undefined;
 };
 
@@ -153,6 +155,8 @@ export type AgentSnapshot = {
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   skillMode: "all" | "selected";
   allowedSkills: AgentSkillReference[];
+  maxActiveInstances: number;
+  maxUnresolvedInstances: number;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

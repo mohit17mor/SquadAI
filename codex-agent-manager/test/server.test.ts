@@ -234,6 +234,8 @@ test("command center API creates agents, lists them, sends messages, and exposes
         reasoningEffort: "high",
         serviceTier: "fast",
         permissionMode: "auto-review",
+        maxActiveInstances: 2,
+        maxUnresolvedInstances: 4,
         metadata: { routingDescription: "Debugs maintenance tickets." },
       },
     });
@@ -244,6 +246,8 @@ test("command center API creates agents, lists them, sends messages, and exposes
     assert.equal(created.agent.approvalPolicy, "on-request");
     assert.equal(created.agent.approvalsReviewer, "auto_review");
     assert.equal(created.agent.sandbox, "workspace-write");
+    assert.equal(created.agent.maxActiveInstances, 2);
+    assert.equal(created.agent.maxUnresolvedInstances, 4);
     assert.equal(created.agent.metadata.routingDescription, "Debugs maintenance tickets.");
 
     const modelOptions = await jsonFetch(`${baseUrl}/api/model-options`);
@@ -341,6 +345,22 @@ test("command center API returns useful errors for invalid requests", async () =
       },
       400,
       /Invalid enum value/,
+    );
+    await expectJsonStatus(
+      `${baseUrl}/api/agents`,
+      {
+        method: "POST",
+        body: {
+          id: "invalid-limits",
+          name: "Invalid limits",
+          cwd: "/tmp",
+          instructions: "help",
+          maxActiveInstances: 4,
+          maxUnresolvedInstances: 3,
+        },
+      },
+      400,
+      /unresolved instances cannot be lower than maximum active instances/i,
     );
     await expectJsonStatus(
       `${baseUrl}/api/sensor-events`,
@@ -1398,6 +1418,8 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.match(moduleSource, /Approval prompts disabled/);
     assert.match(moduleSource, /data-edit-agent/);
     assert.match(moduleSource, /topology:edit-agent/);
+    assert.match(moduleSource, /topology:advanced-agent/);
+    assert.match(moduleSource, /data-advanced-agent/);
     assert.match(moduleSource, /Telegram identity/);
     assert.match(moduleSource, /data-telegram-connect/);
     assert.match(moduleSource, /data-telegram-disconnect/);
@@ -1413,6 +1435,9 @@ test("command center UI exposes a topology-first home and rendering module", asy
     assert.doesNotMatch(moduleSource, /clamp\(localPosition/);
     assert.match(moduleSource, /route-selected/);
     assert.doesNotMatch(moduleSource, /sensorSources\.slice\(0, 5\)/);
+    assert.match(html, /id="agent-advanced-modal"/);
+    assert.match(html, /Maximum unresolved instances must be equal to or greater than maximum active instances/);
+    assert.match(html, /Maximum unresolved instances cannot be lower than maximum active instances/);
 
     const vendorResponse = await fetch(`${baseUrl}/vendor/three.module.js`);
     assert.equal(vendorResponse.status, 200);

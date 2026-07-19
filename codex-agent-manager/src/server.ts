@@ -782,6 +782,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   const serviceTier = optionalString(value.serviceTier);
   const skillMode = optionalEnum(value.skillMode, ["all", "selected"]);
   const allowedSkills = parseSkillReferences(value.allowedSkills);
+  const maxActiveInstances = optionalPositiveInteger(value.maxActiveInstances, "maxActiveInstances");
+  const maxUnresolvedInstances = optionalPositiveInteger(value.maxUnresolvedInstances, "maxUnresolvedInstances");
   if (model) {
     definition.model = model;
   }
@@ -793,6 +795,8 @@ function parseAgentDefinition(body: unknown): AgentDefinition {
   }
   if (skillMode) definition.skillMode = skillMode;
   if (allowedSkills) definition.allowedSkills = allowedSkills;
+  if (maxActiveInstances !== undefined) definition.maxActiveInstances = maxActiveInstances;
+  if (maxUnresolvedInstances !== undefined) definition.maxUnresolvedInstances = maxUnresolvedInstances;
   if (permissionMode) {
     Object.assign(definition, permissionSettingsForMode(permissionMode));
   } else if (approvalPolicy) {
@@ -854,6 +858,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   const skillMode = optionalEnum(value.skillMode, ["all", "selected"]);
   const allowedSkills = parseSkillReferences(value.allowedSkills);
   const runnerId = optionalString(value.runnerId);
+  const maxActiveInstances = optionalPositiveInteger(value.maxActiveInstances, "maxActiveInstances");
+  const maxUnresolvedInstances = optionalPositiveInteger(value.maxUnresolvedInstances, "maxUnresolvedInstances");
   if (name) {
     update.name = name;
   }
@@ -875,6 +881,8 @@ function parseAgentUpdate(body: unknown): AgentDefinitionUpdate {
   }
   if ("skillMode" in value) update.skillMode = skillMode;
   if ("allowedSkills" in value) update.allowedSkills = allowedSkills ?? [];
+  if ("maxActiveInstances" in value) update.maxActiveInstances = maxActiveInstances;
+  if ("maxUnresolvedInstances" in value) update.maxUnresolvedInstances = maxUnresolvedInstances;
   if (permissionMode) {
     Object.assign(update, permissionSettingsForMode(permissionMode));
   } else if (approvalPolicy) {
@@ -1082,6 +1090,15 @@ function optionalEnum<T extends string>(value: unknown, allowed: readonly T[]): 
     throw new Error(`Invalid enum value: ${String(value)}`);
   }
   return value as T;
+}
+
+function optionalPositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`Field ${field} must be a positive whole number.`);
+  }
+  return parsed;
 }
 
 function requiredEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
@@ -1409,6 +1426,29 @@ function renderHtml(title: string): string {
               <button type="submit">Save Changes</button>
               <button id="delete-agent-button" type="button" class="danger">Delete</button>
             </div>
+          </form>
+        </div>
+      </section>
+    </div>
+    <div id="agent-advanced-modal" class="settings-modal agent-settings-page" hidden>
+      <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-advanced-title">
+        <header>
+          <div><span class="settings-kicker">Advanced agent settings</span><h2 id="agent-advanced-title">Advanced options</h2><p>Control how this agent scales. More advanced controls can be added here later.</p></div>
+          <button id="close-agent-advanced" type="button" class="secondary">Done</button>
+        </header>
+        <div class="settings-dialog-body">
+          <form id="agent-advanced-form" class="agent-advanced-form">
+            <section class="setup-card">
+              <header><span>01</span><div><h3>Instance scaling</h3><p>Limit how many task instances this base agent may create and run.</p></div></header>
+              <div class="setup-grid two-column">
+                <label>Maximum active instances<input name="maxActiveInstances" type="number" min="1" step="1" inputmode="numeric" required><span class="field-hint">Instances allowed to work at the same time.</span></label>
+                <label>Maximum unresolved instances<input name="maxUnresolvedInstances" type="number" min="1" step="1" inputmode="numeric" required><span class="field-hint">Includes working, queued, and completed instances awaiting review.</span></label>
+                <div class="advanced-limit-rule field-span">Maximum unresolved instances must be equal to or greater than maximum active instances.</div>
+                <div id="advanced-limit-error" class="advanced-limit-error field-span" role="alert" hidden></div>
+                <div class="field-hint field-span">Lowering a limit never stops existing work. New instances wait until usage falls below the new limit.</div>
+              </div>
+            </section>
+            <footer class="setup-actions"><button id="save-agent-advanced" type="submit">Save advanced options</button></footer>
           </form>
         </div>
       </section>
@@ -2009,6 +2049,11 @@ button.danger:hover { color: #ff858b; border-color: rgba(244,107,114,.45); backg
 .agent-editor-form .setup-card-instructions, .agent-editor-form .setup-actions { grid-column: 1 / -1; }
 .agent-editor-form .agent-actions { justify-content: flex-end; }
 .agent-editor-form .agent-actions button { flex: 0 0 auto; min-width: 120px; }
+.agent-advanced-form { width: min(820px,100%); display: grid; gap: 18px; margin: 0 auto; }
+.agent-advanced-form .setup-actions { justify-content: flex-end; }
+.advanced-limit-rule { padding: 11px 12px; color: #aeb6c8; background: #111319; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.advanced-limit-error { padding: 10px 12px; color: #ff9b9b; background: rgba(210,55,68,.1); border: 1px solid rgba(255,91,103,.4); border-radius: 8px; font-size: 12px; }
+.agent-advanced-form input.invalid { border-color: #ff5b67; box-shadow: 0 0 0 2px rgba(255,91,103,.12); }
 
 .topology-workspace { grid-template-columns: minmax(0,1fr) 316px; grid-template-rows: 62px minmax(0,1fr) 46px; background: var(--bg); }
 .topology-toolbar { gap: 10px; padding: 10px 15px; background: rgba(13,14,17,.96); border-color: var(--line); }
@@ -2178,6 +2223,12 @@ const deleteAgentButton = document.getElementById("delete-agent-button");
 const agentSettingsModal = document.getElementById("agent-settings-modal");
 const agentSettingsTitle = document.getElementById("agent-settings-title");
 const closeAgentSettingsButton = document.getElementById("close-agent-settings");
+const agentAdvancedModal = document.getElementById("agent-advanced-modal");
+const agentAdvancedTitle = document.getElementById("agent-advanced-title");
+const agentAdvancedForm = document.getElementById("agent-advanced-form");
+const closeAgentAdvancedButton = document.getElementById("close-agent-advanced");
+const saveAgentAdvancedButton = document.getElementById("save-agent-advanced");
+const advancedLimitError = document.getElementById("advanced-limit-error");
 const runnerEnrollmentModal = document.getElementById("runner-enrollment-modal");
 const runnerEnrollmentStatus = document.getElementById("runner-enrollment-status");
 const runnerEnrollmentApproval = document.getElementById("runner-enrollment-approval");
@@ -2300,6 +2351,14 @@ window.addEventListener("topology:edit-agent", (event) => {
   renderAgentEditor(selected);
   agentSettingsModal.hidden = false;
 });
+window.addEventListener("topology:advanced-agent", (event) => {
+  const agentId = event.detail && event.detail.agentId;
+  const selected = agents.find((agent) => agent.id === agentId);
+  if (!selected || typeof selected.metadata?.instanceOfAgentId === "string") return;
+  selectedAgentId = agentId;
+  renderAgentAdvancedOptions(selected);
+  agentAdvancedModal.hidden = false;
+});
 window.addEventListener("topology:refresh-main", () => {
   void refresh();
 });
@@ -2352,8 +2411,15 @@ remoteDirectorySelect.addEventListener("click", selectRemoteDirectory);
 agentSettingsModal.addEventListener("click", (event) => {
   if (event.target === agentSettingsModal) closeAgentSettings();
 });
+agentAdvancedModal.addEventListener("click", (event) => {
+  if (event.target === agentAdvancedModal) closeAgentAdvancedOptions();
+});
+closeAgentAdvancedButton.addEventListener("click", closeAgentAdvancedOptions);
+agentAdvancedForm.addEventListener("input", validateAdvancedInstanceLimits);
+agentAdvancedForm.addEventListener("submit", saveAgentAdvancedOptions);
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !agentSettingsModal.hidden) closeAgentSettings();
+  if (event.key === "Escape" && !agentAdvancedModal.hidden) closeAgentAdvancedOptions();
   if (event.key === "Escape" && !composerRuntimeMenu.hidden) closeComposerRuntimeMenu();
 });
 cancelAgentButton.addEventListener("click", cancelSelectedAgent);
@@ -3777,7 +3843,7 @@ function renderWorkItemLog(items) {
     const waitingForInstance = item.metadata?.pendingInstantiation === true;
     const detail = [
       item.eventId ? ["Sensor event", item.eventId] : null,
-      waitingForInstance ? ["Execution", "Waiting for a free agent instance (backlog limit 5)"] : null,
+      waitingForInstance ? ["Execution", "Waiting for a free agent instance (unresolved limit reached)"] : null,
       item.prompt ? ["Prompt", item.prompt] : null,
       item.result ? ["Result", item.result] : null,
       item.failureReason ? ["Failure", item.failureReason] : null,
@@ -4842,6 +4908,70 @@ function renderMessagesIfChanged(nextHtml) {
     scrollDown();
   }
   forceLatestMessage = false;
+}
+
+function renderAgentAdvancedOptions(agent) {
+  agentAdvancedTitle.textContent = "Advanced options · " + agent.name;
+  agentAdvancedForm.elements.maxActiveInstances.value = String(agent.maxActiveInstances || 3);
+  agentAdvancedForm.elements.maxUnresolvedInstances.value = String(agent.maxUnresolvedInstances || 5);
+  validateAdvancedInstanceLimits();
+}
+
+function validateAdvancedInstanceLimits() {
+  const activeInput = agentAdvancedForm.elements.maxActiveInstances;
+  const unresolvedInput = agentAdvancedForm.elements.maxUnresolvedInstances;
+  const active = Number(activeInput.value);
+  const unresolved = Number(unresolvedInput.value);
+  let message = "";
+  if (!Number.isInteger(active) || active < 1 || !Number.isInteger(unresolved) || unresolved < 1) {
+    message = "Both limits must be positive whole numbers.";
+  } else if (unresolved < active) {
+    message = "Maximum unresolved instances cannot be lower than maximum active instances.";
+  }
+  activeInput.classList.toggle("invalid", Boolean(message));
+  unresolvedInput.classList.toggle("invalid", Boolean(message));
+  activeInput.setAttribute("aria-invalid", String(Boolean(message)));
+  unresolvedInput.setAttribute("aria-invalid", String(Boolean(message)));
+  advancedLimitError.textContent = message;
+  advancedLimitError.hidden = !message;
+  saveAgentAdvancedButton.disabled = Boolean(message);
+  return message ? null : { maxActiveInstances: active, maxUnresolvedInstances: unresolved };
+}
+
+async function saveAgentAdvancedOptions(event) {
+  event.preventDefault();
+  const limits = validateAdvancedInstanceLimits();
+  if (!limits) {
+    toast("Fix the instance scaling limits before saving.", "error");
+    return;
+  }
+  const selected = agents.find((agent) => agent.id === selectedAgentId);
+  if (!selected || typeof selected.metadata?.instanceOfAgentId === "string") {
+    toast("Advanced limits can only be configured on a base agent.", "error");
+    return;
+  }
+  saveAgentAdvancedButton.disabled = true;
+  const response = await fetch("/api/agents/" + encodeURIComponent(selected.id), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(limits),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    saveAgentAdvancedButton.disabled = false;
+    toast(result.error || "Failed to save advanced options", "error");
+    return;
+  }
+  upsertAgent(result.agent);
+  closeAgentAdvancedOptions();
+  toast("Advanced options saved for " + result.agent.name, "success");
+  await refreshAgents();
+  render();
+  window.dispatchEvent(new CustomEvent("topology:refresh"));
+}
+
+function closeAgentAdvancedOptions() {
+  agentAdvancedModal.hidden = true;
 }
 
 function closeAgentSettings() {

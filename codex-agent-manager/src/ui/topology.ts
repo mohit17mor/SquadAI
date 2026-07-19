@@ -15,6 +15,8 @@ type AgentSnapshot = {
   approvalsReviewer: "user" | "auto_review";
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   cwd: string;
+  maxActiveInstances: number;
+  maxUnresolvedInstances: number;
   metadata: Record<string, unknown>;
 };
 
@@ -649,7 +651,7 @@ function startTopology(
       <section><h3>Runtime</h3><div class="topology-runtime"><span>Context visibility</span><div><i style="width:${agent.status === "running" ? "62" : "18"}%"></i></div><small>${agent.status === "running" ? "Agent is actively processing work" : "Waiting for work"}</small></div></section>
       <section><h3>Permissions</h3><ul class="topology-permissions">${permissionDetails(agent).map((detail) => `<li>${escapeHtml(detail)}</li>`).join("")}</ul></section>
       ${telegramSection}
-      <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
+      <footer><button type="button" data-open-conversation>Open conversation</button><button type="button" class="secondary" data-edit-agent>Edit agent</button>${typeof agent.metadata.instanceOfAgentId !== "string" ? '<button type="button" class="secondary" data-advanced-agent>Advanced options</button>' : ""}${agent.status === "running" ? '<button type="button" class="secondary" data-pause-agent>Pause</button>' : ""}<button type="button" class="danger" data-remove-agent>Remove</button></footer>`;
     inspectorElement.querySelector("[data-close-inspector]")?.addEventListener("click", () => {
       selectedAgentId = null;
       updateSelection();
@@ -659,6 +661,9 @@ function startTopology(
     });
     inspectorElement.querySelector("[data-edit-agent]")?.addEventListener("click", () => {
       window.dispatchEvent(new CustomEvent("topology:edit-agent", { detail: { agentId: agent.id } }));
+    });
+    inspectorElement.querySelector("[data-advanced-agent]")?.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("topology:advanced-agent", { detail: { agentId: agent.id } }));
     });
     inspectorElement.querySelector("[data-pause-agent]")?.addEventListener("click", () => void pauseAgent(agent));
     inspectorElement.querySelector("[data-remove-agent]")?.addEventListener("click", () => void removeAgent(agent));

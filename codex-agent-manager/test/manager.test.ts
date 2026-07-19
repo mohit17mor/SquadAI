@@ -1839,6 +1839,45 @@ test("keeps only five unresolved instances and promotes queued work after resolu
   );
 });
 
+test("applies custom instance scaling limits per base agent and rejects an invalid invariant", async () => {
+  const clients: FakeCodexClient[] = [];
+  const manager = new CodexAgentManager({
+    agents: [agent({
+      id: "coder",
+      name: "Coder",
+      maxActiveInstances: 1,
+      maxUnresolvedInstances: 2,
+    })],
+    clientFactory: fakeFactory(clients),
+  });
+
+  assert.equal(manager.getAgent("coder").maxActiveInstances, 1);
+  assert.equal(manager.getAgent("coder").maxUnresolvedInstances, 2);
+  for (let index = 1; index <= 3; index++) {
+    await manager.ingestSensorEvent({
+      source: "jira",
+      type: "ticket.created",
+      body: `Implement task ${index}.`,
+      targetAgentId: "coder",
+      executionPolicy: "new",
+      dedupeKey: `jira:CUSTOM-LIMIT-${index}`,
+    });
+  }
+
+  assert.equal(manager.listAgents().length, 3);
+  assert.equal(manager.getWorkItem("work-3").metadata.pendingInstantiation, true);
+  const started = await manager.dispatchQueuedWork();
+  assert.equal(started.length, 1);
+  await assert.rejects(
+    manager.updateAgent("coder", { maxActiveInstances: 3, maxUnresolvedInstances: 2 }),
+    /unresolved instances cannot be lower than maximum active instances/i,
+  );
+  await waitFor(() => Boolean(clients[0]?.session("thread-1").pending), "custom-limit worker turn");
+  clients[0]?.session("thread-1").complete("done");
+  await waitFor(() => manager.getWorkItem("work-1").status === "done", "custom-limit work completion");
+  await manager.close();
+});
+
 test("cancelling an instance cancels its queued work and frees its backlog slot", async () => {
   const manager = new CodexAgentManager({
     agents: [agent({ id: "coder", name: "Coder" })],
