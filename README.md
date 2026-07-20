@@ -1,16 +1,130 @@
 # SquadAI
 
-**A control plane for running teams of Codex agents.**
+> SquadAI is the Kubernetes-like control plane for Codex agents turning every event into the right Codex task, on the machine where the work already lives!
 
-SquadAI turns Codex from a collection of individual conversations into an
-observable, event-driven system. Create agents once, assign work from a browser
-or API, keep full conversation and tool history, approve sensitive actions, and
-run agents on the machines where their code and tools already live.
+SquadAI gives you one place to manage and send work to Codex agents, even when
+those agents run on different machines. Your projects, tools, skills, and
+credentials stay on the machine where they are already set up. From the SquadAI
+dashboard, you can talk to an agent directly or send it work when something
+happens in another tool, such as a webhook, monitor, or Telegram message.
 
 ![SquadAI live agent topology](docs/assets/squadai-topology.png)
 
-> SquadAI is an early-stage project. It currently uses Codex as its agent
-> runtime and `codex app-server` as the underlying control interface.
+## Get SquadAI Running
+
+The fastest setup runs the control plane and agents on one machine. You need
+Git, Node.js 22.13 or newer, and a ChatGPT account that can sign in to
+Codex.
+
+<details open>
+<summary><strong>Windows</strong></summary>
+
+Open PowerShell and run:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+codex login
+git clone https://github.com/mohit17mor/SquadAI.git
+Set-Location SquadAI\codex-control
+npm ci
+npm run build
+Set-Location ..\codex-agent-manager
+npm ci
+npm run build
+npm start -- --mode embedded --host 127.0.0.1 --port 4317
+```
+
+</details>
+
+<details>
+<summary><strong>macOS</strong></summary>
+
+Open Terminal and run:
+
+```bash
+brew install --cask codex
+codex login
+git clone https://github.com/mohit17mor/SquadAI.git
+cd SquadAI/codex-control
+npm ci
+npm run build
+cd ../codex-agent-manager
+npm ci
+npm run build
+npm start -- --mode embedded --host 127.0.0.1 --port 4317
+```
+
+</details>
+
+<details>
+<summary><strong>Linux</strong></summary>
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex login
+git clone https://github.com/mohit17mor/SquadAI.git
+cd SquadAI/codex-control
+npm ci
+npm run build
+cd ../codex-agent-manager
+npm ci
+npm run build
+npm start -- --mode embedded --host 127.0.0.1 --port 4317
+```
+
+</details>
+
+Open [http://127.0.0.1:4317](http://127.0.0.1:4317), create an agent, choose
+its working directory, and send it a task. SquadAI stores your agents and their
+conversations locally, so they remain available after a restart.
+
+## Quick How To Use SquadAI
+
+1. Click **Create Agent** (or **Add agent** in the topology view).
+2. Choose the machine where the project lives, select its working directory,
+   add instructions, and create the agent.
+3. Select the agent and send it a message in its conversation, for example:
+   `Review this repository and tell me the three riskiest areas.`
+4. To test event-driven work, replace `my-coder` with your agent ID (the short,
+   lowercase name created for the agent; for example, `Repository Coder` becomes
+   `repository-coder`) and send this from a terminal on the control-plane machine:
+
+   ```bash
+   curl http://127.0.0.1:4317/api/sensor-events \
+     -H 'content-type: application/json' \
+     -d '{
+       "source": "quick-start",
+       "type": "task.requested",
+       "body": "Inspect the current project and report the most important next step.",
+       "targetAgentId": "my-coder",
+       "executionPolicy": "reuse"
+     }'
+   ```
+
+   The task will appear in the work queue and run on that agent's machine.
+
+> Want your Telegram group connected too? Start with
+> `npm start -- --mode embedded --telegram-token YOUR_CONTROL_BOT_TOKEN`, then
+> follow [Telegram Group Control](#telegram-group-control).
+
+## Built with Codex and GPT-5.6
+
+SquadAI is built on `codex app-server`, which is the backbone that lets the
+control plane create, resume, observe, and manage Codex sessions across
+machines.
+
+The entire project was written with Codex using GPT-5.6 Sol and GPT-5.6 Terra;
+no other model was used. Sol was used for the major architecture discussions
+and the core distributed control-plane pieces. Terra helped implement less
+complex features and sharpen ideas before they became requirements.
+
+Codex also helped shape the UI: it generated visual directions, one was chosen
+as the reference, and the interface was refined with annotation-based pointed
+feedback. Across the project, the GPT-5.6 models were especially useful for
+understanding high-level requirements, turning them into concrete work, and
+proactively identifying edge cases that had not been specified yet.
 
 ## Why SquadAI?
 
@@ -117,136 +231,6 @@ dispatches when the target is available.
 The control plane owns visibility and coordination. The runner owns execution.
 They can run in one process on one computer or on separate machines.
 
-## Quick Start: Everything On One Machine
-
-### 1. Install the prerequisites
-
-You need:
-
-- [Node.js](https://nodejs.org/) 22.13 or newer;
-- npm, which is included with Node.js;
-- [Git](https://git-scm.com/);
-- the Codex CLI, installed and authenticated.
-
-Optional, depending on how you use SquadAI:
-
-- [Tailscale](https://tailscale.com/download) on every machine when adding
-  remote runners through the recommended private-network flow;
-- Telegram and BotFather when using Telegram group control;
-- [VS Code](https://code.visualstudio.com/) and SSH access to a remote runner
-  when using **Open in VS Code** remotely.
-
-SquadAI supports macOS, Linux, and Windows.
-
-### 2. Download and install the Codex CLI
-
-SquadAI does not bundle Codex. Every machine that runs agents must have the
-Codex CLI installed and signed in.
-
-#### macOS or Linux
-
-Use the official standalone installer:
-
-```bash
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-
-Alternatively, install with npm:
-
-```bash
-npm install -g @openai/codex
-```
-
-On macOS, Homebrew is also supported:
-
-```bash
-brew install --cask codex
-```
-
-#### Windows
-
-Run the official installer from PowerShell:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
-
-You can also use npm from PowerShell or Command Prompt:
-
-```powershell
-npm install -g @openai/codex
-```
-
-See the [official Codex quickstart](https://developers.openai.com/codex/quickstart?setup=cli)
-for the latest installation options.
-
-### 3. Sign in to Codex and verify it
-
-Run Codex once and follow the sign-in flow for your ChatGPT account or OpenAI
-API key:
-
-```bash
-codex
-```
-
-You can also start authentication explicitly:
-
-```bash
-codex login
-```
-
-Then verify that SquadAI can reach the required interface:
-
-```bash
-codex --version
-codex app-server --help
-```
-
-`codex app-server` comes with Codex; there is no separate App Server package to
-download.
-
-### 4. Install SquadAI
-
-From the repository root, build the control library first:
-
-```bash
-cd codex-control
-npm ci
-npm run build
-```
-
-Then install the manager:
-
-```bash
-cd ../codex-agent-manager
-npm ci
-npm run build
-```
-
-### 5. Start SquadAI
-
-Still inside `codex-agent-manager`, run:
-
-```bash
-npm start -- --mode embedded --host 127.0.0.1 --port 4317
-```
-
-Open [http://127.0.0.1:4317](http://127.0.0.1:4317) in your browser.
-
-### 6. Create your first agent
-
-1. Open **Create Agent**.
-2. Give the agent a clear name, such as `Repository Coder`.
-3. Select the repository or working directory it should operate in.
-4. Add durable instructions describing its role and constraints.
-5. Choose its model, reasoning level, permissions, and skills.
-6. Create the agent and open it from the agent list or topology.
-7. Send a task in plain language.
-
-You can close and restart SquadAI later. Its SQLite database preserves agent
-definitions, thread IDs, events, work items, approvals, and conversation
-activity.
-
 ## Add Another Machine (Recommended)
 
 This is the simplest way to run agents on another Windows, macOS, or Linux
@@ -326,8 +310,7 @@ curl http://127.0.0.1:4317/api/sensor-events \
     "body": "Find the cause, prepare a fix, and report the evidence.",
     "dedupeKey": "issue:INC-123",
     "targetAgentId": "repository-coder",
-    "executionPolicy": "new",
-    "priority": "high"
+    "executionPolicy": "new"
   }'
 ```
 
@@ -339,9 +322,8 @@ Important fields:
 | `type` | Source-defined event type. |
 | `body` | Work description passed into SquadAI. |
 | `dedupeKey` | Optional source identity used to avoid accepting the same event twice. |
-| `targetAgentId` | Optional explicit destination agent. |
+| `targetAgentId` | Destination agent ID. Required in the normal setup; omit it only when using a router or assigning the event manually in SquadAI. |
 | `executionPolicy` | `reuse` sends work to the base agent; `new` creates an isolated task instance. |
-| `priority` | `low`, `normal`, or `high`. |
 
 The control plane stays source-agnostic. Integrations should translate external
 payloads into this small event contract rather than embedding source-specific
@@ -486,28 +468,15 @@ existing session does not refresh its skill catalog immediately.
 
 ## Run Modes
 
-| Mode | Use it when |
+For almost every setup, start SquadAI with `--mode embedded`. It starts the
+dashboard, runs local agents, **and can connect to remote runners**. This is
+also the right mode when you use Telegram.
+
+| Mode | What it means |
 | --- | --- |
-| `embedded` | You want the simplest setup: UI, coordination, and local Codex execution on one machine. |
-| `control` | You want a shared dashboard and one or more separately running workers. |
-| `runner` | This process should execute work for a remote control plane. |
-
-Common environment-variable equivalents are available for automated startup:
-
-```text
-CODEX_AGENT_MANAGER_MODE
-CODEX_AGENT_MANAGER_HOST
-CODEX_AGENT_MANAGER_PORT
-CODEX_AGENT_MANAGER_DATABASE
-CODEX_AGENT_MANAGER_RUNNER_TOKEN
-CODEX_AGENT_MANAGER_CONTROL_URL
-CODEX_AGENT_MANAGER_RUNNER_ID
-CODEX_AGENT_MANAGER_RUNNER_NAME
-CODEX_AGENT_MANAGER_SSH_HOST
-CODEX_AGENT_MANAGER_ROUTING_MODE
-CODEX_BINARY
-SQUADAI_TELEGRAM_TOKEN
-```
+| `embedded` | The normal control-plane mode. It manages agents on this machine and on any remote runners you connect from the UI. |
+| `control` | Currently starts the same control-plane services as `embedded`. Use it only when you want the name to describe a dashboard-first deployment. |
+| `runner` | A worker running on another machine. It executes agents against that machine's local projects, tools, skills, and credentials. The UI's **Add runner** flow gives you the command for this. |
 
 ## Project Structure
 
@@ -612,9 +581,9 @@ cd ../codex-agent-manager
 npm test
 ```
 
-The SquadAI manager currently has 108 automated tests, with additional control
-library coverage. GitHub Actions runs both suites on
-Linux, macOS, and Windows.
+The SquadAI manager currently has 110 automated tests, with additional control
+library coverage. GitHub Actions can run both suites on Linux, macOS, and
+Windows.
 
 ## Current Scope
 
@@ -630,3 +599,7 @@ handoffs, and isolated agent instances.
 - [Codex quickstart](https://developers.openai.com/codex/quickstart?setup=cli)
 - [Codex CLI reference](https://developers.openai.com/codex/cli/reference)
 - [Codex on Windows](https://developers.openai.com/codex/windows)
+
+## License
+
+Licensed under the [MIT License](LICENSE).
