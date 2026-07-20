@@ -200,10 +200,21 @@ test("command center API manages Telegram bot bindings without exposing tokens",
     const detected = await jsonFetch(`${baseUrl}/api/telegram/requests`);
     assert.deepEqual(detected.requests.map((request: { agentId: string }) => request.agentId), ["coder"]);
 
-    const removed = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings/coder`, {
+    const removed = await jsonFetch(`${baseUrl}/api/agents/coder`, {
       method: "DELETE",
     });
-    assert.equal(removed.removed, true);
+    assert.equal(removed.agent.id, "coder");
+    assert.deepEqual((await jsonFetch(`${baseUrl}/api/telegram/agent-bindings`)).bindings, []);
+
+    await jsonFetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      body: { id: "reviewer", name: "Reviewer", cwd: directory, instructions: "Review changes." },
+    });
+    const rebound = await jsonFetch(`${baseUrl}/api/telegram/agent-bindings`, {
+      method: "POST",
+      body: { agentId: "reviewer", token: "987654:secret" },
+    });
+    assert.equal(rebound.binding.agentId, "reviewer");
   } finally {
     await server.close();
     await manager.close();

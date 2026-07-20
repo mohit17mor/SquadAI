@@ -385,7 +385,9 @@ export class CommandCenterServer {
       }
 
       if (agentMatch?.[1] && request.method === "DELETE") {
-        const agent = await this.options.manager.deleteAgent(decodeURIComponent(agentMatch[1]));
+        const agentId = decodeURIComponent(agentMatch[1]);
+        const agent = await this.options.manager.deleteAgent(agentId);
+        await this.options.telegramBindings?.removeBinding(agentId);
         this.json(response, { agent });
         return;
       }
